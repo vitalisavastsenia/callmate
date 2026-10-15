@@ -66,6 +66,8 @@ curl --request PUT http://127.0.0.1:3000/api/v1/settings \
   --data '{"defaultCallLimits":{"maxDurationSeconds":300,"maxEstimatedCost":{"amountMinor":200,"currency":"USD"}},"transcriptRetentionDays":14}'
 ```
 
+The web UI at port 5173 includes **Contacts** for creating, editing, and deleting the backend address book. Start it with `docker compose --profile web up --build -d --wait server web`. Contacts use the private `/api/v1/contacts` CRUD/import endpoints in both Simulator and Live modes. See the [contact API contract](interfaces.md#4-private-http-api) for required fields and responses. No provider credentials or real calls are involved.
+
 Private requests require a recognized loopback Host and, when present, a same-app Origin. Cross-site browser requests are rejected. POST/PUT commands require JSON; DELETE conversation requests have no body. Use a same-origin UI or a future development proxy; cross-origin CORS access is not enabled. Error bodies use `ApiErrorSchema`; validation errors do not echo supplied values. Settings cannot include provider credentials.
 
 No production Twilio callback/WSS route is active until signature validation and durable session correlation exist. Never tunnel the unsigned development mock relay. A future production host tunnel must forward only port 3001, never the private API, and must disable mock mode.
@@ -77,6 +79,8 @@ On startup, the server creates `/data/callmate.sqlite`, enables WAL and foreign 
 The initial migration creates and seeds application settings: a 300-second maximum call duration, USD 2.00 estimated call-cost limit, and 30-day transcript retention. Migration 002 adds review plans, call snapshots, internal script state, event replay, and idempotency records, plus a database-enforced single active-call reservation. Migration 003 adds a stable completion timestamp and an index for automatic transcript retention. Backend duration limits and automatic retention are enforced; real-provider caps remain future work. The volume directory has mode 0700 and database file mode 0600; SQLite itself is not encrypted.
 
 Snapshots and their event batches commit in one transaction. Start and approval UUID idempotency keys are persisted globally: retry the same endpoint/body/key to retrieve the same attempt's current snapshot. Reusing a key for a different command returns `409 IDEMPOTENCY_CONFLICT`. A new Start key is a new deliberate command, never a transport retry.
+
+Migration 004 adds contacts with unique normalized phones, timezone, tone preferences, notes, and creation/update timestamps. It applies automatically on startup without deleting existing data. Contact updates/deletions leave saved request and history values intact. Contacts remain until explicitly deleted; transcript retention does not remove address-book records. They are personal data stored in the same unencrypted, locally restricted SQLite volume.
 
 On restart, interrupted simulator attempts are finalized without resuming a script or dialing. Before simulated acceptance they become `not_booked/technical_failure`; after acceptance they become `uncertain/provider_state_unknown`. Existing confirmed results are preserved. Re-fetch the attempt and resume SSE to observe that recovery; retrying Start with the old key still returns that attempt.
 

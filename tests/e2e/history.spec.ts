@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './fixtures';
 import { confirmedCallFixture, uncertainCallFixture } from '@callmate/contracts/fixtures';
 import { CallSnapshotSchema, type CallSnapshot } from '@callmate/contracts';
 

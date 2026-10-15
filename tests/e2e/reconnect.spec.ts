@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 import { awaitingApprovalFixture, confirmedCallFixture, reviewPlanFixture, transcriptEventFixture } from '@callmate/contracts/fixtures';
 
 test('HTTP/SSE reconnect disables old decisions and resynchronizes without a new Start', async ({ page }) => {
@@ -9,6 +9,7 @@ test('HTTP/SSE reconnect disables old decisions and resynchronizes without a new
   waiting.pendingApproval!.expiresAt = new Date(Date.now() + 60_000).toISOString();
   await page.route('**/api/v1/**', async route => {
     const url = new URL(route.request().url()); const path = url.pathname;
+    if (path.startsWith('/api/v1/contacts')) return route.continue();
     if (path.endsWith('/readiness')) return route.fulfill({ json: { mode: 'simulator', ready: true, voiceEngine: null, capabilities: [], checks: [] } });
     if (path.endsWith('/settings')) return route.fulfill({ json: { defaultCallLimits: reviewPlanFixture.request.callLimits, transcriptRetentionDays: 30 } });
     if (path.endsWith('/history')) return route.fulfill({ json: { items: [], nextCursor: null } });
@@ -49,6 +50,7 @@ test('a lost Start response reuses the same idempotency key after refresh', asyn
   started.pendingApproval!.expiresAt = new Date(Date.now() + 60_000).toISOString();
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname;
+    if (path.startsWith('/api/v1/contacts')) return route.continue();
     if (path.endsWith('/readiness')) return route.fulfill({ json: { mode: 'simulator', ready: true, voiceEngine: null, capabilities: [], checks: [] } });
     if (path.endsWith('/settings')) return route.fulfill({ json: { defaultCallLimits: reviewPlanFixture.request.callLimits, transcriptRetentionDays: 30 } });
     if (path.endsWith('/history')) return route.fulfill({ json: { items: [], nextCursor: null } });
@@ -79,6 +81,7 @@ test('the Home header omits the mode badge without starting a call', async ({ pa
   let starts = 0;
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname;
+    if (path.startsWith('/api/v1/contacts')) return route.continue();
     if (path.endsWith('/readiness')) return route.fulfill({ json: { mode: 'live', ready: false, voiceEngine: null, capabilities: [], checks: [] } });
     if (path.endsWith('/settings')) return route.fulfill({ json: { defaultCallLimits: reviewPlanFixture.request.callLimits, transcriptRetentionDays: 30 } });
     if (path.endsWith('/history')) return route.fulfill({ json: { items: [], nextCursor: null } });
@@ -104,6 +107,7 @@ test('a backend-adjusted plan stays editable and needs another Call before diali
   let starts = 0;
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname;
+    if (path.startsWith('/api/v1/contacts')) return route.continue();
     if (path.endsWith('/readiness')) return route.fulfill({ json: { mode: 'simulator', ready: true, voiceEngine: null, capabilities: [], checks: [] } });
     if (path.endsWith('/settings')) return route.fulfill({ json: { defaultCallLimits: reviewPlanFixture.request.callLimits, transcriptRetentionDays: 30 } });
     if (path.endsWith('/history')) return route.fulfill({ json: { items: [], nextCursor: null } });
@@ -130,7 +134,10 @@ for (const failure of ['network', 'empty-proxy-error'] as const) {
   test(`unreachable Live backend (${failure}) offers Simulator and preserves the shared draft`, async ({ page }) => {
     const logs: string[] = []; const crashes: string[] = [];
     page.on('console', message => logs.push(message.text())); page.on('pageerror', error => crashes.push(error.message));
-    await page.route('**/api/v1/**', route => failure === 'network' ? route.abort('connectionrefused') : route.fulfill({ status: 500, body: '' }));
+    await page.route('**/api/v1/**', route => {
+      if (new URL(route.request().url()).pathname.startsWith('/api/v1/contacts')) return route.continue();
+      return failure === 'network' ? route.abort('connectionrefused') : route.fulfill({ status: 500, body: '' });
+    });
     await page.goto('/');
     const alert = page.getByRole('alert');
     await expect(alert).toContainText("Can't reach the Zeus backend. Check that it's running, or switch to Simulator in Settings.");
@@ -156,7 +163,10 @@ for (const failure of ['network', 'empty-proxy-error'] as const) {
 for (const response of ['empty-json', 'html'] as const) {
   test(`a successful ${response} response cannot become fake readiness or crash the UI`, async ({ page }) => {
     const crashes: string[] = []; page.on('pageerror', error => crashes.push(error.message));
-    await page.route('**/api/v1/**', route => route.fulfill({ status: 200, contentType: response === 'html' ? 'text/html' : 'application/json', body: response === 'html' ? '<html>Vite fallback page</html>' : '' }));
+    await page.route('**/api/v1/**', route => {
+      if (new URL(route.request().url()).pathname.startsWith('/api/v1/contacts')) return route.continue();
+      return route.fulfill({ status: 200, contentType: response === 'html' ? 'text/html' : 'application/json', body: response === 'html' ? '<html>Vite fallback page</html>' : '' });
+    });
     await page.goto('/');
     await expect(page.getByRole('alert')).toContainText('HTTP 200');
     await expect(page.getByRole('alert')).not.toContainText('Unexpected end of JSON input');
@@ -169,6 +179,7 @@ for (const response of ['empty-json', 'html'] as const) {
 test('an unreachable backend after a lost Start keeps Simulator switching locked and preserves the command', async ({ page }) => {
   await page.route('**/api/v1/**', route => {
     const path = new URL(route.request().url()).pathname;
+    if (path.startsWith('/api/v1/contacts')) return route.continue();
     if (path.endsWith('/readiness')) return route.fulfill({ json: { mode: 'live', ready: true, voiceEngine: null, capabilities: [], checks: [] } });
     if (path.endsWith('/settings')) return route.fulfill({ json: { defaultCallLimits: reviewPlanFixture.request.callLimits, transcriptRetentionDays: 30 } });
     if (path.endsWith('/history')) return route.fulfill({ json: { items: [], nextCursor: null } });

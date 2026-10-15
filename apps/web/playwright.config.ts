@@ -13,6 +13,11 @@ export default defineConfig({
     { name: 'http-sse', testMatch: '**/reconnect.spec.ts', use: { ...devices['Desktop Chrome'], baseURL: 'http://127.0.0.1:5175' } },
   ],
   webServer: [{
+    command: 'CALLMATE_DATA_DIR=/tmp/callmate-contacts-e2e NODE_ENV=test TELEPHONY_PROVIDER=fake CALLMATE_LOG_LEVEL=silent node ../server/dist/main.js',
+    url: 'http://127.0.0.1:3000/health',
+    reuseExistingServer: false,
+    timeout: 30_000,
+  }, {
     command: 'VITE_MOCK=true npm run dev -- --port 5174 --strictPort',
     url: 'http://127.0.0.1:5174',
     reuseExistingServer: false,

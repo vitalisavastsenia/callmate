@@ -3,6 +3,7 @@ import { RequestDraftSchema, TimeZoneSchema, requestLabels, type RequestDraft, t
 import { localDateInZone, nextTuesday, resolveTime } from '../time';
 import { isMockMode, parseGoal } from '../api';
 import { readRequestDefaults, type RequestDefaults } from '../preferences';
+import { useContacts } from '../useContacts';
 import ContactPicker, { ToneFields } from './ContactPicker';
 import { contactsService, countryTimeZone, normalizePhone, type Contact, type ContactDetails } from '../contacts';
 import { RequestDetails } from './CallViews';
@@ -74,7 +75,8 @@ export default function RequestForm({ initial, prefill, view, onRequest, setting
   const [v, setValues] = useState<FormValues>(() => initial ? fromRequest(initial, settings) : { ...emptyForm(settings), goal: prefill?.goal ?? '', kind: prefill?.requestType ?? '' });
   const [reviewedRequest, setReviewedRequest] = useState<RequestDraft | null>(initialPrepared && initial ? initial : null);
   const [prepareCheck, setPrepareCheck] = useState<{ failed: boolean } | null>(null);
-  const [contacts, setContacts] = useState(() => contactsService.list());
+  const { contacts, loading: contactsLoading, error: contactsError, reload: reloadContacts } = useContacts();
+  const [contactSaving, setContactSaving] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(initial?.contact_id ?? null);
   const [saveContact, setSaveContact] = useState(false);
   const [zoneEdited, setZoneEdited] = useState(!!initial);
@@ -133,12 +135,15 @@ export default function RequestForm({ initial, prefill, view, onRequest, setting
     setValues(old => ({ ...old, business: value.name, phone: value.phone, tone: value.tone, toneNotes: value.notes,
       zone: value.phone !== old.phone && !zoneEdited ? countryTimeZone(value.phone) ?? old.zone : old.zone }));
   }
-  function reviewedWithContact(request: RequestDraft): RequestDraft {
+  async function reviewedWithContact(request: RequestDraft): Promise<RequestDraft> {
     if (!saveContact) return request;
     if (contacts.some(c => c.phone === request.business.phone)) return request;
-    const contact = contactsService.save(contactDetails, selectedContact?.phone === v.phone ? selectedContact.id : undefined);
-    setContacts(contactsService.list()); setSelectedId(contact.id); setSaveContact(false);
-    return { ...request, contact_id: contact.id };
+    setContactSaving(true);
+    try {
+      const contact = await contactsService.save(contactDetails, selectedContact?.phone === v.phone ? selectedContact.id : undefined);
+      setSelectedId(contact.id); setSaveContact(false);
+      return { ...request, contact_id: contact.id };
+    } finally { setContactSaving(false); }
   }
   async function fillDetails() {
     setParsing(true); setErrors([]); setParseNotes([]);
@@ -283,45 +288,48 @@ export default function RequestForm({ initial, prefill, view, onRequest, setting
       onRequest("Couldn't understand everything — fill in the details");
       // The fallback notice explains what happened; fields reveal errors when edited.
     } else {
-      try { setReviewedRequest(reviewedWithContact(validation.request)); }
-      catch (error) { setErrors([(error as Error).message]); onRequest(); }
+      void reviewedWithContact(validation.request).then(setReviewedRequest)
+        .catch(error => { setErrors([(error as Error).message]); onRequest(); });
     }
   }, [prepareCheck, validation, onRequest]);
   async function prepare() {
-    if (homeMissing.length || locked || busy || parsing) return;
+    if (homeMissing.length || locked || busy || parsing || contactSaving) return;
     setErrors([]); setReviewedRequest(null);
     setPrepareCheck({ failed: !await fillDetails() });
   }
   return <div className="inline-workflow" style={{ paddingBottom: view === 'request' ? reviewBarHeight : 0 }}>
+    {contactsLoading && <p role="status" className="text-base">Loading saved contacts…</p>}
+    {contactsError && <div role="alert" className="notice error"><p>Saved contacts are unavailable. {contactsError}</p><button type="button" className="secondary" onClick={() => void reloadContacts()}>Retry contacts</button></div>}
+    {contactSaving && <p role="status">Saving contact…</p>}
     <section hidden={view !== 'home'} className="panel request-entry" aria-labelledby="request-title">
       <p className="eyebrow">01 / Tell Zeus</p><h2 id="request-title">What should Zeus do?</h2>
       <form noValidate onSubmit={e => { e.preventDefault(); void prepare(); }}>
-        <fieldset disabled={locked || busy || parsing} className="space-y-5">
+        <fieldset disabled={locked || busy || parsing || contactSaving} className="space-y-5">
           <label>Goal<textarea data-gramm="false" aria-label="Home goal" value={v.goal} onChange={e => set('goal', e.target.value)} required maxLength={4000} rows={4} placeholder="Describe in English what you need and any limits Zeus should follow…" /></label>
           <div className="flex flex-wrap gap-3" aria-label="Request templates">
             <button type="button" className="secondary template-chip" onClick={() => template('book')}>Book a haircut</button>
             <button type="button" className="secondary template-chip" onClick={() => template('ask')}>Ask a clinic about documents</button>
             <button type="button" className="secondary template-chip" onClick={() => template('change')}>Reschedule a vet visit</button>
           </div>
-          {view === 'home' && <ContactPicker compact value={contactDetails} contacts={contacts} selectedId={selectedId} saveChecked={saveContact} onChange={changeContact} onSelect={chooseContact} onContactsChange={setContacts} onSaveChecked={checked => { setSaveContact(checked); setReviewedRequest(null); }} />}
-          <div className="flex flex-wrap items-center gap-4"><button type="submit" className="primary" disabled={!!homeMissing.length || locked || busy || parsing} aria-describedby="home-readiness">{parsing ? 'Preparing the plan…' : 'Prepare the plan'}</button><span id="home-readiness" role="status" className="text-base text-stone-300">{homeMissing.length ? `Add ${homeMissing.join(', ')} to continue.` : ''}</span><button type="button" className="text-add" onClick={() => onRequest()}>Enter details manually</button></div>
+          {view === 'home' && <ContactPicker compact value={contactDetails} contacts={contacts} selectedId={selectedId} saveChecked={saveContact} onChange={changeContact} onSelect={chooseContact} onSaveChecked={checked => { setSaveContact(checked); setReviewedRequest(null); }} />}
+          <div className="flex flex-wrap items-center gap-4"><button type="submit" className="primary" disabled={!!homeMissing.length || locked || busy || parsing || contactSaving} aria-describedby="home-readiness">{parsing ? 'Preparing the plan…' : 'Prepare the plan'}</button><span id="home-readiness" role="status" className="text-base text-stone-300">{homeMissing.length ? `Add ${homeMissing.join(', ')} to continue.` : ''}</span><button type="button" className="text-add" onClick={() => onRequest()}>Enter details manually</button></div>
         </fieldset>
       </form>
     </section>
     <section hidden={view !== 'request'} className="manual-request" aria-labelledby="manual-request-title">
       <p className="eyebrow">Your instructions</p><h2 id="manual-request-title">Request</h2>
       {errors.length > 0 && <div role="alert" className="notice error"><ul className="list-disc pl-5">{errors.map((error, i) => <li key={i}>{error}</li>)}</ul></div>}
-      <form noValidate onSubmit={e => {
+      <form noValidate onSubmit={async e => {
         e.preventDefault();
-        if (locked || busy || parsing) return;
+        if (locked || busy || parsing || contactSaving) return;
         setSubmitted(true);
         if (!validation.request) { setErrors(validation.issues); return; }
         if (validation.request.availability.some(w => Date.parse(w.start.instant) <= Date.now())) { setErrors(['Availability must start in the future in the destination timezone.']); return; }
-        try { setReviewedRequest(reviewedWithContact(validation.request)); setErrors([]); onRequest(); }
+        try { setReviewedRequest(await reviewedWithContact(validation.request)); setErrors([]); onRequest(); }
         catch (error) { setErrors([(error as Error).message]); }
       }}>
-      <fieldset disabled={locked || busy || parsing} className="request-sections">
-        <SectionCard step={1} title="Who to call">{view === 'request' && <ContactPicker hideHeading deferErrors showErrors={submitted} value={contactDetails} contacts={contacts} selectedId={selectedId} saveChecked={saveContact} onChange={changeContact} onSelect={chooseContact} onContactsChange={setContacts} onSaveChecked={checked => { setSaveContact(checked); setReviewedRequest(null); }} />}</SectionCard>
+      <fieldset disabled={locked || busy || parsing || contactSaving} className="request-sections">
+        <SectionCard step={1} title="Who to call">{view === 'request' && <ContactPicker hideHeading deferErrors showErrors={submitted} value={contactDetails} contacts={contacts} selectedId={selectedId} saveChecked={saveContact} onChange={changeContact} onSelect={chooseContact} onSaveChecked={checked => { setSaveContact(checked); setReviewedRequest(null); }} />}</SectionCard>
         <SectionCard step={2} title="What Zeus should do"><div className="request-goal-grid"><fieldset className="request-type-field" {...auto('kind')} {...invalid('requestType')}><legend className="section-title">Request type{badge('kind')}</legend><div className="flex flex-wrap gap-2" role="group" aria-label="Request type">{Object.entries(requestLabels).map(([kind, label]) => <button key={kind} type="button" className="secondary template-chip" aria-pressed={v.kind === kind} onClick={() => { set('kind', kind as Kind); touch('requestType'); }}>{label}</button>)}</div>{feedback('requestType')}</fieldset>
         <div className="goal-details"><label><span className="field-caption">Goal</span><span className="field-control"><textarea data-gramm="false" aria-label="Goal" {...invalid('goal')} value={v.goal} onChange={e => set('goal', e.target.value)} maxLength={4000} rows={3} required />{feedback('goal')}</span></label>
         {isMockMode && <button type="button" className="secondary fill-details" disabled={!v.goal.trim()} onClick={() => { setReviewedRequest(null); void fillDetails(); }}>Fill details from goal</button>}
@@ -376,7 +384,7 @@ export default function RequestForm({ initial, prefill, view, onRequest, setting
         {((showError('timeZone') && validation.fields.timeZone) || (showError('callLimits.maxDurationSeconds') && validation.fields['callLimits.maxDurationSeconds']) || (showError('callLimits.maxEstimatedCost') && validation.fields['callLimits.maxEstimatedCost'])) && <p className="field-error">Check Advanced settings: timezone, call duration and cost.</p>}
         <div ref={reviewBar} className="request-review-bar" hidden={!!approvalPending || !!flow}>
           <span id="request-readiness" role="status" aria-live="polite">{validation.issues.length ? `${validation.issues.length} thing${validation.issues.length === 1 ? '' : 's'} missing` : 'Ready to review'}</span>
-          <button type="submit" className="primary" disabled={!validation.request || locked || busy || parsing} aria-describedby="request-readiness">Review call plan</button>
+          <button type="submit" className="primary" disabled={!validation.request || locked || busy || parsing || contactSaving} aria-describedby="request-readiness">Review call plan</button>
         </div>
       </fieldset>
       </form>

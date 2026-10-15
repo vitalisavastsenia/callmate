@@ -19,6 +19,18 @@ export const ServiceMoneySchema = MoneySchema.extend({ currency: z.literal("EUR"
 // New requests use EUR; USD remains valid for existing provider usage and saved calls.
 export const CallMoneySchema = MoneySchema;
 
+export const ContactDetailsSchema = z.strictObject({
+  name: z.string().trim().min(1).max(200),
+  phone: z.string().max(100).transform(value => value.trim().replace(/^tel:/i, "")
+    .replace(/[\s().-]/g, "").replace(/^00/, "+")).pipe(E164Schema),
+  timeZone: TimeZoneSchema,
+  tone: z.array(z.string().trim().min(1).max(100)).max(10).default([]),
+  notes: z.string().trim().max(2000).default(""),
+});
+export const ContactSchema = ContactDetailsSchema.extend({ id: IdSchema });
+export type ContactDetails = z.infer<typeof ContactDetailsSchema>;
+export type Contact = z.infer<typeof ContactSchema>;
+
 // Keep the displayed business time and the resolved instant consistent, including DST.
 export const ZonedTimeSchema = z.strictObject({
   localDate: z.iso.date(),
@@ -272,6 +284,7 @@ export const ErrorCodeSchema = z.enum([
   "INVALID_REQUEST", "NOT_FOUND", "PLAN_VERSION_MISMATCH", "CALL_ALREADY_ACTIVE", "IDEMPOTENCY_CONFLICT",
   "APPROVAL_STALE", "APPROVAL_EXPIRED", "CALL_NOT_ACTIVE", "PROVIDER_NOT_READY", "MODE_MISMATCH",
   "BUDGET_EXCEEDED", "EVENT_CURSOR_INVALID", "DATA_NOT_DELETABLE", "PROVIDER_UNAVAILABLE", "INTERNAL_ERROR",
+  "CONTACT_ALREADY_EXISTS",
 ]);
 export const ApiErrorSchema = z.strictObject({ error: z.strictObject({
   code: ErrorCodeSchema, message: TextSchema, requestId: IdSchema,

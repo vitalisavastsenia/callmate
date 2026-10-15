@@ -19,6 +19,7 @@ import { Retention } from "./retention.js";
 import type { RetentionOptions } from "./retention.js";
 import { Readiness } from "./readiness.js";
 import { mountMockStatus } from "./mock-status.js";
+import { contactRoutes } from "./contacts.js";
 
 type ErrorCode = z.infer<typeof ApiErrorSchema>["error"]["code"];
 function fail(reply: FastifyReply, request: FastifyRequest, status: number, code: ErrorCode, message: string,
@@ -97,6 +98,7 @@ function privateRoutes(app: FastifyInstance, config: Config, store: Store, contr
     return settings;
   });
   callRoutes(app, controller);
+  contactRoutes(app, store);
 }
 
 export function createRuntime(config: Config, logStream?: Writable, simulatorOptions?: SimulatorOptions, developmentOptions?: DevelopmentOptions, retentionOptions?: RetentionOptions) {

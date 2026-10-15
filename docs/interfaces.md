@@ -67,6 +67,15 @@ All routes below use the loopback UI/API listener. They are never mounted on the
 | `DELETE /api/v1/calls/:attemptId/conversation` | None | `200 { attemptId, deleted: true }`; removes local transcript/translation/event text, preserving booking metadata. |
 | `GET /api/v1/settings` | None | `200 SettingsSchema`. |
 | `PUT /api/v1/settings` | `SettingsSchema` | `200 SettingsSchema`; affects future plans, never mutates an active approved plan. |
+| `GET /api/v1/contacts` | None | `200 { items: Contact[] }`; shared backend address book in either call mode. |
+| `POST /api/v1/contacts` | `ContactDetailsSchema` | `201 { contact: Contact }`. |
+| `PUT /api/v1/contacts/:contactId` | UUID path; `ContactDetailsSchema` | `200 { contact: Contact }`; full replacement, 404 if missing. |
+| `DELETE /api/v1/contacts/:contactId` | UUID path; no body | `200 { contactId, deleted: true }`; idempotent. |
+| `POST /api/v1/contacts/import` | `{ contacts: ContactDetails[] }`, 1–100 entries | `200 { imported, duplicates }`; atomic per batch; skips normalized-phone duplicates. |
+
+`ContactDetailsSchema` requires `name` (trimmed, 1–200 characters), `phone` (E.164 after removing formatting and converting leading `00` to `+`), and `timeZone` (valid IANA zone). Optional `tone` defaults to `[]` (up to 10 nonempty strings of at most 100 characters); `notes` defaults to `""` (up to 2,000 characters). `ContactSchema` adds a backend-generated UUID `id`. Contact phones are unique in SQLite. The browser assumes Spain for a local number; API clients must supply a country code. Invalid requests return `400 INVALID_REQUEST`; conflicting phones return `409 CONTACT_ALREADY_EXISTS`. Unknown fields are rejected.
+
+Contacts persist across backend/browser restarts and are independent of simulator call storage. Selecting a contact copies values into the editable request; its `contact_id` is a reference, never a live lookup that can change a reviewed plan or historical call. Contact mutations use ordinary HTTP responses, not call SSE events. Refresh the address book on navigation/focus to see changes from other tabs.
 
 ### Required server behavior
 
@@ -87,7 +96,7 @@ Use `ApiErrorSchema`: `{ error: { code, message, requestId, details: [{ path, me
 | --- | --- |
 | 400 | `INVALID_REQUEST`, `EVENT_CURSOR_INVALID` |
 | 404 | `NOT_FOUND` |
-| 409 | `PLAN_VERSION_MISMATCH`, `CALL_ALREADY_ACTIVE`, `IDEMPOTENCY_CONFLICT`, `APPROVAL_STALE`, `APPROVAL_EXPIRED`, `CALL_NOT_ACTIVE`, `MODE_MISMATCH`, `DATA_NOT_DELETABLE` |
+| 409 | `PLAN_VERSION_MISMATCH`, `CALL_ALREADY_ACTIVE`, `IDEMPOTENCY_CONFLICT`, `APPROVAL_STALE`, `APPROVAL_EXPIRED`, `CALL_NOT_ACTIVE`, `MODE_MISMATCH`, `DATA_NOT_DELETABLE`, `CONTACT_ALREADY_EXISTS` |
 | 503 | `PROVIDER_NOT_READY`, `PROVIDER_UNAVAILABLE` |
 | 500 | `INTERNAL_ERROR` |
 

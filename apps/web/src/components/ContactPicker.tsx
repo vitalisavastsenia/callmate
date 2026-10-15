@@ -1,54 +1,33 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
-import { createPortal } from 'react-dom';
-import { contactsService, normalizePhone, parseContactFile, toneOptions, type Contact, type ContactDetails, type ContactTable } from '../contacts';
+import { useId, useRef, useState } from 'react';
+import ContactEditor from './ContactEditor';
+import { Modal } from './ContactFields';
+export { ToneFields } from './ContactFields';
+import { contactsService, normalizePhone, parseContactFile, type Contact, type ContactDetails, type ContactTable } from '../contacts';
 import PhoneField from './PhoneField';
+import TimezoneSelect from './TimezoneSelect';
 
-export function ToneFields({ tone, notes, onChange, hideHeading = false }: { tone: string[]; notes: string; onChange: (tone: string[], notes: string) => void; hideHeading?: boolean }) {
-  return <fieldset className="tone-fields"><legend className={hideHeading ? 'sr-only' : 'section-title'}>Tone &amp; manner</legend>
-    <div className="mb-4 flex flex-wrap gap-2">{[...new Set([...toneOptions, ...tone])].map(option => <button key={option} type="button" className="secondary template-chip" aria-pressed={tone.includes(option)} onClick={() => onChange(tone.includes(option) ? tone.filter(t => t !== option) : [...tone, option], notes)}>{option === 'Formal "usted"' ? 'Formal' : option}</button>)}</div>
-    <label>Notes for Zeus<textarea data-gramm="false" aria-label="Notes for Zeus" value={notes} onChange={e => onChange(tone, e.target.value)} maxLength={2000} rows={2} placeholder="Grumpy guy, be extra polite and patient" /></label>
-  </fieldset>;
-}
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
-  const ref = useRef<HTMLDialogElement>(null); const titleId = useId();
-  useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close(); }, []);
-  return createPortal(<dialog ref={ref} className="contact-dialog" aria-labelledby={titleId} onCancel={e => { e.preventDefault(); onClose(); }}>
-    <div className="mb-5 flex items-start justify-between gap-3"><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" aria-label="Close dialog" onClick={onClose}>×</button></div>{children}
-  </dialog>, document.body);
-}
-function ContactEditor({ contact, onClose, onSaved, onDeleted }: { contact: Contact; onClose: () => void; onSaved: (contact: Contact) => void; onDeleted: () => void }) {
-  const [value, setValue] = useState<ContactDetails>(contact); const [error, setError] = useState(''); const [deleting, setDeleting] = useState(false);
-  return <Modal title="Edit contact" onClose={onClose}>
-    <form noValidate className="space-y-4" onSubmit={e => { e.preventDefault(); e.stopPropagation(); try { onSaved(contactsService.save(value, contact.id)); } catch (e) { setError((e as Error).message); } }}>
-      <label>Name<input value={value.name} maxLength={200} onChange={e => setValue({ ...value, name: e.target.value })} /></label>
-      <label>Contact phone<input type="tel" value={value.phone} onChange={e => setValue({ ...value, phone: e.target.value })} /></label>
-      <label>Contact timezone<input value={value.timeZone} onChange={e => setValue({ ...value, timeZone: e.target.value })} /></label>
-      <ToneFields tone={value.tone} notes={value.notes} onChange={(tone, notes) => setValue({ ...value, tone, notes })} />
-      {error && <p role="alert" className="notice error">{error}</p>}
-      <div className="flex flex-wrap gap-3"><button type="submit" className="primary">Save contact</button><button type="button" className="text-add" onClick={() => setDeleting(true)}>Delete contact</button></div>
-      {deleting && <div className="notice"><p>Delete this saved contact? Your current request will keep its details.</p><button type="button" className="secondary mt-3" onClick={() => { try { contactsService.remove(contact.id); onDeleted(); } catch (e) { setError((e as Error).message); } }}>Confirm delete</button></div>}
-    </form>
-  </Modal>;
-}
 function ContactImport({ table, onClose, onImported, defaultZone }: { table: ContactTable; onClose: () => void; onImported: (message: string) => void; defaultZone: string }) {
   const [nameColumn, setNameColumn] = useState(Math.max(0, table.columns.findIndex(c => /^(?:full[ -]?)?name$|display.?name/i.test(c))));
   const [phoneColumn, setPhoneColumn] = useState(Math.max(0, table.columns.findIndex(c => /phone|mobile|tel/i.test(c))));
+  const [busy, setBusy] = useState(false);
   const [zone, setZone] = useState(defaultZone); const [code, setCode] = useState('+34'); const [error, setError] = useState('');
-  return <Modal title="Import contacts" onClose={onClose}><form className="space-y-4" noValidate onSubmit={e => {
+  return <Modal title="Import contacts" onClose={onClose}><form className="space-y-4" noValidate onSubmit={async e => {
     e.preventDefault(); e.stopPropagation();
     if (nameColumn === phoneColumn) { setError('Map name and phone to different columns.'); return; }
+    if (busy) return; setBusy(true);
     try {
-      const result = contactsService.import(table.rows.map(row => ({ name: row[nameColumn] ?? '', phone: row[phoneColumn] ?? '' })), zone, code);
+      const result = await contactsService.import(table.rows.map(row => ({ name: row[nameColumn] ?? '', phone: row[phoneColumn] ?? '' })), zone, code);
       onImported(`${result.imported} imported · ${result.duplicates} duplicate phone numbers skipped · ${result.skipped} invalid rows skipped.`);
     } catch (e) { setError((e as Error).message); }
+    finally { setBusy(false); }
   }}>
     <p className="text-base">Map the columns below. Contacts with the same phone number are skipped.</p>
     <div className="form-grid">{([['Name column', nameColumn, setNameColumn], ['Phone column', phoneColumn, setPhoneColumn]] as const).map(([label, value, set]) => <label key={label}>{label}<select aria-label={label} value={value} onChange={e => set(Number(e.target.value))}>{table.columns.map((column, i) => <option key={i} value={i}>{column || `Column ${i + 1}`}</option>)}</select></label>)}</div>
     <p className="text-base text-stone-300">First contact: {table.rows[0]?.[nameColumn] || 'No name'} · {table.rows[0]?.[phoneColumn] || 'No phone'}</p>
     <label>Country code for local numbers<select value={code} onChange={e => setCode(e.target.value)}><option value="+34">Spain (+34)</option><option value="+44">UK (+44)</option><option value="+1">US / Canada (+1)</option><option value="+33">France (+33)</option><option value="+49">Germany (+49)</option><option value="+39">Italy (+39)</option><option value="+351">Portugal (+351)</option><option value="+31">Netherlands (+31)</option><option value="+380">Ukraine (+380)</option></select></label>
-    <label>Default timezone<input value={zone} onChange={e => setZone(e.target.value)} /></label>
+    <TimezoneSelect label="Default timezone" value={zone} onChange={setZone} />
     {error && <p role="alert" className="notice error">{error}</p>}
-    <button type="submit" className="primary">Import contacts</button>
+    <button type="submit" disabled={busy} className="primary">{busy ? 'Importing…' : 'Import contacts'}</button>
   </form></Modal>;
 }
 
@@ -56,9 +35,9 @@ interface Props {
   compact?: boolean; showErrors?: boolean; deferErrors?: boolean; hideHeading?: boolean;
   value: ContactDetails; contacts: Contact[]; selectedId: string | null; saveChecked: boolean;
   onChange: (value: ContactDetails) => void; onSelect: (contact: Contact | null) => void;
-  onContactsChange: (contacts: Contact[]) => void; onSaveChecked: (checked: boolean) => void;
+  onSaveChecked: (checked: boolean) => void;
 }
-export default function ContactPicker({ value, contacts, selectedId, saveChecked, onChange, onSelect, onContactsChange, onSaveChecked, compact = false, showErrors = false, deferErrors = false, hideHeading = false }: Props) {
+export default function ContactPicker({ value, contacts, selectedId, saveChecked, onChange, onSelect, onSaveChecked, compact = false, showErrors = false, deferErrors = false, hideHeading = false }: Props) {
   const [nameTouched, setNameTouched] = useState(false);
   const nameInvalid = (showErrors || (deferErrors && nameTouched)) && !value.name.trim();
   const selected = contacts.find(c => c.id === selectedId);
@@ -95,7 +74,7 @@ export default function ContactPicker({ value, contacts, selectedId, saveChecked
     {selected && <p className="text-base text-stone-300">Selected: {selected.name} <button type="button" className="text-add" onClick={() => onSelect(null)}>Clear selection</button></p>}
     {showSave && <label className="check-label contact-save"><input type="checkbox" checked={saveChecked} onChange={e => onSaveChecked(e.target.checked)} />Save to contacts</label>}
     {message && <p role="status" className="notice">{message}</p>}{error && <p role="alert" className="notice error">{error}</p>}
-    {editing && selected && <ContactEditor contact={selected} onClose={() => setEditing(false)} onSaved={contact => { onContactsChange(contactsService.list()); onSelect(contact); setEditing(false); setMessage('Contact updated.'); }} onDeleted={() => { onContactsChange(contactsService.list()); onSelect(null); setEditing(false); setMessage('Contact deleted.'); }} />}
-    {table && <ContactImport table={table} defaultZone={value.timeZone} onClose={() => setTable(null)} onImported={message => { onContactsChange(contactsService.list()); setMessage(message); setTable(null); }} />}
+    {editing && selected && <ContactEditor contact={selected} onClose={() => setEditing(false)} onSaved={contact => { onSelect(contact); setEditing(false); setMessage('Contact updated.'); }} onDeleted={() => { onSelect(null); setEditing(false); setMessage('Contact deleted.'); }} />}
+    {table && <ContactImport table={table} defaultZone={value.timeZone} onClose={() => setTable(null)} onImported={message => { setMessage(message); setTable(null); }} />}
   </fieldset>;
 }

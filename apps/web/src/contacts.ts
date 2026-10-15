@@ -1,9 +1,19 @@
-import { IdSchema, TimeZoneSchema } from './types';
+import { api, ContactDetailsSchema, ContactSchema, TimeZoneSchema, type Contact, type ContactDetails } from './types';
+import { ApiError, request as backendRequest } from './api';
+export type { Contact, ContactDetails } from './types';
 
 export const toneOptions = ['Very polite', 'Formal "usted"', 'Friendly', 'Firm', 'Speak slowly'];
-export interface ContactDetails { name: string; phone: string; timeZone: string; tone: string[]; notes: string }
-export interface Contact extends ContactDetails { id: string }
 const storageKey = 'zeus-llama.contacts.v1';
+
+async function request<T>(method: string, path: string, schema: { parse: (value: unknown) => T }, body?: unknown): Promise<T> {
+  try { return await backendRequest(method, path, schema, body); }
+  catch (error) {
+    if (error instanceof ApiError && error.code === 'BACKEND_UNREACHABLE') {
+      throw new ApiError("Can't reach the Zeus backend. Start the backend and retry; contacts need it in both call modes.", error.code, error.details);
+    }
+    throw error;
+  }
+}
 
 export function normalizePhone(input: string, countryCode = '+34'): string {
   let phone = input.trim().replace(/^tel:/i, '').replace(/[\s().-]/g, '');
@@ -18,58 +28,85 @@ export function countryTimeZone(phone: string): string | undefined {
     ['+39', 'Europe/Rome'], ['+351', 'Europe/Lisbon'], ['+31', 'Europe/Amsterdam'], ['+380', 'Europe/Kyiv'], ['+1', 'America/New_York']]
     .find(([code]) => phone.startsWith(code!))?.[1];
 }
-function validate(value: ContactDetails): ContactDetails {
+export function validateContact(value: ContactDetails): ContactDetails {
   const name = value.name.trim();
   if (!name || name.length > 200) throw new Error('Enter a contact name (up to 200 characters).');
   if (!TimeZoneSchema.safeParse(value.timeZone).success) throw new Error('Enter a valid IANA timezone.');
   if (value.notes.length > 2000 || value.tone.length > 10 || value.tone.some(t => !t.trim() || t.length > 100)) throw new Error('Shorten the contact notes or tone preferences.');
-  return { name, phone: normalizePhone(value.phone), timeZone: value.timeZone, tone: [...new Set(value.tone.map(t => t.trim()))], notes: value.notes.trim() };
+  return ContactDetailsSchema.parse({ name, phone: normalizePhone(value.phone), timeZone: value.timeZone,
+    tone: [...new Set(value.tone.map(t => t.trim()))], notes: value.notes.trim() });
 }
-function write(contacts: Contact[]) {
-  try { localStorage.setItem(storageKey, JSON.stringify(contacts)); }
-  catch { throw new Error('Could not save contacts on this device. Check browser storage and try again.'); }
+let cached: Contact[] = [];
+let revision = 0;
+let loadSequence = 0;
+const listeners = new Set<() => void>();
+function publish(contacts: Contact[]) {
+  cached = contacts; revision++;
+  for (const notify of listeners) notify();
 }
-// All contact persistence is isolated here so the UI can later use a backend service.
+// Both call modes use the same backend address book. Cache only acknowledged records.
 export const contactsService = {
-  list(): Contact[] {
+  list(): Contact[] { return structuredClone(cached); },
+  subscribe(notify: () => void) { listeners.add(notify); return () => { listeners.delete(notify); }; },
+  async load(): Promise<Contact[]> {
+    const version = revision; const sequence = ++loadSequence;
+    const result = await request(api.listContacts.method, api.listContacts.path, api.listContacts.response);
+    if (version === revision && sequence === loadSequence) publish(result.items);
+    return this.list();
+  },
+  async save(value: ContactDetails, id?: string): Promise<Contact> {
+    const details = validateContact(value);
+    const route = id ? api.updateContact : api.createContact;
+    const result = await request(route.method, route.path.replace(':contactId', encodeURIComponent(id ?? '')), route.response, details);
+    publish([...cached.filter(c => c.id !== result.contact.id), result.contact]);
+    return result.contact;
+  },
+  async remove(id: string) {
+    await request(api.deleteContact.method, api.deleteContact.path.replace(':contactId', encodeURIComponent(id)), api.deleteContact.response);
+    publish(cached.filter(c => c.id !== id));
+  },
+  async importDetails(contacts: ContactDetails[]) {
+    let imported = 0; let duplicates = 0;
+    try {
+      const batches: ContactDetails[][] = []; let batch: ContactDetails[] = [];
+      for (const contact of contacts) {
+        const value = validateContact(contact);
+        if (batch.length && (batch.length >= 100 || new TextEncoder().encode(JSON.stringify({ contacts: [...batch, value] })).length > 60_000)) {
+          batches.push(batch); batch = [];
+        }
+        batch.push(value);
+      }
+      if (batch.length) batches.push(batch);
+      for (const batch of batches) {
+        const body = api.importContacts.request.parse({ contacts: batch });
+        const result = await request(api.importContacts.method, api.importContacts.path, api.importContacts.response, body);
+        imported += result.imported; duplicates += result.duplicates;
+      }
+    } catch {
+      await this.load().catch(() => {});
+      throw new Error('Import was interrupted. Refresh contacts before retrying; already saved phone numbers will be skipped.');
+    }
+    await this.load();
+    return { imported, duplicates };
+  },
+  async import(rows: { name: string; phone: string }[], timeZone: string, countryCode: string) {
+    if (!TimeZoneSchema.safeParse(timeZone).success) throw new Error('Choose a valid default timezone for imported contacts.');
+    const contacts: ContactDetails[] = []; let skipped = 0;
+    for (const row of rows) {
+      try { contacts.push(validateContact({ ...row, phone: normalizePhone(row.phone, countryCode), timeZone, tone: [], notes: '' })); }
+      catch { skipped++; }
+    }
+    return { ...await this.importDetails(contacts), skipped };
+  },
+  legacy(): ContactDetails[] {
     try {
       const data: unknown = JSON.parse(localStorage.getItem(storageKey) ?? '[]');
       if (!Array.isArray(data)) return [];
-      const result: Contact[] = [];
-      const phones = new Set<string>(); const ids = new Set<string>();
-      for (const item of data) {
-        try {
-          if (!item || !IdSchema.safeParse(item.id).success) continue;
-          const contact = { ...validate(item as ContactDetails), id: item.id };
-          if (!phones.has(contact.phone) && !ids.has(contact.id)) { result.push(contact); phones.add(contact.phone); ids.add(contact.id); }
-        } catch { /* Ignore malformed saved records, preserving valid contacts. */ }
-      }
-      return result;
+      return data.flatMap(value => {
+        const parsed = ContactSchema.safeParse(value);
+        return parsed.success ? [validateContact(parsed.data)] : [];
+      });
     } catch { return []; }
-  },
-  save(value: ContactDetails, id?: string): Contact {
-    const details = validate(value);
-    const contacts = this.list();
-    if (id && !contacts.some(c => c.id === id)) throw new Error('This contact was deleted. Save it as a new contact.');
-    if (contacts.some(c => c.phone === details.phone && c.id !== id)) throw new Error('A contact with this phone number already exists. Pick it from contacts.');
-    const contact = { ...details, id: id ?? crypto.randomUUID() };
-    write(id ? contacts.map(c => c.id === id ? contact : c) : [...contacts, contact]);
-    return contact;
-  },
-  remove(id: string) { write(this.list().filter(c => c.id !== id)); },
-  import(rows: { name: string; phone: string }[], timeZone: string, countryCode: string) {
-    if (!TimeZoneSchema.safeParse(timeZone).success) throw new Error('Choose a valid default timezone for imported contacts.');
-    const contacts = this.list(); const phones = new Set(contacts.map(c => c.phone));
-    let imported = 0; let duplicates = 0; let skipped = 0;
-    for (const row of rows) {
-      try {
-        const details = validate({ ...row, phone: normalizePhone(row.phone, countryCode), timeZone, tone: [], notes: '' });
-        if (phones.has(details.phone)) { duplicates++; continue; }
-        contacts.push({ ...details, id: crypto.randomUUID() }); phones.add(details.phone); imported++;
-      } catch { skipped++; }
-    }
-    if (imported) write(contacts);
-    return { imported, duplicates, skipped };
   },
 };
 

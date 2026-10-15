@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page } from './fixtures';
 
 const button = (page: Page, name: string) => page.getByRole('button', { name, exact: true }).last();
 async function prepare(page: Page, scenario = 'within_plan') {
@@ -28,7 +28,10 @@ async function historyDetail(page: Page) {
 }
 
 test('inline request → exact approval → result → history, calendar, deletion, and Repeat', async ({ page }) => {
-  const network: string[] = []; page.on('request', r => { if (r.url().includes('/api/')) network.push(r.url()); });
+  const network: string[] = []; page.on('request', r => {
+    const path = new URL(r.url()).pathname;
+    if (path.startsWith('/api/') && !path.startsWith('/api/v1/contacts')) network.push(r.url());
+  });
   await page.clock.install(); await prepare(page, 'above_price'); await start(page); await advance(page, 5);
   await expect(page.getByRole('heading', { name: 'Approve this exact alternative?' }).last()).toBeVisible();
   await expect(page.getByText('Offered service price €35.00; your maximum €30.00.')).toBeVisible();
@@ -106,7 +109,7 @@ test('changed offers require a fresh exact decision', async ({ page }) => {
 
 test('Home keeps natural-language flow and incomplete parsing opens the manual Request', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button')).toHaveText(['Home', 'Request', 'Summary', 'Settings']);
+  await expect(page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button')).toHaveText(['Home', 'Request', 'Summary', 'Contacts', 'Settings']);
   await expect(page.locator('header .mode-badge')).toHaveCount(0);
   const hero = page.getByRole('region', { name: 'Leave the call to Zeus.', exact: true });
   await expect(hero.locator('.eyebrow')).toHaveText('No drama. Zeus will llama.');
@@ -345,6 +348,7 @@ test('offscreen approval offers direct controls and its countdown never approves
 test('mode changes keep the shared draft, isolate history, and persist the selection', async ({ page }) => {
   await page.route('**/api/v1/**', route => {
     const path = new URL(route.request().url()).pathname;
+    if (path.startsWith('/api/v1/contacts')) return route.continue();
     if (path.endsWith('/readiness')) return route.fulfill({ json: { mode: 'live', ready: false, voiceEngine: null, capabilities: [], checks: [] } });
     if (path.endsWith('/history')) return route.fulfill({ json: { items: [], nextCursor: null } });
     if (path.endsWith('/settings')) return route.fulfill({ json: { defaultCallLimits: { maxDurationSeconds: 300, maxEstimatedCost: { amountMinor: 200, currency: 'EUR' } }, transcriptRetentionDays: 30 } });

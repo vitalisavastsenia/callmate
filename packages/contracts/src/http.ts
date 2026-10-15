@@ -2,10 +2,21 @@ import { z } from "zod";
 import {
   ApprovalDecisionSchema, CallSnapshotSchema, StoredCallSnapshotSchema, HistoryEntrySchema, IdSchema,
   ReadinessSchema, RequestDraftSchema, ReviewPlanSchema, SettingsSchema, StartCallRequestSchema,
+  ContactDetailsSchema, ContactSchema,
 } from "./schemas.js";
 
 // All paths are private loopback API routes, never public Twilio callback routes.
 export const api = {
+  listContacts: { method: "GET", path: "/api/v1/contacts", response: z.strictObject({ items: z.array(ContactSchema) }) },
+  createContact: { method: "POST", path: "/api/v1/contacts", request: ContactDetailsSchema,
+    response: z.strictObject({ contact: ContactSchema }) },
+  updateContact: { method: "PUT", path: "/api/v1/contacts/:contactId", request: ContactDetailsSchema,
+    response: z.strictObject({ contact: ContactSchema }) },
+  deleteContact: { method: "DELETE", path: "/api/v1/contacts/:contactId",
+    response: z.strictObject({ contactId: IdSchema, deleted: z.literal(true) }) },
+  importContacts: { method: "POST", path: "/api/v1/contacts/import",
+    request: z.strictObject({ contacts: z.array(ContactDetailsSchema).min(1).max(100) }),
+    response: z.strictObject({ imported: z.number().int().nonnegative(), duplicates: z.number().int().nonnegative() }) },
   readiness: { method: "GET", path: "/api/v1/readiness", response: ReadinessSchema },
   createPlan: { method: "POST", path: "/api/v1/plans", request: RequestDraftSchema,
     response: z.strictObject({ plan: ReviewPlanSchema }) },

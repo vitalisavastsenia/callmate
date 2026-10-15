@@ -309,7 +309,28 @@ New drafts supply `requestType` (`book`, `ask`, `change`, `other`), `goal` (Engl
 
 New UI drafts also send `tone: string[]` (at most 10 nonempty strings, 100 characters each) and `tone_notes: string` (at most 2,000 characters), plus `contact_id?: string` (UUID) when referencing a selected/saved destination contact. These belong to `RequestDraft`, the body of `POST /api/v1/plans`, and are retained in `ReviewPlan.request` and call snapshots. They are optional in the shared schema so older plans remain readable. Backend consumers must accept/persist these fields before enabling the updated UI in live mode; the HTTP routes and SSE protocol are unchanged. Tone and notes express manner/context, not additional authority or permission to share data. The reviewed boundaries and sharing policy remain authoritative.
 
-Destination contacts currently live in browser localStorage behind `apps/web/src/contacts.ts`; no contacts endpoint is introduced. Contact name/phone/timezone/tone/notes are copied into the editable request when selected. Only the reviewed snapshot is sent to the call backend; later edits/deletion of a saved contact cannot alter a call already started. The form displays call duration in minutes and serializes `callLimits.maxDurationSeconds` in seconds, keeping the existing 30–600 second limits. Country-code timezone defaults are editable suggestions, including for countries with multiple zones.
+Destination contacts persist in backend SQLite through the [private contacts API](interfaces.md#4-private-http-api), including in browser-simulator call mode. Contact name/phone/timezone/tone/notes are copied into the editable request when selected. Later edits/deletion of a saved contact cannot alter a reviewed or started call. The form displays call duration in minutes and serializes `callLimits.maxDurationSeconds` in seconds, keeping the existing 30–600 second limits. Country-code timezone defaults are editable suggestions, including for countries with multiple zones.
+
+### Contact messages
+
+Create example (`POST /api/v1/contacts`):
+
+```json
+{"name":"Barber Luna","phone":"+34612345678","timeZone":"Europe/Madrid","tone":["Friendly"],"notes":"Please speak slowly."}
+```
+
+The backend responds `201 { "contact": { "id": "<generated UUID>", ...submittedNormalizedFields } }`. List returns `200 { "items": [...] }`. Update uses `PUT /api/v1/contacts/:contactId` with the same details and returns `200 { "contact": ... }`. Delete returns `200 { "contactId": "<UUID>", "deleted": true }`, including on retry. These HTTP acknowledgements update the contact list/picker; no call-state SSE message is emitted.
+
+| Case | Backend response | UI behavior |
+| --- | --- | --- |
+| Invalid name/phone/timezone or excessive notes/tone | `400 INVALID_REQUEST` in `ApiErrorSchema` | Keep the form and show the error; permit correction. |
+| Phone belongs to another saved contact | `409 CONTACT_ALREADY_EXISTS` | Explain the duplicate; keep entered values. |
+| Contact was deleted before an update | `404 NOT_FOUND` | Keep the draft and report that the contact no longer exists. |
+| Save/delete network failure or timeout | No acknowledged mutation | Preserve form/cache; show error and permit deliberate retry. A lost response may have saved the record; refresh to reconcile before recreating it. |
+| List unavailable | Failed GET | Show an error and Retry; do not pretend an empty response was received. |
+| Import | `200 { "imported": 2, "duplicates": 1 }` | Reload the list and display counts. Each batch is atomic; retry interrupted multi-batch imports by deduplicating phones. |
+
+Legacy `zeus-llama.contacts.v1` browser records are imported only when the user selects **Import previous browser contacts**; the original browser copy remains untouched. Address-book entries do not grant sharing or booking authority.
 
 | Request type | Extra data and validation |
 | --- | --- |

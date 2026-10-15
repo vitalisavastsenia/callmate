@@ -60,8 +60,8 @@ async function checkedFetch(url: string, init: RequestInit): Promise<Response> {
   if (!response.ok) throw await httpError(response, url);
   return response;
 }
-async function request<T>(method: string, path: string, schema: Schema<T>, body?: unknown, commandKey?: string): Promise<T> {
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+export async function request<T>(method: string, path: string, schema: Schema<T>, body?: unknown, commandKey?: string): Promise<T> {
+  const headers: Record<string, string> = body === undefined ? {} : { 'Content-Type': 'application/json' };
   if (commandKey) headers['Idempotency-Key'] = commandKey;
   const url = apiUrl(path);
   const response = await checkedFetch(url, { method, headers, cache: 'no-store', ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(15_000) });

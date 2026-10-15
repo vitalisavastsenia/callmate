@@ -69,13 +69,15 @@ An independent [Twilio protocol harness](docs/twilio-mock.md) uses the official 
 docker compose --profile checks run --build --rm checks npm run demo:twilio-mock --workspace @callmate/server
 ```
 
-The web workspace is included in the Docker build, type checking, and unit tests. To run its standalone browser simulator in Docker:
+The web workspace is included in the Docker build, type checking, and unit tests. To run the web UI and its database-backed address book in Docker:
 
 ```sh
-docker compose --profile web up --build -d web
+docker compose --profile web up --build -d --wait server web
 ```
 
-Open [Zeus Llama](http://localhost:5173/). This uses the browser simulator; the backend development console remains at port 3000. The UI's backend mode still requires integration validation for request policy, currencies, manual-call history, and readiness.
+Open [Zeus Llama](http://localhost:5173/). The **Contacts** button opens the address book: create, search, edit, or delete contacts with a name, phone number, and IANA timezone (Europe/Madrid by default), plus optional tone preferences and notes. Contacts persist in the backend SQLite volume and are available in the Home/Request destination picker, including when calls use the browser simulator. Previous browser-only contacts can be explicitly imported from Contacts. Editing or deleting a contact preserves values already copied into requests and history.
+
+Calls default to the browser simulator; contacts require the backend in both call modes. The backend development console remains at port 3000. The UI's backend call mode still requires integration validation for request policy, currencies, manual-call history, and readiness.
 
 ## Repository files
 

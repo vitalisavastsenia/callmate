@@ -220,3 +220,8 @@ fieldset[data-auto-filled="true"] { border: 1px solid #dfbd7788; border-radius: 
   .request-review-bar { gap: 12px; font-size: .8rem; }
   .request-review-bar .primary { padding: 12px 16px; font-size: .9rem; }
 }
+
+.contacts-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 20px; }
+.contacts-heading > div { min-width: 0; flex: 1 1 280px; }
+.contacts-heading h2 { margin-bottom: 12px; }
+.contact-notes { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 8px; }
