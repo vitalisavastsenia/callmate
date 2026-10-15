@@ -18,7 +18,7 @@ Read the documents in this order:
 8. [Twilio account and configuration runbook](docs/twilio-setup.md): account creation, paid/trial limits, Voice number, Spain permissions, credentials, ConversationRelay, callbacks, and connectivity checks for Engineer 2.
 9. [Docker backend development](docs/docker-development.md): container startup, configuration, SQLite storage, implemented endpoints, and checks.
 
-The shared contracts and TypeScript/Fastify backend scaffold are implemented. The UI, simulator, dialogue, and real calling adapters are still to be built. Readiness reports calling as unavailable in both simulator and live modes until those adapters exist.
+The shared contracts, TypeScript/Fastify backend, and scripted simulator are implemented. Simulator mode supports plan review, Start/Stop, approval decisions, persistent snapshots, replayable SSE, history, and conversation deletion without credentials or provider requests. The UI and real calling/dialogue adapters remain to be built. Readiness is true only in simulator mode; no real phone calls can start.
 
 ## Getting started
 
@@ -47,6 +47,8 @@ docker compose --profile checks run --build --rm checks
 
 Use `docker compose logs -f server` for logs and `docker compose down` to stop/remove containers while preserving the database volume. See the [Docker guide](docs/docker-development.md) for configuration and endpoint examples.
 
+Follow the [simulator walkthrough](docs/docker-development.md#7-run-a-simulated-call) to create a request, watch SSE, and exercise approvals or failures. Select scenarios with `CALLMATE_SIMULATOR_SCENARIO`; the default is `within_plan`.
+
 ## Repository files
 
 - `README.md`: project overview and setup instructions.
@@ -54,7 +56,7 @@ Use `docker compose logs -f server` for logs and `docker compose down` to stop/r
 - `.gitignore`: excludes local environment files, operating-system artifacts, and temporary files.
 - `docs/`: product requirements, architecture, and technology decisions.
 - `packages/contracts/`: shared runtime schemas, types, routes, adapter interfaces, fixtures, and contract checks.
-- `apps/server/`: backend configuration, Fastify listeners, SQLite migrations/storage, and server tests.
+- `apps/server/`: Fastify API/SSE, SQLite migrations/storage, simulator/controller, fake adapters, and server tests.
 - `Dockerfile`, `compose.yaml`, `.dockerignore`: container build, runtime, persistent data volume, and build-context exclusions.
 
 ## Development workflow

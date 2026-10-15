@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { SettingsSchema } from "@callmate/contracts";
 import type { z } from "zod";
+import { callStore } from "./call-store.js";
 
 type Settings = z.infer<typeof SettingsSchema>;
 const defaultMigrations = fileURLToPath(new URL("../migrations/", import.meta.url));
@@ -59,6 +60,7 @@ export function openStore(dataDir: string) {
     };
     getSettings(); // Fail startup on corrupt/incompatible storage, not on the first UI request.
     return {
+      calls: callStore(db),
       getSettings,
       setSettings(input: unknown): Settings {
         const settings = SettingsSchema.parse(input);

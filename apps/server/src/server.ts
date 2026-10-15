@@ -7,6 +7,10 @@ import { z } from "zod";
 import type { Config } from "./config.js";
 import { openStore } from "./storage.js";
 import type { Store } from "./storage.js";
+import { CommandError } from "./errors.js";
+import { callRoutes } from "./call-routes.js";
+import { Simulator } from "./simulator.js";
+import type { SimulatorOptions } from "./simulator.js";
 
 type ErrorCode = z.infer<typeof ApiErrorSchema>["error"]["code"];
 function fail(reply: FastifyReply, request: FastifyRequest, status: number, code: ErrorCode, message: string,
@@ -42,6 +46,7 @@ function createListener(config: Config, stream?: Writable) {
   });
   app.setNotFoundHandler((request, reply) => fail(reply, request, 404, "NOT_FOUND", "Route not found"));
   app.setErrorHandler((error, request, reply) => {
+    if (error instanceof CommandError) return fail(reply, request, error.status, error.code, error.message);
     if (error instanceof z.ZodError) {
       return fail(reply, request, 400, "INVALID_REQUEST", "Request validation failed",
         error.issues.map((issue) => ({ path: issue.path.join("."), message: "Invalid value" })));
@@ -56,7 +61,7 @@ function createListener(config: Config, stream?: Writable) {
   return app;
 }
 
-function privateRoutes(app: FastifyInstance, config: Config, store: Store) {
+function privateRoutes(app: FastifyInstance, config: Config, store: Store, simulator: Simulator) {
   app.addHook("onRequest", async (request, reply) => {
     const address = app.server.address();
     const port = typeof address === "object" && address !== null ? address.port : config.apiPort;
@@ -68,6 +73,7 @@ function privateRoutes(app: FastifyInstance, config: Config, store: Store) {
       return fail(reply, request, 400, "INVALID_REQUEST", "Private API requires a local request origin");
     }
     if (!["GET", "HEAD", "OPTIONS"].includes(request.method)
+      && request.method !== "DELETE"
       && request.headers["content-type"]?.split(";")[0]?.trim().toLowerCase() !== "application/json") {
       return fail(reply, request, 400, "INVALID_REQUEST", "Commands require application/json");
     }
@@ -77,12 +83,15 @@ function privateRoutes(app: FastifyInstance, config: Config, store: Store) {
   app.get(api.readiness.path, async () => {
     store.check();
     return ReadinessSchema.parse({
-      mode: config.mode, ready: false, voiceEngine: null,
+      mode: config.mode, ready: config.mode === "simulator", voiceEngine: null,
       checks: [
         { name: "storage", status: "ready", message: "SQLite migrations applied and storage available" },
-        { name: "telephony", status: "missing", message: "Call adapters are not implemented in this scaffold" },
-        { name: "voice", status: "missing", message: "Voice integration is not implemented in this scaffold" },
-        { name: "dialogue", status: "missing", message: "Dialogue integration is not implemented in this scaffold" },
+        { name: "telephony", status: config.mode === "simulator" ? "ready" : "missing",
+          message: config.mode === "simulator" ? "Fake telephony only; cannot dial" : "Live telephony is not implemented" },
+        { name: "voice", status: config.mode === "simulator" ? "not_required" : "missing",
+          message: config.mode === "simulator" ? "Simulated text playback; no audio provider" : "Live voice is not implemented" },
+        { name: "dialogue", status: config.mode === "simulator" ? "ready" : "missing",
+          message: config.mode === "simulator" ? "Deterministic scripted dialogue; no model requests" : "Live dialogue is not implemented" },
         { name: "tunnel", status: config.mode === "simulator" ? "not_required" : "missing",
           message: config.mode === "simulator" ? "Simulator mode needs no public tunnel" : "Live tunnel connectivity has not been verified" },
       ],
@@ -90,21 +99,23 @@ function privateRoutes(app: FastifyInstance, config: Config, store: Store) {
   });
   app.get(api.getSettings.path, async () => SettingsSchema.parse(store.getSettings()));
   app.put(api.updateSettings.path, async (request) => store.setSettings(SettingsSchema.parse(request.body)));
+  callRoutes(app, simulator);
 }
 
-export function createRuntime(config: Config, logStream?: Writable) {
+export function createRuntime(config: Config, logStream?: Writable, simulatorOptions?: SimulatorOptions) {
   const store = openStore(config.dataDir);
   const privateApi = createListener(config, logStream);
   const callbacks = createListener(config, logStream);
+  const simulator = new Simulator(config, store, simulatorOptions);
   // No provider callback or WebSocket route is accepted until authentication/session adapters exist.
-  privateRoutes(privateApi, config, store);
+  privateRoutes(privateApi, config, store, simulator);
   let closing: Promise<void> | undefined;
   const close = () => closing ??= (async () => {
-    try { await Promise.all([privateApi.close(), callbacks.close()]); }
+    try { await simulator.close(); await Promise.all([privateApi.close(), callbacks.close()]); }
     finally { store.close(); }
   })();
   return {
-    privateApi, callbacks, close,
+    privateApi, callbacks, simulator, close,
     async start() {
       try {
         await privateApi.listen({ host: "0.0.0.0", port: config.apiPort });

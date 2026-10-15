@@ -12,6 +12,9 @@ services:
       CALLMATE_DATA_DIR: /data
       CALLMATE_MODE: "${CALLMATE_MODE:-simulator}"
       CALLMATE_LOG_LEVEL: "${CALLMATE_LOG_LEVEL:-info}"
+      CALLMATE_SIMULATOR_SCENARIO: "${CALLMATE_SIMULATOR_SCENARIO:-within_plan}"
+      CALLMATE_SIMULATOR_STEP_MS: "${CALLMATE_SIMULATOR_STEP_MS:-750}"
+      CALLMATE_SIMULATOR_APPROVAL_SECONDS: "${CALLMATE_SIMULATOR_APPROVAL_SECONDS:-30}"
     volumes:
       - callmate-data:/data
     read_only: true
@@ -24,6 +27,7 @@ services:
     stop_grace_period: 10s
   checks:
     profiles: [checks]
+    network_mode: none
     build:
       context: .
       target: build

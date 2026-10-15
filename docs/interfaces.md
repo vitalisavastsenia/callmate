@@ -18,7 +18,7 @@ The executable source of truth is [`@callmate/contracts`](../packages/contracts/
 
 No backend, dialer, simulator engine, UI, or model integration is implemented by these contracts. The schemas can be consumed immediately by those implementations.
 
-The separate [server scaffold](docker-development.md) now implements readiness and settings routes using these schemas. Other routes below remain specifications for subsequent implementation.
+The [Docker backend](docker-development.md) implements these private HTTP/SSE routes for persisted simulator attempts. Fake telephony/dialogue/text-voice adapters consume the shared ports; live adapters remain future work. `SimulatorScenarioSchema` exports configuration scenario IDs without adding fields to the existing HTTP/event formats.
 
 ## 2. Common conventions
 
@@ -146,7 +146,7 @@ At repository root, run checks in Docker (no host Node.js required):
 docker compose --profile checks run --build --rm checks
 ```
 
-The container runs root type checking and tests for contracts and the server scaffold. It does not dial or contact model/voice providers. Container builds generate package JS/declarations; host build output and dependencies are ignored by Git and excluded from the Docker context.
+The container runs root type checking and tests for contracts and the backend/simulator with external networking disabled. It does not dial or contact model/voice providers. Container builds generate package JS/declarations; host build output and dependencies are ignored by Git and excluded from the Docker context.
 
 ```ts
 import { api, CallSnapshotSchema, type CallSnapshot } from "@callmate/contracts";

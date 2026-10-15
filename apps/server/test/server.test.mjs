@@ -127,18 +127,18 @@ test("callback listener exposes no private, health, or unauthenticated provider 
   }
 });
 
-test("both modes report storage health separately from unavailable calling readiness", async (t) => {
+test("only simulator mode is ready; live providers remain unavailable", async (t) => {
   for (const mode of ["simulator", "live"]) {
     const { privateApi } = setup(t, mode);
     assert.equal((await privateApi.inject({ url: "/health", headers: local })).statusCode, 200);
     const response = await privateApi.inject({ url: "/api/v1/readiness", headers: local });
     const readiness = ReadinessSchema.parse(response.json());
     assert.equal(readiness.mode, mode);
-    assert.equal(readiness.ready, false);
+    assert.equal(readiness.ready, mode === "simulator");
     assert.equal(readiness.checks.find((check) => check.name === "storage").status, "ready");
     assert.equal(readiness.voiceEngine, null);
     const start = await privateApi.inject({ method: "POST", url: "/api/v1/calls", headers: local, payload: {} });
-    assert.equal(start.statusCode, 404);
+    assert.equal(start.statusCode, 400);
   }
 });
 

@@ -1,6 +1,6 @@
 # CallMate technology stack and implementation plan
 
-Status: shared contracts and the Docker-based TypeScript/Fastify/SQLite server scaffold are implemented. UI, simulator, and provider integrations are not yet built. Updated and provider documentation checked: 2026-10-15. See [Docker development](docker-development.md) for the implemented commands and routes.
+Status: shared contracts and the Docker-based TypeScript/Fastify/SQLite backend with a scripted simulator are implemented. UI and live provider/dialogue integrations are not yet built. Updated and provider documentation checked: 2026-10-15. See [Docker development](docker-development.md) for commands, routes, and simulator scenarios.
 
 ## 1. Recommendation
 

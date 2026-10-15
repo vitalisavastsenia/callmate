@@ -28,7 +28,7 @@ Local infrastructure requires no AWS or Azure. Credentials remain in local serve
 
 Engineer 2 is the integration coordinator and maintainer of root manifests, lockfile, shared TypeScript/build configuration, `packages/contracts/`, migrations, and environment examples. Engineers 1 and 3 request root changes through Engineer 2 instead of creating competing configurations. Each engineer owns fixes and tests in their component; Engineer 1 coordinates the integrated browser demo.
 
-`packages/contracts/` and the `apps/server/` scaffold now exist. The server runs in local Docker with persistent SQLite settings and separate private/callback listeners; simulator, provider, and dialogue wiring remain target deliverables. See [Docker development](docker-development.md).
+`packages/contracts/` and `apps/server/` now exist. The Docker backend implements persisted simulator calls, HTTP/SSE, approvals, history/deletion, SQLite settings, and separate private/callback listeners. Fake adapters implement the shared ports; UI and live provider/dialogue wiring remain target deliverables. See [Docker development](docker-development.md).
 
 ## 3. Agreements at each connection
 
@@ -57,7 +57,7 @@ Engineer 2 prepares a shared foundation change; Engineers 1 and 3 review the bou
 
 All engineers branch from the same foundation commit after it is integrated through the repository's normal authorized workflow. Record that commit and contract version in each handoff. Follow `AGENTS.md` for branches, commits, reviews, and remote publication; this agreement does not authorize Git pushes or merges.
 
-Run `docker compose up --build -d --wait server` for the backend scaffold and `docker compose --profile checks run --build --rm checks` for contracts/server checks inside Docker. The root workspace commands build/type-check/test both packages within that environment. UI/dialogue workspaces and the combined simulator flow remain foundation deliverables.
+Run `docker compose up --build -d --wait server` for the backend/simulator and `docker compose --profile checks run --build --rm checks` for contracts/server checks inside Docker. The root workspace commands build/type-check/test both packages within that environment. UI and real dialogue workspaces, and their combined browser flow, remain deliverables.
 
 ## 5. Independent development and substitutes
 

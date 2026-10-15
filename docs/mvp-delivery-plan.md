@@ -39,7 +39,7 @@ Engineer 2 owns the authoritative call lifecycle, persistence, deadlines, and fi
 
 The local API routes and error shapes are now specified in [Shared interfaces](interfaces.md#4-private-http-api) and exported as `api` from the contracts package. Review changes through the shared contract rather than independently choosing route names during implementation.
 
-Code ownership (`packages/contracts/` now exists; application directories are still proposed):
+Code ownership (`packages/contracts/` and `apps/server/` now exist; other application directories remain proposed):
 
 ```text
 apps/web/                  Engineer 1
@@ -78,7 +78,7 @@ Begin the account/Console portion early using the [Twilio setup runbook](twilio-
 | BE-05: Approval/persistence APIs | MVP | Versioned approval decisions, deadlines, local history/deletion, retention, and cost/usage storage. Backend invokes booking policy before any acceptance text is sent. | Dialogue approval rules and booking schema. |
 | BE-06: Failure recovery and usage | MVP | Duplicate/out-of-order callback handling, late events, network/relay failures, restart reconciliation, orphaned-call handling, and estimated versus available settled usage. Tests prove terminal states do not regress. | Real Twilio adapter and persisted attempts. |
 
-BE-01 now has a runnable Docker server scaffold, settings migration/persistence, validated runtime configuration, redacted logs, private API origin checks, and separate listeners. See [Docker development](docker-development.md). Call-state tables, simulator/SSE, and Twilio/dialogue adapters remain work for subsequent tasks.
+BE-01 and BE-02 now provide a runnable Docker backend, SQLite settings/plans/call/event storage, deterministic simulator scenarios, private HTTP/SSE, idempotent Start, one-call reservation, Stop, approval/version/expiry cases, restart finalization, and history/deletion. See [Docker development](docker-development.md) for the walkthrough. These are simulated lifecycle/booking paths; Twilio connectivity, real dialogue/policy integration, provider caps/reconciliation, and automatic retention remain subsequent work.
 
 Engineer 2 owns retries and provider reconciliation. Neither another engineer's module nor an LLM may independently initiate a second call. Public tunnel routes must never expose the personal UI, call-start API, settings, or history.
 

@@ -4,7 +4,7 @@ Status: proposed personal-use architecture. Updated: 2026-10-15. Implements [req
 
 ## 1. Design decision
 
-Run the browser UI locally and the Node.js application logic and SQLite database in a local Docker container, with SQLite in a persistent Docker volume. Use Twilio Programmable Voice for outbound calls and Twilio ConversationRelay for the speech layer. A text LLM interprets the conversation and proposes the next action; application code validates actions before anything consequential is spoken. The [Docker guide](docker-development.md) describes the implemented server scaffold and its current limits.
+Run the browser UI locally and the Node.js application logic and SQLite database in a local Docker container, with SQLite in a persistent Docker volume. Use Twilio Programmable Voice for outbound calls and Twilio ConversationRelay for the speech layer. A text LLM interprets the conversation and proposes the next action; application code validates actions before anything consequential is spoken. The [Docker guide](docker-development.md) describes the implemented backend/simulator and its current limits. The simulator uses scripted adapters without network access to providers; this is not the live conversation/policy implementation.
 
 ConversationRelay handles recognition and speech synthesis, so the application exchanges text and control events rather than implementing a raw audio bridge. This is a good fit for a personal tool with occasional calls. It still needs an application backend and an LLM: Twilio does not automatically know the user's appointment request. See the [ConversationRelay overview](https://www.twilio.com/docs/voice/conversationrelay).
 
