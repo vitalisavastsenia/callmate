@@ -2,6 +2,8 @@
 
 The backend uses Node.js 24, TypeScript, Fastify, and SQLite via `better-sqlite3`. Docker builds the shared contracts and backend and runs the server; the host needs Docker Desktop/Engine and Compose, without Node.js or a local database server.
 
+For provider-format checks, use the separate [offline Twilio protocol harness](twilio-mock.md). It exchanges official-format REST, signed callbacks, TwiML, and ConversationRelay messages inside the checks container; the API/SSE simulator remains the application walkthrough.
+
 ## 1. Start and inspect
 
 From the repository root, with the Docker engine running:
