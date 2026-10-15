@@ -14,6 +14,7 @@ import { Simulator } from "./simulator.js";
 import type { SimulatorOptions } from "./simulator.js";
 import { mockRelayEnabled, mountMockRelay } from "./mock-relay.js";
 import { DevelopmentConversations, mountDevelopmentConsole } from "./development-conversations.js";
+import type { DevelopmentOptions } from "./development-conversations.js";
 import { mountMockStatus } from "./mock-status.js";
 
 type ErrorCode = z.infer<typeof ApiErrorSchema>["error"]["code"];
@@ -107,12 +108,12 @@ function privateRoutes(app: FastifyInstance, config: Config, store: Store, contr
   callRoutes(app, controller);
 }
 
-export function createRuntime(config: Config, logStream?: Writable, simulatorOptions?: SimulatorOptions) {
+export function createRuntime(config: Config, logStream?: Writable, simulatorOptions?: SimulatorOptions, developmentOptions?: DevelopmentOptions) {
   const store = openStore(config.dataDir);
   const privateApi = createListener(config, logStream);
   const callbacks = createListener(config, logStream);
   const simulator = new Simulator(config, store, simulatorOptions);
-  const development = new DevelopmentConversations(config, store);
+  const development = new DevelopmentConversations(config, store, developmentOptions);
   const controller = new CallController(store, simulator, development);
   mountMockStatus(callbacks, config, development);
   mountMockRelay(callbacks, config, () => store.getSettings().defaultCallLimits.maxDurationSeconds,
@@ -125,7 +126,7 @@ export function createRuntime(config: Config, logStream?: Writable, simulatorOpt
     finally { store.close(); }
   })();
   return {
-    privateApi, callbacks, simulator, controller, close,
+    privateApi, callbacks, simulator, development, controller, close,
     async start() {
       try {
         await privateApi.listen({ host: "0.0.0.0", port: config.apiPort });

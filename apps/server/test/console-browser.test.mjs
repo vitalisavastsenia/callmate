@@ -83,3 +83,40 @@ test("a stale poll cannot overwrite a newly started conversation; failed polling
   assert.equal(ui.el("notice").hidden, false); assert.match(ui.el("notice").textContent, /Backend unavailable/);
   assert.equal(ui.el("start").disabled, true); assert.equal(ui.el("initial-message").value, "Hello");
 });
+
+test('Stop remains available while Start is waiting and its terminal response wins over a delayed Start', async (t) => {
+  let resolveStart; let startId; const requests = [];
+  const ui = await browser(t, async (path, options) => {
+    requests.push({ path, options });
+    if (!options?.method) return ok({ conversation: null });
+    if (path.endsWith('/stop')) return ok({ conversation: conversation({ id: startId, status: 'completed' }) });
+    startId = JSON.parse(options.body).requestId;
+    return new Promise((resolve) => { resolveStart = resolve; });
+  });
+  ui.el('initial-message').value = 'Hello'; ui.submit();
+  assert.equal(ui.el('stop').disabled, false); ui.el('stop').click();
+  await until(() => requests.some((request) => request.path.endsWith('/stop')));
+  resolveStart(ok({ conversation: conversation({ id: startId, status: 'ringing' }) }));
+  await until(() => ui.el('status').textContent === 'Conversation ended');
+  assert.equal(ui.el('start').disabled, false); assert.equal(ui.el('stop').disabled, true);
+  assert.equal(requests.filter((request) => request.path.endsWith('/stop')).length, 1);
+});
+
+test('Stop retries after an in-transit Start that initially returned not found', async (t) => {
+  let resolveStart; let startId; let stops = 0;
+  const ui = await browser(t, async (path, options) => {
+    if (!options?.method) return ok({ conversation: null });
+    if (path.endsWith('/stop')) {
+      if (++stops === 1) return { ok: false, status: 404, json: async () => ({ error: { message: 'Not found' } }) };
+      return ok({ conversation: conversation({ id: startId, status: 'completed' }) });
+    }
+    startId = JSON.parse(options.body).requestId;
+    return new Promise((resolve) => { resolveStart = resolve; });
+  });
+  ui.el('initial-message').value = 'Hello'; ui.submit(); ui.el('stop').click();
+  await until(() => stops === 1); await delay(10);
+  assert.match(ui.el('status').textContent, /Stopping/);
+  resolveStart(ok({ conversation: conversation({ id: startId }) }));
+  await until(() => ui.el('status').textContent === 'Conversation ended');
+  assert.equal(stops, 2); assert.equal(ui.el('start').disabled, false);
+});

@@ -421,3 +421,30 @@ test("ask-before-accepting authority requires approval even for an in-budget off
   await app.decide(call.id, waiting.pendingApproval);
   assert.equal((await app.until(call.id, terminal)).outcome.status, "confirmed");
 });
+
+test('silence deadline cancels a stalled dialogue and ignores its eventual result', async (t) => {
+  let resolve; let input;
+  const dialogue = { propose(value) { input = value; return new Promise((done) => { resolve = done; }); } };
+  const app = setup(t, 'pending_reply', { env: { CALLMATE_SILENCE_TIMEOUT_SECONDS: '5' }, options: { dialogue } });
+  const call = await app.begin(); await app.tick(3);
+  app.clock.ms += 50; const pending = app.runtime.simulator.tick(); assert.ok(resolve);
+  app.clock.ms += 5000; await app.runtime.simulator.tick();
+  const ended = await app.get(call.id);
+  assert.equal(ended.callState, 'ended'); assert.equal(ended.outcome.reason, 'technical_failure');
+  assert.match(ended.outcome.summaryEn, /silence deadline/);
+  resolve({ turnId: input.turnId, turnVersion: input.turnVersion,
+    candidate: { action: 'evaluate_offer', offer: input.offer }, translations: [] }); await pending;
+  assert.deepEqual(await app.get(call.id), ended);
+  assert.ok(!ended.messages.some((message) => message.speaker === 'assistant'));
+});
+
+test('Stop while dialing is idempotent even with overlapping timer ticks', async (t) => {
+  const app = setup(t); const call = await app.begin(); await app.tick();
+  assert.equal((await app.get(call.id)).callState, 'dialing');
+  await Promise.all(Array.from({ length: 5 }, () => app.http('POST', `/api/v1/calls/${call.id}/stop`, {})));
+  await Promise.all(Array.from({ length: 5 }, () => app.runtime.simulator.tick()));
+  const ended = await app.get(call.id);
+  assert.equal(ended.callState, 'ended'); assert.equal(ended.outcome.reason, 'user_stopped');
+  const events = app.runtime.controller.replayEvents(call.id, 0).filter((event) => event.type === 'call.status');
+  assert.deepEqual(events.map((event) => event.payload.callState), ['creating', 'dialing', 'ending', 'ended']);
+});

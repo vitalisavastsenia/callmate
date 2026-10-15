@@ -29,6 +29,8 @@ test("configuration rejects invalid ports, paths and modes without echoing value
   for (const env of [
     { CALLMATE_API_PORT: "0" }, { CALLMATE_API_PORT: "65536" },
     { CALLMATE_CALLBACK_PORT: "3000" }, { CALLMATE_DATA_DIR: "relative" },
+    { CALLMATE_SILENCE_TIMEOUT_SECONDS: "4" }, { CALLMATE_SILENCE_TIMEOUT_SECONDS: "601" },
+    { CALLMATE_SILENCE_TIMEOUT_SECONDS: "NaN" },
     { CALLMATE_DATA_DIR: "/" }, { CALLMATE_MODE: "unexpected-private-value" },
   ]) assert.throws(() => loadConfig(env));
   assert.throws(() => loadConfig({ CALLMATE_MODE: "unexpected-private-value" }), (error) => {

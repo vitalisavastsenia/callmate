@@ -30,6 +30,7 @@ async function fixture(t, options = {}) {
     res.setHeader("content-type", "application/json");
     if (req.url === "/healthz") {
       if (options.unavailable) { res.writeHead(503).end('{}'); return; }
+      if (options.beforeHealthReply) await options.beforeHealthReply();
       res.end(JSON.stringify({ mock: true, service: "CallMate Mock ConversationRelay" })); return;
     }
     assert.equal(req.headers.authorization, "Basic " + Buffer.from("mock:mock-local-only").toString("base64"));
@@ -50,9 +51,12 @@ async function fixture(t, options = {}) {
     const id = /\/Calls\/(CA[0-9a-f]{32})\.json$/.exec(req.url)?.[1]; const call = calls.get(id);
     if (!call) { res.writeHead(404).end('{}'); return; }
     if (req.method === "POST") {
-      assert.equal(new URLSearchParams(raw).get("Status"), "completed"); hungUp++;
+      const status = new URLSearchParams(raw).get("Status");
+      assert.ok(["completed", "canceled"].includes(status)); hungUp++;
+      if (options.beforeHangup) await options.beforeHangup(call, status);
+      if (status === "canceled" && call.status === "in-progress") { res.writeHead(409).end('{}'); return; }
       if (options.rejectHangup) { res.writeHead(503).end('{}'); return; }
-      call.status = "completed"; call.peer?.close(1000);
+      call.status = status; call.peer?.close(1000);
       if (options.beforeHangupReply) await options.beforeHangupReply(call);
     }
     const resource = { sid: call.sid, status: call.status, account_sid: call.account_sid, from: call.from, to: call.to };
@@ -62,9 +66,9 @@ async function fixture(t, options = {}) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
   const dataDir = mkdtempSync(join(tmpdir(), "callmate-console-"));
-  const config = { ...loadConfig({ CALLMATE_DATA_DIR: dataDir, NODE_ENV: "test", TELEPHONY_PROVIDER: "mock", CALLMATE_MOCK_API_BASE: origin }), apiPort: 0, callbackPort: 0 };
+  const config = { ...loadConfig({ CALLMATE_DATA_DIR: dataDir, NODE_ENV: "test", TELEPHONY_PROVIDER: "mock", CALLMATE_MOCK_API_BASE: origin, ...options.env }), apiPort: 0, callbackPort: 0 };
   const stream = new Writable({ write(chunk, _encoding, done) { logs += chunk; done(); } });
-  let runtime = createRuntime(config, stream, options.simulator);
+  let runtime = createRuntime(config, stream, options.simulator, options.development);
   await runtime.start();
   config.mockRelayUrl = `ws://127.0.0.1:${runtime.callbacks.server.address().port}/ws/voice`;
   let apiOrigin = `http://127.0.0.1:${runtime.privateApi.server.address().port}`;
@@ -73,7 +77,7 @@ async function fixture(t, options = {}) {
     async restart(beforeStart) {
       await runtime.close();
       if (beforeStart) beforeStart();
-      runtime = createRuntime(config, stream, options.simulator); await runtime.start();
+      runtime = createRuntime(config, stream, options.simulator, options.development); await runtime.start();
       config.mockRelayUrl = `ws://127.0.0.1:${runtime.callbacks.server.address().port}/ws/voice`;
       apiOrigin = `http://127.0.0.1:${runtime.privateApi.server.address().port}`;
     }, get creates() { return creates; }, get hungUp() { return hungUp; }, get logs() { return logs; },
@@ -586,4 +590,203 @@ test('terminal callback racing graceful recovery hangup is acknowledged once and
   assert.equal(repository.calls.events(created.id, 0).filter((event) => event.type === 'booking.updated').length, 1);
   assert.equal(repository.calls.active(), undefined); repository.close();
   assert.equal(app.hungUp, 1); assert.equal(app.creates, 1);
+});
+
+async function controlledFixture(t, options = {}) {
+  const clock = { ms: Date.now() };
+  const app = await fixture(t, { ...options, env: { CALLMATE_SILENCE_TIMEOUT_SECONDS: '5', ...options.env },
+    development: { now: () => clock.ms, automatic: false, ...options.development } });
+  return Object.assign(app, { clock,
+    record(id) { const repository = openStore(app.dataDir); try { return repository.calls.get(id); } finally { repository.close(); } },
+    async duration(seconds) {
+      const settings = (await app.api('/api/v1/settings')).body;
+      settings.defaultCallLimits.maxDurationSeconds = seconds;
+      assert.equal((await app.api('/api/v1/settings', 'PUT', settings)).status, 200);
+    },
+  });
+}
+
+test('manual duration covers dialing, freezes settings at Start and finalizes once without a browser', async (t) => {
+  const app = await controlledFixture(t, { createStatus: 'queued' }); await app.duration(30);
+  const request = input(); const created = (await app.api('/api/dev/conversations', 'POST', request)).body.conversation;
+  const initial = app.record(created.id); assert.equal(initial.internal.controls.maxDurationSeconds, 30);
+  await app.duration(600); // Editing defaults does not extend an existing call.
+  app.clock.ms = Date.parse(initial.internal.controls.durationDeadlineAt) - 1;
+  await app.runtime.development.tick(); assert.equal(app.runtime.controller.get(created.id).callState, 'dialing');
+  app.clock.ms++;
+  await Promise.all(Array.from({ length: 8 }, () => app.runtime.development.tick()));
+  const ended = app.runtime.controller.get(created.id);
+  assert.equal(ended.callState, 'ended'); assert.equal(ended.outcome.reason, 'technical_failure');
+  assert.match(ended.outcome.summaryEn, /duration limit/); assert.equal(app.calls.get(created.callSid).status, 'canceled');
+  assert.equal(app.hungUp, 1); assert.equal(app.creates, 1);
+  const errors = app.runtime.controller.replayEvents(created.id, 0).filter((event) => event.type === 'call.error');
+  assert.equal(errors.length, 1); assert.match(errors[0].payload.message, /duration limit/);
+  await app.api(`/api/v1/calls/${created.id}/stop`, 'POST', {});
+  await app.api('/api/dev/conversations', 'POST', request);
+  assert.deepEqual(app.runtime.controller.get(created.id), ended); assert.equal(app.creates, 1); assert.equal(app.hungUp, 1);
+  assert.equal((await app.api('/api/dev/conversations', 'POST', input())).status, 202);
+});
+
+test('silence follows validated partial speech and DTMF, not polls, empty frames or progress callbacks', async (t) => {
+  const app = await controlledFixture(t);
+  const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  assert.equal(app.record(created.id).internal.controls.silenceDeadlineAt, null);
+  app.clock.ms += 20_000; await app.runtime.development.tick(); // Ringing has no silence deadline.
+  const peer = await app.answer(created.callSid); await until(() => peer.messages.length === 1);
+  const base = app.clock.ms; const snapshot = app.runtime.controller.get(created.id);
+  app.clock.ms = base + 4000;
+  peer.send(JSON.stringify({ type: 'prompt', voicePrompt: 'Hola', lang: 'es-ES', last: false }));
+  await until(() => Date.parse(app.record(created.id).internal.controls.silenceDeadlineAt) === base + 9000);
+  assert.deepEqual(app.runtime.controller.get(created.id), snapshot); // Activity alone is internal metadata.
+  app.clock.ms = base + 8000;
+  peer.send(JSON.stringify({ type: 'dtmf', digit: '1' }));
+  await until(() => Date.parse(app.record(created.id).internal.controls.silenceDeadlineAt) === base + 13_000);
+  app.clock.ms = base + 12_000;
+  peer.send(JSON.stringify({ type: 'prompt', voicePrompt: '   ', lang: 'es-ES', last: false }));
+  await app.callback(created.callSid, 'in-progress', 2);
+  await app.runtime.development.tick();
+  assert.equal(Date.parse(app.record(created.id).internal.controls.silenceDeadlineAt), base + 13_000);
+  app.clock.ms = base + 13_000; await app.runtime.development.tick(); await peer.closed;
+  const ended = app.runtime.controller.get(created.id);
+  assert.equal(ended.callState, 'ended'); assert.equal(ended.outcome.reason, 'technical_failure');
+  assert.match(ended.outcome.summaryEn, /silence deadline/); assert.equal(ended.messages.length, 1);
+  assert.equal(app.calls.get(created.callSid).status, 'completed'); assert.equal(app.hungUp, 1);
+});
+
+test('a prompt or relay setup arriving at the silence deadline cannot reset it or release initial text', async (t) => {
+  for (const attachFirst of [true, false]) await t.test(String(attachFirst), async (t) => {
+    const app = await controlledFixture(t);
+    const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+    let peer;
+    if (attachFirst) { peer = await app.answer(created.callSid); await until(() => peer.messages.length === 1); }
+    else await app.callback(created.callSid, 'in-progress', 2);
+    app.clock.ms = Date.parse(app.record(created.id).internal.controls.silenceDeadlineAt);
+    if (attachFirst) {
+      peer.send(JSON.stringify({ type: 'prompt', voicePrompt: 'Too late', lang: 'en-US', last: true }));
+      await until(() => app.record(created.id).internal.stopRequested);
+    } else peer = await app.answer(created.callSid);
+    await until(async () => {
+      await app.runtime.development.tick(); return app.runtime.controller.get(created.id).callState === 'ended';
+    });
+    await peer.closed;
+    assert.equal(app.runtime.controller.get(created.id).messages.length, 1);
+    assert.equal(peer.messages.length, attachFirst ? 1 : 0);
+    assert.equal(app.record(created.id).internal.controls.stopReason, 'silence_timeout');
+  });
+});
+
+test('Stop during preflight releases the slot without creating a call, even after another Start', async (t) => {
+  let release; let waiting = false; let first = true;
+  const gate = new Promise((resolve) => { release = resolve; }); t.after(() => release());
+  const app = await controlledFixture(t, { beforeHealthReply: async () => {
+    if (first) { first = false; waiting = true; await gate; }
+  } });
+  const request = input(); const pending = app.api('/api/dev/conversations', 'POST', request);
+  await until(() => waiting);
+  const stopped = await app.api(`/api/v1/calls/${request.requestId}/stop`, 'POST', {});
+  assert.equal(stopped.body.call.callState, 'ended'); assert.equal(stopped.body.call.outcome.reason, 'user_stopped');
+  assert.equal(app.creates, 0);
+  const next = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  release(); assert.equal((await pending).body.conversation.status, 'completed');
+  assert.deepEqual(app.runtime.controller.get(request.requestId), stopped.body.call);
+  assert.equal(app.runtime.controller.get(next.id).callState, 'ringing'); assert.equal(app.creates, 1);
+});
+
+test('concurrent Stop cancels queued/ringing calls, hangs up connected calls and stays idempotent', async (t) => {
+  for (const status of ['queued', 'ringing', 'in-progress']) await t.test(status, async (t) => {
+    const app = await controlledFixture(t, { createStatus: status });
+    const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+    const results = await Promise.all(Array.from({ length: 10 }, () => app.api(`/api/v1/calls/${created.id}/stop`, 'POST', {})));
+    assert.ok(results.every((result) => result.status === 202 && result.body.call.callState === 'ended'));
+    assert.equal(app.calls.get(created.callSid).status, status === 'in-progress' ? 'completed' : 'canceled');
+    assert.equal(app.hungUp, 1); const ended = app.runtime.controller.get(created.id);
+    await app.api(`/api/dev/conversations/${created.id}/stop`, 'POST', {});
+    assert.deepEqual(app.runtime.controller.get(created.id), ended); assert.equal(app.hungUp, 1);
+  });
+});
+
+test('answer racing a dialing cancellation keeps the slot and retries as a connected hangup', async (t) => {
+  const updates = [];
+  const app = await controlledFixture(t, { beforeHangup: async (call, status) => {
+    updates.push(status); if (status === 'canceled') call.status = 'in-progress';
+  } });
+  const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  await app.api(`/api/v1/calls/${created.id}/stop`, 'POST', {});
+  assert.equal(app.runtime.controller.get(created.id).callState, 'ending');
+  assert.equal((await app.api('/api/dev/conversations', 'POST', input())).status, 409);
+  await app.runtime.development.tick();
+  assert.deepEqual(updates, ['canceled', 'completed']);
+  assert.equal(app.runtime.controller.get(created.id).outcome.reason, 'user_stopped'); assert.equal(app.creates, 1);
+});
+
+test('duration expiry before a delayed create response retains the slot and cancels the eventual call', async (t) => {
+  let release; let waiting = false;
+  const gate = new Promise((resolve) => { release = resolve; }); t.after(() => release());
+  const app = await controlledFixture(t, { beforeCreateReply: async () => { waiting = true; await gate; } }); await app.duration(30);
+  const request = input(); const pending = app.api('/api/dev/conversations', 'POST', request); await until(() => waiting);
+  app.clock.ms += 30_000; await app.runtime.development.tick();
+  assert.equal(app.runtime.controller.get(request.requestId).callState, 'ending');
+  assert.equal((await app.api('/api/dev/conversations', 'POST', input())).status, 409);
+  release(); await pending;
+  const ended = app.runtime.controller.get(request.requestId);
+  assert.equal(ended.callState, 'ended'); assert.equal(ended.outcome.reason, 'technical_failure');
+  assert.equal(app.calls.values().next().value.status, 'canceled'); assert.equal(app.creates, 1);
+});
+
+test('failed deadline hangup and its reason survive restart without redial or overriding with user Stop', async (t) => {
+  const options = { rejectHangup: true };
+  const app = await controlledFixture(t, options); await app.duration(30);
+  const request = input(); const created = (await app.api('/api/dev/conversations', 'POST', request)).body.conversation;
+  app.clock.ms += 30_000; await app.runtime.development.tick();
+  const expired = app.record(created.id);
+  assert.equal(expired.call.callState, 'ending'); assert.equal(expired.internal.controls.stopReason, 'duration_limit');
+  await app.api(`/api/v1/calls/${created.id}/stop`, 'POST', {});
+  assert.equal(app.record(created.id).internal.controls.stopReason, 'duration_limit');
+  await app.restart();
+  assert.deepEqual(app.record(created.id).internal.controls, expired.internal.controls);
+  assert.equal((await app.api('/api/dev/conversations', 'POST', input())).status, 409);
+  assert.equal((await app.api('/api/dev/conversations', 'POST', request)).body.conversation.id, created.id);
+  await app.callback(created.callSid, 'canceled', 3);
+  const ended = app.runtime.controller.get(created.id);
+  assert.equal(ended.outcome.reason, 'technical_failure'); assert.match(ended.outcome.summaryEn, /duration limit/);
+  assert.equal(app.creates, 1);
+});
+
+test('background timer enforces the deadline without any UI requests or provider callbacks', async (t) => {
+  const app = await controlledFixture(t, { development: { automatic: true } }); await app.duration(30);
+  const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  app.clock.ms += 30_000;
+  await until(() => app.runtime.controller.get(created.id).callState === 'ended');
+  assert.equal(app.runtime.controller.get(created.id).outcome.reason, 'technical_failure'); assert.equal(app.hungUp, 1);
+});
+
+test('duration expiry during preflight prevents a create even when the health reply arrives late', async (t) => {
+  let release; let waiting = false;
+  const gate = new Promise((resolve) => { release = resolve; }); t.after(() => release());
+  const app = await controlledFixture(t, { beforeHealthReply: async () => { waiting = true; await gate; } }); await app.duration(30);
+  const request = input(); const pending = app.api('/api/dev/conversations', 'POST', request); await until(() => waiting);
+  app.clock.ms += 30_000; await app.runtime.development.tick();
+  const ended = app.runtime.controller.get(request.requestId);
+  assert.equal(ended.callState, 'ended'); assert.equal(ended.outcome.reason, 'technical_failure');
+  release(); await pending;
+  assert.deepEqual(app.runtime.controller.get(request.requestId), ended); assert.equal(app.creates, 0);
+});
+
+test('a stalled provider poll does not delay the local deadline decision or allow late speech', async (t) => {
+  let release; let waiting = false; let first = true;
+  const gate = new Promise((resolve) => { release = resolve; }); t.after(() => release());
+  const app = await controlledFixture(t, { beforeGetReply: async () => {
+    if (first) { first = false; waiting = true; await gate; }
+  } }); await app.duration(30);
+  const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  const poll = app.runtime.development.tick(); await until(() => waiting);
+  app.clock.ms += 30_000; const deadline = app.runtime.development.tick();
+  assert.equal(app.runtime.controller.get(created.id).callState, 'ending');
+  assert.equal(app.record(created.id).internal.controls.stopReason, 'duration_limit');
+  const peer = await app.answer(created.callSid);
+  release(); await Promise.all([poll, deadline]);
+  await until(async () => { await app.runtime.development.tick(); return app.runtime.controller.get(created.id).callState === 'ended'; });
+  await peer.closed;
+  assert.equal(peer.messages.length, 0); assert.equal(app.creates, 1);
+  assert.equal(app.runtime.controller.get(created.id).outcome.reason, 'technical_failure');
 });

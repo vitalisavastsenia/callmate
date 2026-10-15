@@ -49,9 +49,10 @@ async function fixture(t) {
     if (!call) { response.writeHead(404).end("{}"); return; }
     if (request.method === "POST") {
       counts.hangups++;
-      assert.equal(new URLSearchParams(raw).get("Status"), "completed");
+      const status = new URLSearchParams(raw).get("Status");
+      assert.ok(["completed", "canceled"].includes(status));
       if (control.rejectHangup) { response.writeHead(503).end("{}"); return; }
-      call.status = "completed"; call.peer?.close(1000);
+      call.status = status; call.peer?.close(1000);
     }
     response.end(JSON.stringify({ sid: call.sid, account_sid: call.account_sid, from: call.from, to: call.to, status: call.status }));
   });
@@ -119,7 +120,7 @@ test("SIGKILL recovery ends queued, ringing and connected orphans without dialin
     assert.equal(after.call.callState, "ended"); assert.equal(after.call.outcome.reason, "technical_failure");
     assert.equal(after.internal.callSid, call.sid); assert.equal(after.internal.correlation.sessionId, sessionId);
     assert.deepEqual(after.call.messages, before.call.messages);
-    assert.equal(app.counts.creates, 1); assert.equal(app.counts.hangups, 1); assert.equal(call.status, "completed");
+    assert.equal(app.counts.creates, 1); assert.equal(app.counts.hangups, 1); assert.equal(call.status, state === "in-progress" ? "completed" : "canceled");
     const events = app.events(created.id);
     assert.deepEqual(events.map((event) => event.sequence), Array.from({ length: events.length }, (_, i) => i + 1));
     assert.equal(events.at(-1).payload.callState, "ended");
@@ -151,7 +152,7 @@ test("outages and failed hangups retain the slot and recover in the background w
   assert.equal((await app.api("/api/dev/conversations", "POST", input())).status, 409);
   app.control.rejectHangup = false;
   await until(() => app.record(created.id).call.callState === "ended");
-  assert.equal(app.counts.creates, 1); assert.equal(app.calls.get(created.callSid).status, "completed");
+  assert.equal(app.counts.creates, 1); assert.equal(app.calls.get(created.callSid).status, "canceled");
 });
 
 test("404 is not completion; changed provider identity and mismatched resources cannot hang up unrelated calls", async (t) => {

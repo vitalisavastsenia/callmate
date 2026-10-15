@@ -197,3 +197,5 @@ Manual mock calls persist provider identity, CallSid/session IDs, a relay-token 
 Signed mock status callbacks now use a durable per-attempt sequence, forward-only provider progress and an immutable terminal state; callbacks and delayed REST results cannot reopen calls, clear Stop/recovery, or restore deleted messages. Cursor-only updates do not change UI revisions or SSE sequences. See the [event handling rules](docker-development.md#11-reliable-mock-status-callbacks).
 
 This extension does not enable live mode, real Twilio routes, WS signature verification, dialogue integration or provider billing. Keep the callback listener local.
+
+Manual mock call controls enforce persisted per-attempt duration and caller-inactivity deadlines without changing shared v1 payloads. Explicit Stop is idempotent and reports `user_stopped`; deadline-triggered termination reports `technical_failure` with a duration/silence summary. Unconfirmed termination keeps the shared active slot and blocks output. See [call controls](docker-development.md#12-call-controls-and-limits) for configuration, dialing races and restart rules.

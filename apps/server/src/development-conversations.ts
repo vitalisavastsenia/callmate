@@ -25,7 +25,9 @@ const tokenHash = (token: string) => createHash("sha256").update(token).digest("
 const progress = (status: CallStatus) => status === "queued" ? 0 : status === "ringing" ? 1 : status === "in-progress" ? 2 : 3;
 
 /** Manual transport adapter for the shared persisted attempts, event log and active-call slot. */
+export type DevelopmentOptions = { now?: () => number; automatic?: boolean };
 export class DevelopmentConversations {
+  private readonly now: () => number;
   private closed = false;
   private pending = new Set<Promise<unknown>>();
   private refreshing = new Map<string, Promise<void>>();
@@ -34,7 +36,8 @@ export class DevelopmentConversations {
   private listeners = new Map<string, Set<() => void>>();
   private client: MockCallsClient;
   private timer: ReturnType<typeof setInterval> | undefined;
-  constructor(private config: Config, private store: Store) {
+  constructor(private config: Config, private store: Store, options: DevelopmentOptions = {}) {
+    this.now = options.now ?? Date.now;
     this.client = new MockCallsClient(config);
     const active = store.calls.active();
     if (active && isManualAttempt(active)) this.change(active.call.id, (a, emit) => {
@@ -47,13 +50,54 @@ export class DevelopmentConversations {
       this.status(a, emit, "reconciliation_required");
       emit("call.error", { code: "PROVIDER_UNAVAILABLE", message: a.internal.error, recoverable: true });
     });
-    if (mockRelayEnabled(config)) {
-      this.timer = setInterval(() => {
-        const active = store.calls.active();
-        if (active && isManualAttempt(active)) void this.refresh(active.call.id).catch(() => {});
-      }, 1000);
+    if (mockRelayEnabled(config) && options.automatic !== false) {
+      this.timer = setInterval(() => { void this.tick().catch(() => {}); }, 1000);
       this.timer.unref();
     }
+  }
+  /** Deadlines are checked even while a previous provider request is still in flight. */
+  async tick() {
+    if (this.closed || !mockRelayEnabled(this.config)) return;
+    const active = this.store.calls.active();
+    if (!active || !isManualAttempt(active)) return;
+    this.enforceLimits(active.call.id);
+    await this.refresh(active.call.id);
+  }
+  private timestamp() { return new Date(this.now()).toISOString(); }
+  private requestStop(id: string, reason: "user_stopped" | "duration_limit" | "silence_timeout") {
+    this.change(id, (a, emit) => {
+      if (terminal(a.call) || a.internal.stopRequested) return false;
+      a.internal.stopRequested = true;
+      if (a.internal.controls) a.internal.controls.stopReason = reason;
+      if (reason !== "user_stopped") {
+        a.internal.error = reason === "duration_limit" ? "The call reached its duration limit." : "The call reached its silence deadline.";
+        emit("call.error", { code: "PROVIDER_UNAVAILABLE", message: a.internal.error, recoverable: false });
+      }
+      this.status(a, emit, "ending");
+      // A preflight request cannot have created a provider call. It is safe to release this slot.
+      if (a.internal.correlation?.creation === "prepared" && !a.internal.callSid) this.finish(a, emit, "ended");
+    });
+  }
+  private enforceLimits(id: string) {
+    const a = this.require(id); const controls = a.internal.controls;
+    if (!terminal(a.call) && !a.internal.stopRequested && controls) {
+      if (this.now() >= Date.parse(controls.durationDeadlineAt)) this.requestStop(id, "duration_limit");
+      else if (controls.silenceDeadlineAt && this.now() >= Date.parse(controls.silenceDeadlineAt)) this.requestStop(id, "silence_timeout");
+    }
+    return terminal(this.require(id).call) || this.require(id).internal.stopRequested;
+  }
+  private beginSilence(a: ManualAttempt) {
+    const controls = a.internal.controls;
+    if (controls && !controls.silenceDeadlineAt) controls.silenceDeadlineAt = new Date(this.now() + controls.silenceTimeoutSeconds * 1000).toISOString();
+  }
+  private activity(id: string) {
+    if (this.closed || this.enforceLimits(id)) return false;
+    const a = this.require(id);
+    if (a.internal.correlation?.recoveryRequired) return false;
+    if (a.internal.controls) this.change(id, (a) => {
+      a.internal.controls!.silenceDeadlineAt = new Date(this.now() + a.internal.controls!.silenceTimeoutSeconds * 1000).toISOString();
+    });
+    return true;
   }
   async recover() {
     if (!mockRelayEnabled(this.config) || this.closed) return;
@@ -89,7 +133,7 @@ export class DevelopmentConversations {
     const result = this.store.calls.transaction(() => {
       const a = this.require(id); const events: DomainEvent[] = [];
       const previousUpdatedAt = a.call.updatedAt;
-      a.call.revision++; a.call.updatedAt = new Date().toISOString();
+      a.call.revision++; a.call.updatedAt = this.timestamp();
       const changed = work(a, (type, payload) => events.push(DomainEventSchema.parse({ contractVersion: 1, id: randomUUID(),
         attemptId: id, sequence: ++a.call.lastEventSequence, snapshotRevision: a.call.revision,
         occurredAt: a.call.updatedAt, type, payload })));
@@ -107,12 +151,16 @@ export class DevelopmentConversations {
   }
   private finish(a: ManualAttempt, emit: Emit, state: "ended" | "busy" | "no_answer" | "failed", error: string | null = null, interrupted = false) {
     if (terminal(a.call)) return;
-    a.internal.status = state === "ended" ? "completed" : "failed"; a.internal.error = error;
+    const stopReason = a.internal.controls?.stopReason ?? (a.internal.stopRequested ? "user_stopped" : null);
+    const limit = stopReason === "duration_limit" || stopReason === "silence_timeout";
+    a.internal.status = state === "ended" ? "completed" : "failed";
+    a.internal.error = limit ? (stopReason === "duration_limit" ? "The call reached its duration limit." : "The call reached its silence deadline.") : error;
     a.call.bookingState = "not_booked";
-    a.call.outcome = { status: "not_booked", reason: a.internal.stopRequested ? "user_stopped"
-      : state === "failed" || interrupted ? "technical_failure"
+    a.call.outcome = { status: "not_booked", reason: stopReason === "user_stopped" ? "user_stopped"
+      : limit || state === "failed" || interrupted ? "technical_failure"
       : state === "busy" || state === "no_answer" ? state : "development_only",
-      summaryEn: "Manual mock call ended. No automated booking was attempted or confirmed." };
+      summaryEn: limit ? `${a.internal.error} No automated booking was attempted or confirmed.`
+        : "Manual mock call ended. No automated booking was attempted or confirmed." };
     emit("booking.updated", { bookingState: a.call.bookingState, outcome: a.call.outcome });
     this.status(a, emit, state);
   }
@@ -131,6 +179,7 @@ export class DevelopmentConversations {
     }
     // Provider progress never cancels Stop, recovery, or a lost relay reservation.
     if (a.internal.stopRequested || correlation.recoveryRequired || ["ending", "reconciliation_required"].includes(a.call.callState)) return changed;
+    if (status === "in-progress") this.beginSilence(a);
     const state = normalizeStatus(status);
     const internalStatus = status === "in-progress" ? "connected" : "ringing";
     const visibleChanged = a.call.callState !== state || a.internal.status !== internalStatus;
@@ -152,6 +201,7 @@ export class DevelopmentConversations {
     const event = statusCallback.parse(fields);
     if (event.AccountSid !== correlation.accountSid || event.From !== "+48000000000" || event.To !== "+48111111111"
       || (stored.internal.callSid && event.CallSid !== stored.internal.callSid)) return deny();
+    this.enforceLimits(id);
     let accepted = false;
     this.change(id, (a, emit) => {
       if (terminal(a.call) || event.SequenceNumber <= (a.internal.correlation!.callbackSequence ?? -1)) return false;
@@ -198,7 +248,8 @@ export class DevelopmentConversations {
       }
       if (this.store.calls.get(input.requestId)) throw new CommandError(409, "IDEMPOTENCY_CONFLICT", "This ID already identifies another call");
       if (this.store.calls.active()) throw new CommandError(409, "CALL_ALREADY_ACTIVE", "Another call is still active");
-      const now = new Date().toISOString();
+      const now = this.timestamp();
+      const maxDurationSeconds = this.store.getSettings().defaultCallLimits.maxDurationSeconds;
       const message = { id: randomUUID(), turnId: randomUUID(), speaker: "assistant" as const,
         originalText: input.initialMessage, language: input.language, translationEn: null,
         final: true as const, playback: "withheld" as const, createdAt: now };
@@ -210,6 +261,8 @@ export class DevelopmentConversations {
         .map((event, index) => DomainEventSchema.parse({ contractVersion: 1, id: randomUUID(), attemptId: call.id,
           sequence: index + 1, snapshotRevision: 1, occurredAt: now, ...event }));
       this.store.calls.save({ call, replayFloor: 0, internal: { kind: "manual_mock", callSid: null, status: "creating", error: null, stopRequested: false,
+        controls: { maxDurationSeconds, silenceTimeoutSeconds: this.config.silenceTimeoutSeconds,
+          durationDeadlineAt: new Date(this.now() + maxDurationSeconds * 1000).toISOString(), silenceDeadlineAt: null, stopReason: null },
         correlation: { apiOrigin: new URL(this.config.mockApiBase).origin, accountSid: this.config.mockAccountSid,
           tokenHash: tokenHash(token), sessionId: null, creation: "prepared", recoveryRequired: false,
           statusCallbackUrl: this.client.callbackUrl(call.id) } } }, events);
@@ -221,10 +274,13 @@ export class DevelopmentConversations {
     this.sessions.set(input.requestId, session);
     try { await this.client.check(); }
     catch {
-      this.change(input.requestId, (a, emit) => this.finish(a, emit, "failed", "Mock calls service is unavailable. Start its Docker service and try again."));
+      this.enforceLimits(input.requestId);
+      this.change(input.requestId, (a, emit) => { if (terminal(a.call)) return false;
+        this.finish(a, emit, "failed", "Mock calls service is unavailable. Start its Docker service and try again."); });
       this.sessions.delete(input.requestId); return this.view(this.require(input.requestId));
     }
-    if (this.closed || this.require(input.requestId).internal.stopRequested) {
+    this.enforceLimits(input.requestId);
+    if (terminal(this.require(input.requestId).call) || this.closed || this.require(input.requestId).internal.stopRequested) {
       this.change(input.requestId, (a, emit) => this.finish(a, emit, "ended"));
       this.sessions.delete(input.requestId); return this.view(this.require(input.requestId));
     }
@@ -232,6 +288,7 @@ export class DevelopmentConversations {
       // Commit the intent before the only create request. A crash after this point is ambiguous.
       this.change(input.requestId, (a) => { a.internal.correlation!.creation = "submitted"; });
       const call = await this.client.create(input.requestId, token, input.language);
+      this.enforceLimits(input.requestId);
       const current = this.require(input.requestId);
       if (current.internal.callSid && current.internal.callSid !== call.sid) throw new MockCallsError(true);
       this.change(input.requestId, (a, emit) => {
@@ -258,7 +315,7 @@ export class DevelopmentConversations {
     return this.view(this.require(input.requestId));
   }
   async get(id: string) {
-    this.enabled(); await this.refresh(id); return this.view(this.require(id));
+    this.enabled(); this.enforceLimits(id); await this.refresh(id); return this.view(this.require(id));
   }
   private refresh(id: string): Promise<void> {
     const prior = this.refreshing.get(id); if (prior) return prior;
@@ -280,6 +337,7 @@ export class DevelopmentConversations {
       const call = await this.client.get(before.internal.callSid);
       if (call.sid !== before.internal.callSid) throw new MockCallsError();
       if (this.closed || terminal(this.require(id).call)) return;
+      this.enforceLimits(id);
       if (providerTerminal.has(call.status)) {
         this.change(id, (a, emit) => this.providerStatus(a, emit, call.status));
         this.sessions.get(id)?.disconnect?.(); this.sessions.delete(id);
@@ -295,10 +353,8 @@ export class DevelopmentConversations {
     }
   }
   async stop(id: string) {
-    const a = this.require(id);
-    if (!terminal(a.call) && !a.internal.stopRequested) this.change(id, (a, emit) => {
-      a.internal.stopRequested = true; this.status(a, emit, "ending");
-    });
+    this.enforceLimits(id);
+    this.requestStop(id, "user_stopped");
     await this.end(id);
     return this.view(this.require(id));
   }
@@ -316,11 +372,10 @@ export class DevelopmentConversations {
       this.unresolved(id, "Recovery requires the original mock provider configuration. No provider request was sent; the active reservation is retained."); return;
     }
     if (!a.internal.callSid) {
-      if (a.internal.status === "unknown") this.change(id, (a, emit) => {
-        this.status(a, emit, "reconciliation_required");
-        a.internal.error = "The mock call ID is unknown. Inspect and hang up the call on the operator page; the active reservation is retained.";
-        emit("call.error", { code: "PROVIDER_UNAVAILABLE", message: a.internal.error, recoverable: true });
-      });
+      if (a.internal.status === "unknown") {
+        if (a.call.callState !== "reconciliation_required") this.change(id, (a, emit) => this.status(a, emit, "reconciliation_required"));
+        this.unresolved(id, "The mock call ID is unknown. Inspect and hang up the call on the operator page; the active reservation is retained.");
+      }
       return;
     }
     try {
@@ -330,7 +385,7 @@ export class DevelopmentConversations {
       if (terminal(this.require(id).call)) return;
       const alreadyEnded = ["completed", "canceled", "busy", "no-answer", "failed"].includes(current.status);
       if (!alreadyEnded) this.change(id, (a) => { a.internal.correlation!.hangupRequested = true; });
-      const call = alreadyEnded ? current : await this.client.hangup(a.internal.callSid);
+      const call = alreadyEnded ? current : await this.client.hangup(a.internal.callSid, ["queued", "ringing"].includes(current.status) ? "canceled" : "completed");
       if (call.sid !== a.internal.callSid || !["completed", "canceled", "busy", "no-answer", "failed"].includes(call.status)) throw new MockCallsError();
       if (!terminal(this.require(id).call)) this.change(id, (a, emit) => this.finish(a, emit,
         call.status === "busy" ? "busy" : call.status === "no-answer" ? "no_answer" : call.status === "failed" ? "failed" : "ended",
@@ -342,7 +397,7 @@ export class DevelopmentConversations {
   }
   attach(message: Extract<RelayInbound, { type: "setup" }>, send: RelaySend, disconnect: () => void): RelayConsumer | undefined {
     const id = message.customParameters.conversationId; if (!id) return;
-    this.enabled(); const a = this.require(id); const correlation = a.internal.correlation;
+    this.enabled(); let a = this.require(id); const correlation = a.internal.correlation;
     const session = this.sessions.get(id);
     const supplied = Buffer.from(tokenHash(message.customParameters.authToken ?? ""));
     const expected = Buffer.from(correlation?.tokenHash ?? "");
@@ -351,6 +406,7 @@ export class DevelopmentConversations {
       || terminal(a.call) || (a.internal.callSid && a.internal.callSid !== message.callSid)
       || (correlation.sessionId && correlation.sessionId !== message.sessionId)
       || message.accountSid !== this.config.mockAccountSid || message.from !== "+48000000000" || message.to !== "+48111111111") throw new Error("Uncorrelated relay");
+    this.enforceLimits(id); a = this.require(id);
     if (!session || correlation.recoveryRequired || a.internal.stopRequested) {
       // Late setup can resolve a lost create response using the durable hash. It cannot resume speech.
       this.sessions.set(id, { attached: true, disconnect });
@@ -367,14 +423,16 @@ export class DevelopmentConversations {
       a.internal.callSid = message.callSid; a.internal.status = "connected"; a.internal.error = null;
       a.internal.correlation!.sessionId = message.sessionId;
       a.internal.correlation!.providerStatus = "in-progress";
+      this.beginSilence(a);
       this.status(a, emit, "connected");
       a.call.messages[0]!.playback = "generated"; emit("transcript.updated", a.call.messages[0]!);
     });
     send({ type: "text", token: a.call.messages[0]!.originalText, lang: a.call.language, last: true, interruptible: true, preemptible: true });
     return {
+      activity: () => this.activity(id),
       prompt: (text, language) => {
-        if (this.closed) return;
-        const a = this.require(id); if (terminal(a.call) || a.internal.stopRequested) return;
+        if (this.closed || this.enforceLimits(id)) return;
+        const a = this.require(id); if (a.internal.correlation?.recoveryRequired) return;
         if (a.call.messages.length >= 2000) { void this.stop(id).catch(() => {}); return; }
         this.change(id, (a, emit) => {
           const message = { id: randomUUID(), turnId: randomUUID(), speaker: "business" as const, originalText: text,

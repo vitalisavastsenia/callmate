@@ -172,7 +172,8 @@ export class Simulator {
         usage: { estimate: null, settledTotal: null, status: "unavailable", measuredAt: this.timestamp() },
         createdAt: this.timestamp(), updatedAt: this.timestamp() });
       this.db.save({ call, replayFloor: 0, internal: { scenario: this.config.simulatorScenario, phase: "dial",
-        nextAt: this.now() + this.config.simulatorStepMs, accepted: false, grant: null } },
+        nextAt: this.now() + this.config.simulatorStepMs, accepted: false, grant: null,
+        silenceTimeoutSeconds: this.config.silenceTimeoutSeconds } },
       [DomainEventSchema.parse({ contractVersion: 1, id: randomUUID(), attemptId: call.id, sequence: 1,
         snapshotRevision: 1, occurredAt: this.timestamp(), type: "call.status", payload: { callState: "creating" } })]);
       this.db.recordCommand(key, "start", body, call.id);
@@ -267,6 +268,7 @@ export class Simulator {
     const message = { id: randomUUID(), turnId, speaker, originalText: text, language: "es-ES" as const,
       translationEn: english, final: true, playback: speaker === "business" ? "not_applicable" as const : "played" as const,
       createdAt: this.timestamp() };
+    this.activity(a);
     a.call.messages.push(message);
     emit("transcript.updated", message);
     return message;
@@ -300,18 +302,26 @@ export class Simulator {
     const id = a.call.id;
     if (a.call.callState === "ending") {
       await this.telephony.requestHangup(`simulator:${id}`);
-      if (this.closed) return;
+      if (this.closed || this.require(id).call.callState !== "ending") return;
       this.change(id, (a, emit) => this.finish(a, emit, a.internal.accepted
         ? this.uncertain("disconnected_near_confirmation") : this.notBooked("user_stopped", "Simulation stopped by the user; no appointment was booked.")));
       return;
     }
     this.expire(id);
-    if (!this.db.active()) return;
+    if (this.db.active()?.call.id !== id) return;
     if (this.now() >= Date.parse(a.call.createdAt) + a.call.plan.request.callLimits.maxDurationSeconds * 1000) {
       this.change(id, (a, emit) => {
         emit("call.error", { code: "PROVIDER_UNAVAILABLE", message: "Simulation reached the approved duration limit", recoverable: false });
         this.finish(a, emit, a.internal.accepted ? this.uncertain("disconnected_near_confirmation")
           : this.notBooked("technical_failure", "Simulation ended at the approved duration limit."));
+      });
+      return;
+    }
+    if (a.internal.silenceDeadlineAt !== undefined && this.now() >= a.internal.silenceDeadlineAt) {
+      this.change(id, (a, emit) => {
+        emit("call.error", { code: "PROVIDER_UNAVAILABLE", message: "Simulation reached its silence deadline", recoverable: false });
+        this.finish(a, emit, a.internal.accepted ? this.uncertain("disconnected_near_confirmation")
+          : this.notBooked("technical_failure", "Simulation ended at its silence deadline."));
       });
       return;
     }
@@ -332,7 +342,7 @@ export class Simulator {
           } else if (a.internal.scenario === "provider_failure") {
             emit("call.error", { code: "PROVIDER_UNAVAILABLE", message: "Scripted provider failure", recoverable: false });
             this.finish(a, emit, this.notBooked("technical_failure", "The simulated provider failed before connection."), "failed");
-          } else { this.status(a, emit, "connected"); a.internal.phase = "offer"; this.next(a); }
+          } else { this.status(a, emit, "connected"); this.activity(a); a.internal.phase = "offer"; this.next(a); }
         });
       } else if (a.internal.phase === "offer" || a.internal.phase === "change") {
         if (a.internal.scenario === "no_availability") {
@@ -365,6 +375,7 @@ export class Simulator {
             a.call.activeOffer = null;
             this.booking(a, emit, "pending");
           }
+          this.activity(a);
           a.call.messages.push(trigger);
           emit("transcript.updated", trigger);
         });
@@ -442,6 +453,9 @@ export class Simulator {
     } finally {
       if (this.jobs.get(id) === job) this.jobs.delete(id);
     }
+  }
+  private activity(a: Attempt) {
+    a.internal.silenceDeadlineAt = this.now() + (a.internal.silenceTimeoutSeconds ?? this.config.silenceTimeoutSeconds) * 1000;
   }
   private next(a: Attempt) { a.internal.nextAt = this.now() + this.config.simulatorStepMs; }
   private stale(a: Attempt, job: AbortController) {

@@ -74,7 +74,7 @@ export class MockCallsClient {
     return this.parse(await this.request(this.root + ".json", body));
   }
   async get(sid: string) { return this.parse(await this.request(`${this.root}/${encodeURIComponent(sid)}.json`)); }
-  async hangup(sid: string) {
-    return this.parse(await this.request(`${this.root}/${encodeURIComponent(sid)}.json`, new URLSearchParams({ Status: "completed" })));
+  async hangup(sid: string, status: "completed" | "canceled" = "completed") {
+    return this.parse(await this.request(`${this.root}/${encodeURIComponent(sid)}.json`, new URLSearchParams({ Status: status })));
   }
 }

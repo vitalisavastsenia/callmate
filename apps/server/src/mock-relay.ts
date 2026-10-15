@@ -12,7 +12,7 @@ export function mockRelayEnabled(config: Config) {
     && ["development", "test"].includes(config.nodeEnv);
 }
 export type RelaySend = (message: RelayOutbound) => void;
-export type RelayConsumer = { prompt(text: string, language: string): void; close(): void };
+export type RelayConsumer = { activity?(): boolean; prompt(text: string, language: string): void; close(): void };
 type AttachRelay = (setup: Extract<RelayInbound, { type: "setup" }>, send: RelaySend, disconnect: () => void) => RelayConsumer | undefined;
 
 /** Development transport in the existing backend. It cannot invoke booking or live providers. */
@@ -73,7 +73,7 @@ export function mountMockRelay(app: FastifyInstance, config: Config, maxDuration
           identities = keys; keys.forEach((key) => { recent.add(key); active.add(key); });
           while (recent.size > 400) recent.delete(recent.values().next().value!);
           setup = true; clearTimeout(setupDeadline);
-          if (consumer) return;
+          if (consumer) { clearTimeout(deadline); return; }
           send({ type: "text", token: "Development relay connected. Scripted echo only; no appointment will be booked.",
             lang: "en-US", last: true, interruptible: true, preemptible: true });
           return;
@@ -83,6 +83,7 @@ export function mountMockRelay(app: FastifyInstance, config: Config, maxDuration
           if (!/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(message.lang) || message.lang.length > 35
             || partial.length + message.voicePrompt.length > 8000) { stop(1007, "Invalid prompt or language"); return; }
           if (partial && message.lang !== language) { stop(1007, "Partial prompt language changed"); return; }
+          if (message.voicePrompt.trim() && consumer?.activity?.() === false) { partial = ""; return; }
           partial += message.voicePrompt; language = message.lang;
           if (!message.last) return;
           const text = partial; partial = "";
@@ -101,7 +102,10 @@ export function mountMockRelay(app: FastifyInstance, config: Config, maxDuration
           const middle = Math.ceil(characters.length / 2);
           send({ type: "text", token: characters.slice(0, middle).join(""), lang: language, last: false, interruptible: true, preemptible: true });
           send({ type: "text", token: characters.slice(middle).join(""), lang: language, last: true, interruptible: true, preemptible: true });
+        } else if (message.type === "dtmf") {
+          consumer?.activity?.();
         } else if (message.type === "interrupt") {
+          if (message.utteranceUntilInterrupt.trim()) consumer?.activity?.();
           partial = ""; // No asynchronous output is queued by the scripted adapter.
         } else if (message.type === "error") {
           stop(1011, "Provider reported a relay error");

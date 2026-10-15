@@ -9,6 +9,8 @@ export type Internal = {
   phase: "dial" | "ring" | "connect" | "offer" | "change" | "wait" | "accept" | "confirm" | "end" | "done";
   nextAt: number;
   accepted: boolean;
+  silenceDeadlineAt?: number;
+  silenceTimeoutSeconds?: number;
   grant: { approvalId: string; expiresAt: string; offerVersion: number } | null;
 };
 export type Attempt = { call: CallSnapshot; internal: Internal; replayFloor: number };
@@ -19,6 +21,12 @@ const manualInternal = z.object({
   status: z.enum(["creating", "ringing", "connected", "disconnected", "completed", "failed", "unknown"]),
   error: z.string().nullable(),
   stopRequested: z.boolean(),
+  controls: z.object({
+    maxDurationSeconds: z.number().int().min(30).max(600),
+    silenceTimeoutSeconds: z.number().int().min(5).max(600),
+    durationDeadlineAt: z.iso.datetime(), silenceDeadlineAt: z.iso.datetime().nullable(),
+    stopReason: z.enum(["user_stopped", "duration_limit", "silence_timeout"]).nullable(),
+  }).optional(),
   // Optional only for records written before persistent recovery was introduced.
   correlation: z.object({
     apiOrigin: z.url(), accountSid: z.string().regex(/^AC[0-9a-f]{32}$/i),
