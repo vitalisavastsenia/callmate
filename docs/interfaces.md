@@ -192,4 +192,6 @@ SSE uses the existing envelope and event names. `transcript.updated` accepts the
 
 The common GET/Stop/history/deletion/SSE routes work for either kind. Deletion removes manual text from snapshots, compatibility views and replay payloads; request digests retain idempotency without keeping the deleted input. A stale SSE cursor receives the existing `reset` event. Direct operator-created echo calls without a backend attempt remain outside this API.
 
-This extension does not enable live mode, real Twilio routes, signature verification, dialogue integration, provider billing or automatic restart reconciliation. Keep the callback listener local.
+Manual mock calls persist provider identity, CallSid/session IDs, a relay-token hash and creation intent. Startup and relay-loss recovery reconcile known calls and hang up active orphans without redial or replaying text; uncertain calls retain the shared reservation. A valid late setup may recover an unknown SID only for hangup. See the [recovery rules and unresolved cases](docker-development.md#10-persistent-correlation-and-recovery). The development projection adds nullable `sessionId`; shared v1 snapshot/SSE formats remain unchanged.
+
+This extension does not enable live mode, real Twilio routes, signature verification, dialogue integration or provider billing. Keep the callback listener local.

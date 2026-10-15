@@ -38,7 +38,8 @@ async function fixture(t, options = {}) {
       const form = new URLSearchParams(raw); assert.equal(form.get("To"), "+48111111111");
       const parsed = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "" }).parse(form.get("Twiml"));
       const relay = parsed.Response.Connect.ConversationRelay;
-      const call = { sid: sid("CA"), status: options.createStatus ?? "ringing", relay, xml: form.get("Twiml") };
+      const call = { sid: sid("CA"), account_sid: config.mockAccountSid, from: "+48000000000", to: "+48111111111",
+        status: options.createStatus ?? "ringing", relay, xml: form.get("Twiml") };
       calls.set(call.sid, call); if (options.beforeCreateReply) await options.beforeCreateReply(); res.writeHead(201).end(JSON.stringify(call)); return;
     }
     const id = /\/Calls\/(CA[0-9a-f]{32})\.json$/.exec(req.url)?.[1]; const call = calls.get(id);
@@ -48,7 +49,7 @@ async function fixture(t, options = {}) {
       if (options.rejectHangup) { res.writeHead(503).end('{}'); return; }
       call.status = "completed"; call.peer?.close(1000);
     }
-    res.end(JSON.stringify({ sid: call.sid, status: call.status }));
+    res.end(JSON.stringify({ sid: call.sid, status: call.status, account_sid: call.account_sid, from: call.from, to: call.to }));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;

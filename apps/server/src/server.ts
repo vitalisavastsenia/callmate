@@ -128,6 +128,7 @@ export function createRuntime(config: Config, logStream?: Writable, simulatorOpt
       try {
         await privateApi.listen({ host: "0.0.0.0", port: config.apiPort });
         await callbacks.listen({ host: "0.0.0.0", port: config.callbackPort });
+        await development.recover();
       } catch (error) {
         await close();
         throw error;

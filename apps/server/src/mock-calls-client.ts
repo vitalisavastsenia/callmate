@@ -4,7 +4,8 @@ import { z } from "zod";
 import type { Config } from "./config.js";
 import { callStatus } from "./twilio/protocol.js";
 
-const resource = z.object({ sid: z.string().regex(/^CA[0-9a-f]{32}$/i), status: callStatus });
+const resource = z.object({ sid: z.string().regex(/^CA[0-9a-f]{32}$/i), status: callStatus,
+  account_sid: z.string(), from: z.string(), to: z.string() });
 export class MockCallsError extends Error {
   constructor(readonly ambiguous = false) { super("Local mock Calls request failed"); }
 }
@@ -50,6 +51,12 @@ export class MockCallsClient {
     if (!result.success) throw new MockCallsError();
   }
   private get root() { return `/2010-04-01/Accounts/${encodeURIComponent(this.config.mockAccountSid)}/Calls`; }
+  private parse(raw: unknown) {
+    const parsed = resource.safeParse(raw);
+    if (!parsed.success || parsed.data.account_sid !== this.config.mockAccountSid
+      || parsed.data.from !== "+48000000000" || parsed.data.to !== "+48111111111") throw new MockCallsError(true);
+    return parsed.data;
+  }
   async create(id: string, token: string, language: string) {
     const response = new twilio.twiml.VoiceResponse();
     const relay = response.connect().conversationRelay({ url: this.config.mockRelayUrl, language });
@@ -57,12 +64,10 @@ export class MockCallsClient {
     relay.parameter({ name: "authToken", value: token });
     relay.parameter({ name: "taskId", value: `console-${id}` });
     const body = new URLSearchParams({ To: "+48111111111", From: "+48000000000", Twiml: response.toString() });
-    const parsed = resource.safeParse(await this.request(this.root + ".json", body));
-    if (!parsed.success) throw new MockCallsError(true);
-    return parsed.data;
+    return this.parse(await this.request(this.root + ".json", body));
   }
-  async get(sid: string) { return resource.parse(await this.request(`${this.root}/${encodeURIComponent(sid)}.json`)); }
+  async get(sid: string) { return this.parse(await this.request(`${this.root}/${encodeURIComponent(sid)}.json`)); }
   async hangup(sid: string) {
-    return resource.parse(await this.request(`${this.root}/${encodeURIComponent(sid)}.json`, new URLSearchParams({ Status: "completed" })));
+    return this.parse(await this.request(`${this.root}/${encodeURIComponent(sid)}.json`, new URLSearchParams({ Status: "completed" })));
   }
 }

@@ -18,6 +18,7 @@ const startInput = z.strictObject({ requestId: z.uuid(), initialMessage: z.strin
   language: z.enum(["es-ES", "ru-RU", "pl-PL", "en-US"]) });
 const terminal = (call: ManualCallSnapshot) => ["ended", "busy", "no_answer", "failed"].includes(call.callState);
 type Emit = (type: DomainEvent["type"], payload: unknown) => void;
+const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 
 /** Manual transport adapter for the shared persisted attempts, event log and active-call slot. */
 export class DevelopmentConversations {
@@ -25,7 +26,7 @@ export class DevelopmentConversations {
   private pending = new Set<Promise<unknown>>();
   private refreshing = new Map<string, Promise<void>>();
   private stopping = new Map<string, Promise<void>>();
-  private sessions = new Map<string, { token: string; attached: boolean; disconnect?: () => void }>();
+  private sessions = new Map<string, { attached: boolean; disconnect?: () => void }>();
   private listeners = new Map<string, Set<() => void>>();
   private client: MockCallsClient;
   private timer: ReturnType<typeof setInterval> | undefined;
@@ -33,8 +34,12 @@ export class DevelopmentConversations {
     this.client = new MockCallsClient(config);
     const active = store.calls.active();
     if (active && isManualAttempt(active)) this.change(active.call.id, (a, emit) => {
+      if (a.internal.correlation?.creation === "prepared" && !a.internal.callSid) {
+        this.finish(a, emit, "failed", "Backend restarted before the call was submitted. No call was redialed."); return;
+      }
+      if (a.internal.correlation) a.internal.correlation.recoveryRequired = true;
       a.internal.status = "unknown";
-      a.internal.error = "Backend restarted. Check the mock call or Stop it; no call was redialed.";
+      a.internal.error = "Backend restarted. Reconciling the mock call and ending any orphan; no call was redialed.";
       this.status(a, emit, "reconciliation_required");
       emit("call.error", { code: "PROVIDER_UNAVAILABLE", message: a.internal.error, recoverable: true });
     });
@@ -45,6 +50,23 @@ export class DevelopmentConversations {
       }, 1000);
       this.timer.unref();
     }
+  }
+  async recover() {
+    if (!mockRelayEnabled(this.config) || this.closed) return;
+    const active = this.store.calls.active();
+    if (active && isManualAttempt(active)) await this.refresh(active.call.id);
+  }
+  private sameProvider(a: ManualAttempt) {
+    const correlation = a.internal.correlation;
+    return !!correlation && correlation.apiOrigin === new URL(this.config.mockApiBase).origin
+      && correlation.accountSid === this.config.mockAccountSid;
+  }
+  private unresolved(id: string, message: string) {
+    if (terminal(this.require(id).call) || this.require(id).internal.error === message) return;
+    this.change(id, (a, emit) => {
+      a.internal.error = message;
+      emit("call.error", { code: "PROVIDER_UNAVAILABLE", message, recoverable: true });
+    });
   }
   private enabled() {
     if (this.closed || !mockRelayEnabled(this.config)) throw new CommandError(503, "PROVIDER_NOT_READY", "Enable development mock mode to use this console");
@@ -75,11 +97,12 @@ export class DevelopmentConversations {
     if (a.call.callState === state) return;
     a.call.callState = state; emit("call.status", { callState: state });
   }
-  private finish(a: ManualAttempt, emit: Emit, state: "ended" | "busy" | "no_answer" | "failed", error: string | null = null) {
+  private finish(a: ManualAttempt, emit: Emit, state: "ended" | "busy" | "no_answer" | "failed", error: string | null = null, interrupted = false) {
     a.internal.status = state === "ended" ? "completed" : "failed"; a.internal.error = error;
     a.call.bookingState = "not_booked";
     a.call.outcome = { status: "not_booked", reason: a.internal.stopRequested ? "user_stopped"
-      : state === "failed" ? "technical_failure" : state === "busy" || state === "no_answer" ? state : "development_only",
+      : state === "failed" || interrupted ? "technical_failure"
+      : state === "busy" || state === "no_answer" ? state : "development_only",
       summaryEn: "Manual mock call ended. No automated booking was attempted or confirmed." };
     emit("booking.updated", { bookingState: a.call.bookingState, outcome: a.call.outcome });
     this.status(a, emit, state);
@@ -90,7 +113,8 @@ export class DevelopmentConversations {
       .map((m) => ({ text: m.originalText, language: m.language, at: m.createdAt }));
     while (responses.reduce((sum, m) => sum + m.text.length, 0) > 32_000) responses.shift();
     return { id: a.call.id, initialMessage: a.call.messages.find((m) => m.speaker === "assistant")?.originalText ?? "",
-      language: a.call.language, status: a.internal.status, callSid: a.internal.callSid, error: a.internal.error, responses,
+      language: a.call.language, status: a.internal.status, callSid: a.internal.callSid,
+      sessionId: a.internal.correlation?.sessionId ?? null, error: a.internal.error, responses,
       operatorUrl: a.internal.callSid ? `${new URL(this.config.mockOperatorOrigin).origin}/?callId=${encodeURIComponent(a.internal.callSid)}` : null };
   }
   async latest() {
@@ -105,6 +129,7 @@ export class DevelopmentConversations {
     this.enabled(); const input = startInput.parse(raw);
     // Keep idempotency after transcript deletion without retaining the input in command records.
     const body = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+    const token = randomBytes(32).toString("hex");
     const existing = this.store.calls.transaction(() => {
       const command = this.store.calls.command(input.requestId);
       if (command) {
@@ -124,12 +149,14 @@ export class DevelopmentConversations {
       const events = [{ type: "call.status", payload: { callState: "creating" } }, { type: "transcript.updated", payload: message }]
         .map((event, index) => DomainEventSchema.parse({ contractVersion: 1, id: randomUUID(), attemptId: call.id,
           sequence: index + 1, snapshotRevision: 1, occurredAt: now, ...event }));
-      this.store.calls.save({ call, replayFloor: 0, internal: { kind: "manual_mock", callSid: null, status: "creating", error: null, stopRequested: false } }, events);
+      this.store.calls.save({ call, replayFloor: 0, internal: { kind: "manual_mock", callSid: null, status: "creating", error: null, stopRequested: false,
+        correlation: { apiOrigin: new URL(this.config.mockApiBase).origin, accountSid: this.config.mockAccountSid,
+          tokenHash: tokenHash(token), sessionId: null, creation: "prepared", recoveryRequired: false } } }, events);
       this.store.calls.recordCommand(input.requestId, "manual-start", body, call.id);
       return undefined;
     });
     if (existing) return this.view(existing);
-    const session = { token: randomBytes(32).toString("hex"), attached: false };
+    const session = { attached: false };
     this.sessions.set(input.requestId, session);
     try { await this.client.check(); }
     catch {
@@ -141,7 +168,9 @@ export class DevelopmentConversations {
       this.sessions.delete(input.requestId); return this.view(this.require(input.requestId));
     }
     try {
-      const call = await this.client.create(input.requestId, session.token, input.language);
+      // Commit the intent before the only create request. A crash after this point is ambiguous.
+      this.change(input.requestId, (a) => { a.internal.correlation!.creation = "submitted"; });
+      const call = await this.client.create(input.requestId, token, input.language);
       const current = this.require(input.requestId);
       if (current.internal.callSid && current.internal.callSid !== call.sid) throw new MockCallsError(true);
       this.change(input.requestId, (a, emit) => {
@@ -155,6 +184,7 @@ export class DevelopmentConversations {
         if (terminal(a.call)) return;
         if (!ambiguous) this.finish(a, emit, "failed", "The mock service rejected the call. Check its local account configuration.");
         else {
+          a.internal.correlation!.recoveryRequired = true;
           a.internal.status = "unknown";
           a.internal.error = "Call creation could not be confirmed. Check the operator page before retrying; no automatic retry was made.";
           this.status(a, emit, "reconciliation_required");
@@ -175,7 +205,15 @@ export class DevelopmentConversations {
   }
   private async refreshInternal(id: string) {
     const before = this.require(id);
-    if (!before.internal.callSid || terminal(before.call) || this.closed) return;
+    if (terminal(before.call) || this.closed) return;
+    if (!this.sameProvider(before)) {
+      this.unresolved(id, "Stored provider identity is missing or differs from this configuration. Inspect the original mock service; the active reservation is retained."); return;
+    }
+    if (!before.internal.callSid) {
+      if (before.internal.status === "unknown") this.unresolved(id,
+        "Call creation is unconfirmed and the call ID is unknown. Await a correlated relay setup or inspect the original operator page; the active reservation is retained.");
+      return;
+    }
     try {
       const call = await this.client.get(before.internal.callSid);
       if (call.sid !== before.internal.callSid) throw new MockCallsError();
@@ -185,6 +223,9 @@ export class DevelopmentConversations {
           : call.status === "failed" ? "failed" : "ended", ["busy", "no-answer", "failed"].includes(call.status)
             ? "The mock call was rejected, unanswered or disconnected. See the operator page for details." : null));
         this.sessions.get(id)?.disconnect?.(); this.sessions.delete(id);
+      } else if (this.require(id).internal.correlation?.recoveryRequired || this.require(id).internal.stopRequested) {
+        // A provider call cannot continue without its original relay. Never reconnect or replay text.
+        await this.end(id);
       } else if (["queued", "ringing"].includes(call.status) && this.sessions.has(id)
         && !this.sessions.get(id)!.attached && !this.require(id).internal.stopRequested) {
         const state = call.status === "queued" ? "dialing" : "ringing";
@@ -192,24 +233,30 @@ export class DevelopmentConversations {
       }
     } catch {
       if (this.closed || terminal(this.require(id).call)) return;
-      const error = "Cannot refresh the mock call status. Check that the mock calls service is running.";
-      if (this.require(id).internal.error !== error) this.change(id, (a, emit) => {
-        a.internal.error = error; emit("call.error", { code: "PROVIDER_UNAVAILABLE", message: error, recoverable: true });
-      });
+      this.unresolved(id, "Cannot refresh the mock call status. A missing call or unavailable service is not proof of completion; the active reservation is retained.");
     }
   }
   async stop(id: string) {
+    const a = this.require(id);
+    if (!terminal(a.call) && !a.internal.stopRequested) this.change(id, (a, emit) => {
+      a.internal.stopRequested = true; this.status(a, emit, "ending");
+    });
+    await this.end(id);
+    return this.view(this.require(id));
+  }
+  private async end(id: string) {
     const prior = this.stopping.get(id);
     if (prior) await prior;
     else {
-      const job = this.stopInternal(id).finally(() => this.stopping.delete(id));
+      const job = this.endInternal(id).finally(() => this.stopping.delete(id));
       this.stopping.set(id, job); await job;
     }
-    return this.view(this.require(id));
   }
-  private async stopInternal(id: string) {
+  private async endInternal(id: string) {
     const a = this.require(id); if (terminal(a.call)) return;
-    this.change(id, (a, emit) => { a.internal.stopRequested = true; this.status(a, emit, "ending"); });
+    if (!mockRelayEnabled(this.config) || !this.sameProvider(a)) {
+      this.unresolved(id, "Recovery requires the original mock provider configuration. No provider request was sent; the active reservation is retained."); return;
+    }
     if (!a.internal.callSid) {
       if (a.internal.status === "unknown") this.change(id, (a, emit) => {
         this.status(a, emit, "reconciliation_required");
@@ -219,27 +266,46 @@ export class DevelopmentConversations {
       return;
     }
     try {
-      const call = await this.client.hangup(a.internal.callSid);
-      if (call.sid !== a.internal.callSid || !["completed", "canceled"].includes(call.status)) throw new MockCallsError();
-      if (!terminal(this.require(id).call)) this.change(id, (a, emit) => this.finish(a, emit, "ended"));
+      // Verify the resource before changing it, including when recovering after a configuration change.
+      const current = await this.client.get(a.internal.callSid);
+      if (current.sid !== a.internal.callSid) throw new MockCallsError();
+      const alreadyEnded = ["completed", "canceled", "busy", "no-answer", "failed"].includes(current.status);
+      const call = alreadyEnded ? current : await this.client.hangup(a.internal.callSid);
+      if (call.sid !== a.internal.callSid || !["completed", "canceled", "busy", "no-answer", "failed"].includes(call.status)) throw new MockCallsError();
+      if (!terminal(this.require(id).call)) this.change(id, (a, emit) => this.finish(a, emit,
+        call.status === "busy" ? "busy" : call.status === "no-answer" ? "no_answer" : call.status === "failed" ? "failed" : "ended",
+        null, !alreadyEnded && !!a.internal.correlation?.recoveryRequired));
       this.sessions.get(id)?.disconnect?.(); this.sessions.delete(id);
     } catch {
-      if (!terminal(this.require(id).call)) this.change(id, (a, emit) => {
-        a.internal.error = "Hangup could not be confirmed. Use Hang up on the operator page, then refresh.";
-        emit("call.error", { code: "PROVIDER_UNAVAILABLE", message: a.internal.error, recoverable: true });
-      });
+      this.unresolved(id, "Hangup could not be confirmed. Recovery will retry status/hangup without redial; the active reservation is retained.");
     }
   }
   attach(message: Extract<RelayInbound, { type: "setup" }>, send: RelaySend, disconnect: () => void): RelayConsumer | undefined {
     const id = message.customParameters.conversationId; if (!id) return;
-    this.enabled(); const a = this.require(id); const session = this.sessions.get(id);
-    const supplied = Buffer.from(message.customParameters.authToken ?? ""); const expected = Buffer.from(session?.token ?? "");
-    if (!session || supplied.length !== expected.length || !timingSafeEqual(supplied, expected) || session.attached
-      || terminal(a.call) || a.internal.stopRequested || (a.internal.callSid && a.internal.callSid !== message.callSid)
+    this.enabled(); const a = this.require(id); const correlation = a.internal.correlation;
+    const session = this.sessions.get(id);
+    const supplied = Buffer.from(tokenHash(message.customParameters.authToken ?? ""));
+    const expected = Buffer.from(correlation?.tokenHash ?? "");
+    if (!correlation || correlation.creation !== "submitted" || !this.sameProvider(a)
+      || supplied.length !== expected.length || !timingSafeEqual(supplied, expected) || session?.attached
+      || terminal(a.call) || (a.internal.callSid && a.internal.callSid !== message.callSid)
+      || (correlation.sessionId && correlation.sessionId !== message.sessionId)
       || message.accountSid !== this.config.mockAccountSid || message.from !== "+48000000000" || message.to !== "+48111111111") throw new Error("Uncorrelated relay");
+    if (!session || correlation.recoveryRequired || a.internal.stopRequested) {
+      // Late setup can resolve a lost create response using the durable hash. It cannot resume speech.
+      this.sessions.set(id, { attached: true, disconnect });
+      this.change(id, (a, emit) => {
+        a.internal.callSid = message.callSid; a.internal.correlation!.sessionId = message.sessionId;
+        a.internal.correlation!.recoveryRequired = true; a.internal.status = "unknown";
+        this.status(a, emit, "reconciliation_required");
+      });
+      void this.refresh(id).catch(() => {});
+      return { prompt() {}, close() {} };
+    }
     session.attached = true; session.disconnect = disconnect;
     this.change(id, (a, emit) => {
       a.internal.callSid = message.callSid; a.internal.status = "connected"; a.internal.error = null;
+      a.internal.correlation!.sessionId = message.sessionId;
       this.status(a, emit, "connected");
       a.call.messages[0]!.playback = "generated"; emit("transcript.updated", a.call.messages[0]!);
     });
@@ -260,7 +326,8 @@ export class DevelopmentConversations {
         if (this.closed) return;
         const a = this.require(id); if (terminal(a.call) || a.internal.stopRequested || this.closed) return;
         this.change(id, (a, emit) => {
-          a.internal.status = "disconnected"; a.internal.error = "The relay disconnected. Stop this call or wait for the mock service to confirm it ended.";
+          a.internal.correlation!.recoveryRequired = true;
+          a.internal.status = "disconnected"; a.internal.error = "The relay disconnected. Reconciling and ending the orphaned mock call without redial.";
           this.status(a, emit, "reconciliation_required");
           emit("call.error", { code: "PROVIDER_UNAVAILABLE", message: a.internal.error, recoverable: true });
         });
@@ -280,7 +347,10 @@ export class DevelopmentConversations {
     this.closed = true; if (this.timer) clearInterval(this.timer);
     await Promise.allSettled([...this.pending, ...this.refreshing.values(), ...this.stopping.values()]);
     const active = this.store.calls.active();
-    if (active && isManualAttempt(active)) await this.stop(active.call.id);
+    if (active && isManualAttempt(active) && mockRelayEnabled(this.config)) {
+      if (active.internal.correlation) this.change(active.call.id, (a) => { a.internal.correlation!.recoveryRequired = true; });
+      await this.end(active.call.id);
+    }
     this.sessions.clear(); this.listeners.clear();
   }
 }

@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { z } from "zod";
 import { StoredCallSnapshotSchema, DomainEventSchema, ReviewPlanSchema } from "@callmate/contracts";
 import type { CallSnapshot, ManualCallSnapshot, DomainEvent, ReviewPlan, SimulatorScenario, StoredCallSnapshot } from "@callmate/contracts";
 
@@ -11,13 +12,21 @@ export type Internal = {
 };
 export type Attempt = { call: CallSnapshot; internal: Internal; replayFloor: number };
 
-export type ManualInternal = {
-  kind: "manual_mock";
-  callSid: string | null;
-  status: "creating" | "ringing" | "connected" | "disconnected" | "completed" | "failed" | "unknown";
-  error: string | null;
-  stopRequested: boolean;
-};
+const manualInternal = z.object({
+  kind: z.literal("manual_mock"),
+  callSid: z.string().regex(/^CA[0-9a-f]{32}$/i).nullable(),
+  status: z.enum(["creating", "ringing", "connected", "disconnected", "completed", "failed", "unknown"]),
+  error: z.string().nullable(),
+  stopRequested: z.boolean(),
+  // Optional only for records written before persistent recovery was introduced.
+  correlation: z.object({
+    apiOrigin: z.url(), accountSid: z.string().regex(/^AC[0-9a-f]{32}$/i),
+    tokenHash: z.string().regex(/^[0-9a-f]{64}$/),
+    sessionId: z.string().regex(/^VX[0-9a-f]{32}$/i).nullable(),
+    creation: z.enum(["prepared", "submitted"]), recoveryRequired: z.boolean(),
+  }).optional(),
+});
+export type ManualInternal = z.infer<typeof manualInternal>;
 export type ManualAttempt = { call: ManualCallSnapshot; internal: ManualInternal; replayFloor: number };
 export type StoredAttempt = Attempt | ManualAttempt;
 export function isManualAttempt(attempt: StoredAttempt): attempt is ManualAttempt {
@@ -28,8 +37,10 @@ export function callStore(db: Database.Database) {
   const get = (id: string): StoredAttempt | undefined => {
     const row = db.prepare("SELECT snapshot, internal, replay_floor FROM call_attempts WHERE id = ?").get(id) as
       { snapshot: string; internal: string; replay_floor: number } | undefined;
-    return row && { call: StoredCallSnapshotSchema.parse(JSON.parse(row.snapshot)),
-      internal: JSON.parse(row.internal) as Internal | ManualInternal, replayFloor: row.replay_floor } as StoredAttempt;
+    if (!row) return;
+    const call = StoredCallSnapshotSchema.parse(JSON.parse(row.snapshot));
+    return { call, internal: "kind" in call ? manualInternal.parse(JSON.parse(row.internal))
+      : JSON.parse(row.internal) as Internal, replayFloor: row.replay_floor } as StoredAttempt;
   };
   return {
     get,
@@ -57,7 +68,7 @@ export function callStore(db: Database.Database) {
       db.prepare(`INSERT INTO call_attempts (id, snapshot, internal, active, replay_floor) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET snapshot=excluded.snapshot, internal=excluded.internal,
         active=excluded.active, replay_floor=excluded.replay_floor`)
-        .run(call.id, JSON.stringify(call), JSON.stringify(attempt.internal), Number(active), attempt.replayFloor);
+        .run(call.id, JSON.stringify(call), JSON.stringify(isManualAttempt(attempt) ? manualInternal.parse(attempt.internal) : attempt.internal), Number(active), attempt.replayFloor);
       const insert = db.prepare("INSERT INTO call_events (attempt_id, sequence, value) VALUES (?, ?, ?)");
       for (const event of events) insert.run(call.id, event.sequence, JSON.stringify(DomainEventSchema.parse(event)));
     },
