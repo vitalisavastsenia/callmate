@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Writable } from "node:stream";
 import Fastify, { LogController } from "fastify";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { ApiErrorSchema, ReadinessSchema, SettingsSchema, api } from "@callmate/contracts";
+import { ApiErrorSchema, SettingsSchema, api } from "@callmate/contracts";
 import { z } from "zod";
 import type { Config } from "./config.js";
 import { openStore } from "./storage.js";
@@ -17,6 +17,7 @@ import { DevelopmentConversations, mountDevelopmentConsole } from "./development
 import type { DevelopmentOptions } from "./development-conversations.js";
 import { Retention } from "./retention.js";
 import type { RetentionOptions } from "./retention.js";
+import { Readiness } from "./readiness.js";
 import { mountMockStatus } from "./mock-status.js";
 
 type ErrorCode = z.infer<typeof ApiErrorSchema>["error"]["code"];
@@ -87,24 +88,8 @@ function privateRoutes(app: FastifyInstance, config: Config, store: Store, contr
   });
 
   app.get("/health", async () => { store.check(); return { status: "ok" }; });
-  app.get(api.readiness.path, async () => {
-    store.check();
-    return ReadinessSchema.parse({
-      mode: config.mode, ready: config.mode === "simulator", voiceEngine: null,
-      checks: [
-        { name: "storage", status: "ready", message: "SQLite migrations applied and storage available" },
-        { name: "telephony", status: config.mode === "simulator" ? "ready" : "missing",
-          message: config.mode === "simulator" ? "Fake telephony only; cannot dial" : "Live telephony is not implemented" },
-        { name: "voice", status: config.mode === "simulator" ? "not_required" : "missing",
-          message: mockRelayEnabled(config) ? "Development mock relay available at /ws/voice; scripted echo only"
-            : config.mode === "simulator" ? "Simulated text playback; no audio provider" : "Live voice is not implemented" },
-        { name: "dialogue", status: config.mode === "simulator" ? "ready" : "missing",
-          message: config.mode === "simulator" ? "Deterministic scripted dialogue; no model requests" : "Live dialogue is not implemented" },
-        { name: "tunnel", status: config.mode === "simulator" ? "not_required" : "missing",
-          message: config.mode === "simulator" ? "Simulator mode needs no public tunnel" : "Live tunnel connectivity has not been verified" },
-      ],
-    });
-  });
+  const readiness = new Readiness(config, store);
+  app.get(api.readiness.path, async () => readiness.report());
   app.get(api.getSettings.path, async () => SettingsSchema.parse(store.getSettings()));
   app.put(api.updateSettings.path, async (request) => {
     const settings = store.setSettings(SettingsSchema.parse(request.body));

@@ -30,11 +30,19 @@ const schema = z.object({
   simulatorScenario: SimulatorScenarioSchema.default("within_plan"),
   simulatorStepMs: z.coerce.number().int().min(50).max(5000).default(750),
   simulatorApprovalSeconds: z.coerce.number().int().min(1).max(120).default(30),
-}).refine((config) => config.apiPort !== config.callbackPort, {
+}).refine((config) => config.apiPort !== config.callbackPort
+  || (config.nodeEnv === "test" && config.apiPort === 0 && config.callbackPort === 0), {
   path: ["callbackPort"], message: "Listeners need separate ports",
 });
 
 export type Config = z.infer<typeof schema>;
+
+/** In-process tests may bind ephemeral ports; environment-loaded ports still require 1–65535. */
+export function configurationValid(config: Config): boolean {
+  return schema.safeExtend({ apiPort: port.or(z.literal(0)), callbackPort: port.or(z.literal(0)) })
+    .refine((value) => value.nodeEnv === "test" || (value.apiPort !== 0 && value.callbackPort !== 0))
+    .safeParse(config).success;
+}
 
 export function loadConfig(env: NodeJS.ProcessEnv): Config {
   const result = schema.safeParse({

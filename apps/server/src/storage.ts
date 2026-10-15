@@ -68,7 +68,10 @@ export function openStore(dataDir: string) {
           .run(JSON.stringify(settings), new Date().toISOString());
         return settings;
       },
-      check() { db.prepare("SELECT 1").get(); },
+      check() {
+        db.prepare("SELECT id FROM app_settings WHERE id = 1").get();
+        db.prepare("SELECT id FROM call_attempts LIMIT 1").get();
+      },
       close() { if (db.open) db.close(); },
     };
   } catch (error) {

@@ -18,7 +18,7 @@ docker compose logs -f server
 
 The image uses a build stage with development dependencies/compilers and a separate runtime stage without those tools. The server runs as the unprivileged `node` user with a read-only image filesystem. A writable SQLite volume and temporary `/tmp` filesystem are mounted separately.
 
-The Docker health check tests `/health`. Healthy means the process and SQLite are available. `/api/v1/readiness` reports `ready: true` in simulator mode with fake telephony, scripted dialogue, and simulated text playback (`voiceEngine: null`). In live mode it reports `ready: false`; live Start returns `503 PROVIDER_NOT_READY`. Switching to `live` never falls back to a simulated or real call.
+The Docker health check tests `/health`, which reads the SQLite application tables without checking the mock service. `/api/v1/readiness` reports database/configuration checks, mock connectivity and per-capability enabled/ready flags. Overall readiness requires valid local prerequisites and simulator mode; it also requires a healthy mock when the manual transport is enabled. A mock outage can leave scripted calls ready while overall readiness is false. `voiceEngine` remains `null`; in live mode readiness is false and live Start returns `503 PROVIDER_NOT_READY`. Switching to `live` never falls back to a simulated or real call. See [readiness diagnostics](#15-readiness-diagnostics).
 
 ## 2. Configuration
 
@@ -389,3 +389,68 @@ Before provider submission, manual expiry prevents Calls creation and safely rel
 Always label `testUsage.source=test_rates` as **Test-rate estimate**. `settledTotal` stays `null` and `status` stays `estimated`, even after completion. Unknown real Twilio, ConversationRelay and model charges must appear as unavailable; zero provider cost must never be inferred. This step adds no live provider pricing/reconciliation or dialogue usage adapter.
 
 Docker checks cover opt-in validation, rounding/exact boundaries, zero-budget rejection, frozen rates/budgets, legacy records, preflight/submission cancellation, queued and connected stops, no-browser enforcement, failed hangup/overrun, delayed dialogue output, atomic persistence/retry, metadata preservation, duplicate callbacks, restart and deletion/retention.
+
+
+## 15. Readiness diagnostics
+
+`GET /api/v1/readiness` is a private, origin-checked, read-only diagnostic endpoint. It returns **HTTP 200 with `ReadinessSchema` even when dependencies fail**; inspect `ready`, individual `checks` and `capabilities`. Responses use `Cache-Control: no-store`. The callback listener does not expose this route. No calls, transcript reads, settings writes, redial or hangup are performed.
+
+| Check | What it verifies | Failure/disabled behavior |
+| --- | --- | --- |
+| `storage` | SQLite can read `app_settings` and `call_attempts`. Migrations were validated at startup. | `failed` with a safe message if storage/table access fails. This is a read probe, not a write or disk-space guarantee. |
+| `configuration` | Effective server configuration passes validation and stored settings pass `SettingsSchema`. | `failed` if invalid, or if settings cannot be validated because storage is unavailable. Malformed environment settings and migration failures still prevent startup. |
+| `mock` | When enabled and local prerequisites pass, GET the configured local mock's `/healthz`; require 2xx JSON with `mock=true` and the expected service name. | `failed` on timeout, refusal, wrong identity, malformed/oversized response or redirect. `not_required` when the transport gate is off. Skip the probe when configuration/storage fails. |
+| `telephony` | Scripted fake telephony is installed in simulator mode. | `missing` in live mode. This does not certify a real Twilio account. |
+| `voice` | Local mock relay code is enabled and mock health is available. | `failed` when enabled prerequisites fail; `not_required` for scripted playback; `missing` in live mode. No WS/callback round trip is performed. |
+| `dialogue` | Scripted dialogue is installed in simulator mode. | `missing` in live mode. No model/API request is made. |
+| `tunnel` | Not needed for the local simulator/mock workflow. | `not_required` in simulator mode; `missing` in live mode because public connectivity is unverified. |
+
+The mock transport gate requires all three: `CALLMATE_MODE=simulator`, `TELEPHONY_PROVIDER=mock` and `NODE_ENV=development` or `test`. Fake provider, production and live configurations never trigger a mock probe. A probe uses the existing local-only Calls client: a 2.5-second timeout, 64KiB maximum response and no followed redirects. Concurrent readiness requests share an in-flight probe; later requests probe again, so a recovered service can immediately become ready. The probe validates health/service identity, not account credentials, operator browser availability, reverse Docker networking, signed callbacks, WSS, speech or a public tunnel. Start retains its existing preflight/control checks; readiness is not authorization to call.
+
+Overall `ready` requires valid configuration/storage, simulator mode, and a successful mock probe when that transport is enabled. `/health` remains independent of the emulator: mock outages do not cause Docker to mark the backend unhealthy. Database access errors still fail `/health`, while readiness returns structured diagnostics. An active call or unresolved reservation does not fail dependency readiness; call-start concurrency rules still apply.
+
+Each capability has `{ name, enabled, ready }`. `enabled` reports configuration/code availability; `ready` additionally requires validated local prerequisites and, for the mock transport capabilities, a successful mock probe. A disabled capability is never ready:
+
+| Capability | Enabled when |
+| --- | --- |
+| `scripted_calls`, `approvals` | Simulator mode. |
+| `manual_mock_calls`, `mock_relay`, `mock_status_callbacks` | The complete mock transport gate is enabled. |
+| `history`, `automatic_retention` | Installed in every mode; readiness depends on local prerequisites. |
+| `test_rate_budgets` | Simulator mode with an explicit test rate. |
+| `live_calls`, `dialogue_integration`, `provider_billing` | Always false until their real integrations are implemented. |
+
+For example, with the mock enabled but stopped, the endpoint returns:
+
+```json
+{
+  "mode": "simulator",
+  "ready": false,
+  "voiceEngine": null,
+  "checks": [
+    { "name": "storage", "status": "ready", "message": "SQLite application tables are readable" },
+    { "name": "configuration", "status": "ready", "message": "Server configuration and stored settings are valid" },
+    { "name": "mock", "status": "failed", "message": "Local mock health check failed or timed out" },
+    { "name": "telephony", "status": "ready", "message": "Scripted fake telephony is installed; real calling is disabled" },
+    { "name": "voice", "status": "failed", "message": "Local mock relay handler is enabled; callback and WebSocket round trips have not been probed" },
+    { "name": "dialogue", "status": "ready", "message": "Scripted dialogue is installed; no model integration is enabled" },
+    { "name": "tunnel", "status": "not_required", "message": "Local development needs no public tunnel" }
+  ],
+  "capabilities": [
+    { "name": "scripted_calls", "enabled": true, "ready": true },
+    { "name": "manual_mock_calls", "enabled": true, "ready": false },
+    { "name": "mock_relay", "enabled": true, "ready": false },
+    { "name": "mock_status_callbacks", "enabled": true, "ready": false },
+    { "name": "history", "enabled": true, "ready": true },
+    { "name": "approvals", "enabled": true, "ready": true },
+    { "name": "automatic_retention", "enabled": true, "ready": true },
+    { "name": "test_rate_budgets", "enabled": false, "ready": false },
+    { "name": "live_calls", "enabled": false, "ready": false },
+    { "name": "dialogue_integration", "enabled": false, "ready": false },
+    { "name": "provider_billing", "enabled": false, "ready": false }
+  ]
+}
+```
+
+Messages are fixed, non-secret descriptions: no configured origins/paths, credentials, tokens, remote response bodies or exception details appear in responses or logs. The check results do not include account identifiers or raw configuration values. UI clients should display checks and use the relevant capability's `ready` flag rather than disabling all local features when only the mock is unavailable. The simple development console's existing Start preflight remains authoritative; full settings/readiness presentation is a booking-UI task.
+
+Docker checks cover healthy/failed/recovered and disabled mocks, bounded/unresponsive probes, concurrent requests, malformed/oversized/redirected responses, connection refusal, invalid stored settings, inaccessible database tables, sanitized diagnostics, capability gates and private-listener/origin isolation.

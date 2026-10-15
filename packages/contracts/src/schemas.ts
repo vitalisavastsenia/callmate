@@ -261,10 +261,16 @@ export const DomainEventSchema = z.discriminatedUnion("type", [
   event("call.error", z.strictObject({ code: ErrorCodeSchema, message: TextSchema, recoverable: z.boolean() })),
 ]);
 
+export const CapabilitySchema = z.strictObject({
+  name: z.enum(["scripted_calls", "manual_mock_calls", "mock_relay", "mock_status_callbacks", "history",
+    "approvals", "automatic_retention", "test_rate_budgets", "live_calls", "dialogue_integration", "provider_billing"]),
+  enabled: z.boolean(), ready: z.boolean(),
+}).refine((value) => !value.ready || value.enabled, "Disabled capabilities cannot be ready");
 export const ReadinessSchema = z.strictObject({
   mode: z.enum(["simulator", "live"]), ready: z.boolean(),
   voiceEngine: z.enum(["conversation_relay", "openai_realtime"]).nullable(),
-  checks: z.array(z.strictObject({ name: z.enum(["storage", "telephony", "voice", "dialogue", "tunnel"]),
+  capabilities: z.array(CapabilitySchema),
+  checks: z.array(z.strictObject({ name: z.enum(["configuration", "storage", "mock", "telephony", "voice", "dialogue", "tunnel"]),
     status: z.enum(["ready", "missing", "failed", "not_required"]), message: TextSchema })),
 });
 export const SettingsSchema = z.strictObject({
