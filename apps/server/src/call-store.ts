@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { z } from "zod";
 import { StoredCallSnapshotSchema, DomainEventSchema, ReviewPlanSchema } from "@callmate/contracts";
 import type { CallSnapshot, ManualCallSnapshot, DomainEvent, ReviewPlan, SimulatorScenario, StoredCallSnapshot } from "@callmate/contracts";
+import { callStatus } from "./twilio/protocol.js";
 
 export type Internal = {
   scenario: SimulatorScenario;
@@ -24,6 +25,10 @@ const manualInternal = z.object({
     tokenHash: z.string().regex(/^[0-9a-f]{64}$/),
     sessionId: z.string().regex(/^VX[0-9a-f]{32}$/i).nullable(),
     creation: z.enum(["prepared", "submitted"]), recoveryRequired: z.boolean(),
+    statusCallbackUrl: z.url().optional(),
+    callbackSequence: z.number().int().nonnegative().safe().optional(),
+    providerStatus: callStatus.optional(),
+    hangupRequested: z.boolean().optional(),
   }).optional(),
 });
 export type ManualInternal = z.infer<typeof manualInternal>;

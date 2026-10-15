@@ -127,6 +127,17 @@ test("callback listener exposes no private, health, or unauthenticated provider 
   }
 });
 
+test("signed mock progress route is unavailable in production, live mode and fake-provider mode", async (t) => {
+  for (const override of [{ NODE_ENV: 'production' }, { CALLMATE_MODE: 'live' }, { TELEPHONY_PROVIDER: 'fake' }]) {
+    const config = loadConfig({ CALLMATE_DATA_DIR: directory(t), CALLMATE_LOG_LEVEL: 'silent',
+      NODE_ENV: 'test', TELEPHONY_PROVIDER: 'mock', ...override });
+    const runtime = createRuntime(config); t.after(() => runtime.close());
+    const response = await runtime.callbacks.inject({ method: 'POST', url: '/callbacks/mock/status/00000000-0000-4000-8000-000000000000',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-callmate-mock': 'true' }, payload: 'CallStatus=completed' });
+    assert.equal(response.statusCode, 404);
+  }
+});
+
 test("only simulator mode is ready; live providers remain unavailable", async (t) => {
   for (const mode of ["simulator", "live"]) {
     const { privateApi } = setup(t, mode);

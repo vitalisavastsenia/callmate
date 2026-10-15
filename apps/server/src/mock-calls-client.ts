@@ -51,6 +51,11 @@ export class MockCallsClient {
     if (!result.success) throw new MockCallsError();
   }
   private get root() { return `/2010-04-01/Accounts/${encodeURIComponent(this.config.mockAccountSid)}/Calls`; }
+  callbackUrl(id: string) {
+    const url = new URL(this.config.mockRelayUrl);
+    url.protocol = "http:"; url.pathname = `/callbacks/mock/status/${encodeURIComponent(id)}`;
+    return url.href;
+  }
   private parse(raw: unknown) {
     const parsed = resource.safeParse(raw);
     if (!parsed.success || parsed.data.account_sid !== this.config.mockAccountSid
@@ -64,6 +69,8 @@ export class MockCallsClient {
     relay.parameter({ name: "authToken", value: token });
     relay.parameter({ name: "taskId", value: `console-${id}` });
     const body = new URLSearchParams({ To: "+48111111111", From: "+48000000000", Twiml: response.toString() });
+    body.set("StatusCallback", this.callbackUrl(id)); body.set("StatusCallbackMethod", "POST");
+    for (const event of ["initiated", "ringing", "answered", "completed"]) body.append("StatusCallbackEvent", event);
     return this.parse(await this.request(this.root + ".json", body));
   }
   async get(sid: string) { return this.parse(await this.request(`${this.root}/${encodeURIComponent(sid)}.json`)); }

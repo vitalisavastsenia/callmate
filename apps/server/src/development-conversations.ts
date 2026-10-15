@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { ManualCallSnapshotSchema, DomainEventSchema } from "@callmate/contracts";
 import type { DomainEvent, ManualCallSnapshot } from "@callmate/contracts";
 import { z } from "zod";
+import twilio from "twilio";
 import type { Config } from "./config.js";
 import type { Store } from "./storage.js";
 import { isManualAttempt } from "./call-store.js";
@@ -13,12 +14,15 @@ import { MockCallsClient, MockCallsError } from "./mock-calls-client.js";
 import { mockRelayEnabled } from "./mock-relay.js";
 import type { RelayConsumer, RelaySend } from "./mock-relay.js";
 import type { RelayInbound } from "./twilio/protocol.js";
+import { normalizeStatus, statusCallback, terminal as providerTerminal } from "./twilio/protocol.js";
+import type { CallStatus } from "./twilio/protocol.js";
 
 const startInput = z.strictObject({ requestId: z.uuid(), initialMessage: z.string().min(1).max(8000).refine((text) => text.trim().length > 0),
   language: z.enum(["es-ES", "ru-RU", "pl-PL", "en-US"]) });
 const terminal = (call: ManualCallSnapshot) => ["ended", "busy", "no_answer", "failed"].includes(call.callState);
 type Emit = (type: DomainEvent["type"], payload: unknown) => void;
 const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
+const progress = (status: CallStatus) => status === "queued" ? 0 : status === "ringing" ? 1 : status === "in-progress" ? 2 : 3;
 
 /** Manual transport adapter for the shared persisted attempts, event log and active-call slot. */
 export class DevelopmentConversations {
@@ -81,23 +85,28 @@ export class DevelopmentConversations {
     const set = this.listeners.get(id) ?? new Set<() => void>(); set.add(listener); this.listeners.set(id, set);
     return () => { set.delete(listener); if (!set.size) this.listeners.delete(id); };
   }
-  private change(id: string, work: (a: ManualAttempt, emit: Emit) => void) {
-    const call = this.store.calls.transaction(() => {
+  private change(id: string, work: (a: ManualAttempt, emit: Emit) => void | boolean) {
+    const result = this.store.calls.transaction(() => {
       const a = this.require(id); const events: DomainEvent[] = [];
+      const previousUpdatedAt = a.call.updatedAt;
       a.call.revision++; a.call.updatedAt = new Date().toISOString();
-      work(a, (type, payload) => events.push(DomainEventSchema.parse({ contractVersion: 1, id: randomUUID(),
+      const changed = work(a, (type, payload) => events.push(DomainEventSchema.parse({ contractVersion: 1, id: randomUUID(),
         attemptId: id, sequence: ++a.call.lastEventSequence, snapshotRevision: a.call.revision,
         occurredAt: a.call.updatedAt, type, payload })));
-      this.store.calls.save(a, events); return a.call;
+      if (changed === false) return { call: this.require(id).call, publish: false };
+      // Internal sequence/correlation updates do not fabricate a public revision or SSE event.
+      if (!events.length) { a.call.revision--; a.call.updatedAt = previousUpdatedAt; }
+      this.store.calls.save(a, events); return { call: a.call, publish: events.length > 0 };
     });
-    for (const listener of this.listeners.get(id) ?? []) listener();
-    return call;
+    if (result.publish) for (const listener of this.listeners.get(id) ?? []) listener();
+    return result.call;
   }
   private status(a: ManualAttempt, emit: Emit, state: ManualCallSnapshot["callState"]) {
     if (a.call.callState === state) return;
     a.call.callState = state; emit("call.status", { callState: state });
   }
   private finish(a: ManualAttempt, emit: Emit, state: "ended" | "busy" | "no_answer" | "failed", error: string | null = null, interrupted = false) {
+    if (terminal(a.call)) return;
     a.internal.status = state === "ended" ? "completed" : "failed"; a.internal.error = error;
     a.call.bookingState = "not_booked";
     a.call.outcome = { status: "not_booked", reason: a.internal.stopRequested ? "user_stopped"
@@ -106,6 +115,57 @@ export class DevelopmentConversations {
       summaryEn: "Manual mock call ended. No automated booking was attempted or confirmed." };
     emit("booking.updated", { bookingState: a.call.bookingState, outcome: a.call.outcome });
     this.status(a, emit, state);
+  }
+  private providerStatus(a: ManualAttempt, emit: Emit, status: CallStatus): boolean {
+    if (terminal(a.call)) return false;
+    const correlation = a.internal.correlation!;
+    const prior = correlation.providerStatus ?? (correlation.sessionId || a.call.callState === "connected" ? "in-progress"
+      : a.call.callState === "ringing" ? "ringing" : "queued");
+    if (progress(status) < progress(prior)) return false;
+    const changed = correlation.providerStatus !== status;
+    correlation.providerStatus = status;
+    if (providerTerminal.has(status)) {
+      this.finish(a, emit, status === "busy" ? "busy" : status === "no-answer" ? "no_answer" : status === "failed" ? "failed" : "ended", null,
+        !!correlation.hangupRequested && correlation.recoveryRequired && ["completed", "canceled"].includes(status));
+      return true;
+    }
+    // Provider progress never cancels Stop, recovery, or a lost relay reservation.
+    if (a.internal.stopRequested || correlation.recoveryRequired || ["ending", "reconciliation_required"].includes(a.call.callState)) return changed;
+    const state = normalizeStatus(status);
+    const internalStatus = status === "in-progress" ? "connected" : "ringing";
+    const visibleChanged = a.call.callState !== state || a.internal.status !== internalStatus;
+    a.internal.status = internalStatus; this.status(a, emit, state);
+    return changed || visibleChanged;
+  }
+  /** Signed local mock callback; persist cursor, snapshot and events before acknowledging delivery. */
+  receiveStatus(id: string, fields: Record<string, string>, signature: string, target: { path: string; host: string }) {
+    // Keep acknowledging in-flight deliveries during graceful hangup, while SQLite/listeners are open.
+    if (!mockRelayEnabled(this.config)) throw new CommandError(503, "PROVIDER_NOT_READY", "Mock callbacks are disabled");
+    const stored = this.store.calls.get(id);
+    const deny = () => { throw new CommandError(403, "INVALID_REQUEST", "Invalid or uncorrelated mock callback"); };
+    if (!stored || !isManualAttempt(stored)) return deny();
+    const correlation = stored.internal.correlation;
+    if (!correlation?.statusCallbackUrl || correlation.creation !== "submitted" || !this.sameProvider(stored)) return deny();
+    const url = new URL(correlation.statusCallbackUrl);
+    if (target.path !== url.pathname || target.host !== url.host
+      || !twilio.validateRequest(this.config.mockAuthToken, signature, url.href, fields)) return deny();
+    const event = statusCallback.parse(fields);
+    if (event.AccountSid !== correlation.accountSid || event.From !== "+48000000000" || event.To !== "+48111111111"
+      || (stored.internal.callSid && event.CallSid !== stored.internal.callSid)) return deny();
+    let accepted = false;
+    this.change(id, (a, emit) => {
+      if (terminal(a.call) || event.SequenceNumber <= (a.internal.correlation!.callbackSequence ?? -1)) return false;
+      accepted = true;
+      a.internal.correlation!.callbackSequence = event.SequenceNumber;
+      a.internal.callSid = event.CallSid;
+      this.providerStatus(a, emit, event.CallStatus === "initiated" ? "queued" : event.CallStatus);
+    });
+    if (!accepted) return;
+    if (terminal(this.require(id).call)) {
+      this.sessions.get(id)?.disconnect?.(); this.sessions.delete(id);
+    } else if (this.require(id).internal.stopRequested || this.require(id).internal.correlation?.recoveryRequired) {
+      void this.refresh(id).catch(() => {});
+    }
   }
   private view(a: ManualAttempt) {
     // This compatibility projection has no separate lifecycle or transcript storage.
@@ -151,7 +211,8 @@ export class DevelopmentConversations {
           sequence: index + 1, snapshotRevision: 1, occurredAt: now, ...event }));
       this.store.calls.save({ call, replayFloor: 0, internal: { kind: "manual_mock", callSid: null, status: "creating", error: null, stopRequested: false,
         correlation: { apiOrigin: new URL(this.config.mockApiBase).origin, accountSid: this.config.mockAccountSid,
-          tokenHash: tokenHash(token), sessionId: null, creation: "prepared", recoveryRequired: false } } }, events);
+          tokenHash: tokenHash(token), sessionId: null, creation: "prepared", recoveryRequired: false,
+          statusCallbackUrl: this.client.callbackUrl(call.id) } } }, events);
       this.store.calls.recordCommand(input.requestId, "manual-start", body, call.id);
       return undefined;
     });
@@ -174,15 +235,16 @@ export class DevelopmentConversations {
       const current = this.require(input.requestId);
       if (current.internal.callSid && current.internal.callSid !== call.sid) throw new MockCallsError(true);
       this.change(input.requestId, (a, emit) => {
+        if (terminal(a.call)) return false;
         a.internal.callSid = call.sid;
-        if (a.internal.status === "creating" && !a.internal.stopRequested) { a.internal.status = "ringing"; this.status(a, emit, call.status === "queued" ? "dialing" : "ringing"); }
+        this.providerStatus(a, emit, call.status);
       });
       if (this.closed || this.require(input.requestId).internal.stopRequested) await this.stop(input.requestId);
     } catch (error) {
       const ambiguous = !(error instanceof MockCallsError) || error.ambiguous;
       this.change(input.requestId, (a, emit) => {
-        if (terminal(a.call)) return;
-        if (!ambiguous) this.finish(a, emit, "failed", "The mock service rejected the call. Check its local account configuration.");
+        if (terminal(a.call)) return false;
+        if (!ambiguous && !a.internal.callSid) this.finish(a, emit, "failed", "The mock service rejected the call. Check its local account configuration.");
         else {
           a.internal.correlation!.recoveryRequired = true;
           a.internal.status = "unknown";
@@ -218,18 +280,14 @@ export class DevelopmentConversations {
       const call = await this.client.get(before.internal.callSid);
       if (call.sid !== before.internal.callSid) throw new MockCallsError();
       if (this.closed || terminal(this.require(id).call)) return;
-      if (["completed", "canceled", "busy", "no-answer", "failed"].includes(call.status)) {
-        this.change(id, (a, emit) => this.finish(a, emit, call.status === "busy" ? "busy" : call.status === "no-answer" ? "no_answer"
-          : call.status === "failed" ? "failed" : "ended", ["busy", "no-answer", "failed"].includes(call.status)
-            ? "The mock call was rejected, unanswered or disconnected. See the operator page for details." : null));
+      if (providerTerminal.has(call.status)) {
+        this.change(id, (a, emit) => this.providerStatus(a, emit, call.status));
         this.sessions.get(id)?.disconnect?.(); this.sessions.delete(id);
       } else if (this.require(id).internal.correlation?.recoveryRequired || this.require(id).internal.stopRequested) {
         // A provider call cannot continue without its original relay. Never reconnect or replay text.
         await this.end(id);
-      } else if (["queued", "ringing"].includes(call.status) && this.sessions.has(id)
-        && !this.sessions.get(id)!.attached && !this.require(id).internal.stopRequested) {
-        const state = call.status === "queued" ? "dialing" : "ringing";
-        if (this.require(id).call.callState !== state) this.change(id, (a, emit) => this.status(a, emit, state));
+      } else {
+        this.change(id, (a, emit) => this.providerStatus(a, emit, call.status));
       }
     } catch {
       if (this.closed || terminal(this.require(id).call)) return;
@@ -269,7 +327,9 @@ export class DevelopmentConversations {
       // Verify the resource before changing it, including when recovering after a configuration change.
       const current = await this.client.get(a.internal.callSid);
       if (current.sid !== a.internal.callSid) throw new MockCallsError();
+      if (terminal(this.require(id).call)) return;
       const alreadyEnded = ["completed", "canceled", "busy", "no-answer", "failed"].includes(current.status);
+      if (!alreadyEnded) this.change(id, (a) => { a.internal.correlation!.hangupRequested = true; });
       const call = alreadyEnded ? current : await this.client.hangup(a.internal.callSid);
       if (call.sid !== a.internal.callSid || !["completed", "canceled", "busy", "no-answer", "failed"].includes(call.status)) throw new MockCallsError();
       if (!terminal(this.require(id).call)) this.change(id, (a, emit) => this.finish(a, emit,
@@ -306,6 +366,7 @@ export class DevelopmentConversations {
     this.change(id, (a, emit) => {
       a.internal.callSid = message.callSid; a.internal.status = "connected"; a.internal.error = null;
       a.internal.correlation!.sessionId = message.sessionId;
+      a.internal.correlation!.providerStatus = "in-progress";
       this.status(a, emit, "connected");
       a.call.messages[0]!.playback = "generated"; emit("transcript.updated", a.call.messages[0]!);
     });

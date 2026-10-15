@@ -14,6 +14,7 @@ import { Simulator } from "./simulator.js";
 import type { SimulatorOptions } from "./simulator.js";
 import { mockRelayEnabled, mountMockRelay } from "./mock-relay.js";
 import { DevelopmentConversations, mountDevelopmentConsole } from "./development-conversations.js";
+import { mountMockStatus } from "./mock-status.js";
 
 type ErrorCode = z.infer<typeof ApiErrorSchema>["error"]["code"];
 function fail(reply: FastifyReply, request: FastifyRequest, status: number, code: ErrorCode, message: string,
@@ -113,6 +114,7 @@ export function createRuntime(config: Config, logStream?: Writable, simulatorOpt
   const simulator = new Simulator(config, store, simulatorOptions);
   const development = new DevelopmentConversations(config, store);
   const controller = new CallController(store, simulator, development);
+  mountMockStatus(callbacks, config, development);
   mountMockRelay(callbacks, config, () => store.getSettings().defaultCallLimits.maxDurationSeconds,
     (setup, send, disconnect) => development.attach(setup, send, disconnect));
   privateRoutes(privateApi, config, store, controller);

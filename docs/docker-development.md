@@ -34,6 +34,7 @@ Defaults work without `.env`. For overrides, copy `.env.example` to ignored `.en
 | `CALLMATE_MOCK_RELAY_URL` | `ws://host.docker.internal:3001/ws/voice` | Emulator-to-backend WS destination; Compose follows `CALLMATE_CALLBACK_PORT` unless explicitly overridden. |
 | `MOCK_ACCOUNT_SID` | `AC` + 32 zeroes | Synthetic account SID, matching the emulator. |
 | `MOCK_API_USERNAME`, `MOCK_API_PASSWORD` | `mock`, `mock-local-only` | Synthetic local Calls credentials, matching the emulator. Never use real provider credentials. |
+| `MOCK_AUTH_TOKEN` | `mock-auth-token-local-only` | Synthetic status-callback signing token; must match the standalone emulator. This does not enable a production verifier or WS signature validation. |
 | `CALLMATE_API_PORT` | `3000` | Integer 1–65535; same port inside the container and on host loopback. |
 | `CALLMATE_CALLBACK_PORT` | `3001` | Integer 1–65535; different from the API port. |
 | `CALLMATE_LOG_LEVEL` | `info` | `silent`, `error`, `warn`, `info`, or `debug`. |
@@ -42,7 +43,7 @@ Defaults work without `.env`. For overrides, copy `.env.example` to ignored `.en
 | `CALLMATE_SIMULATOR_APPROVAL_SECONDS` | `30` | Integer 1–120; approval expiry, bounded by the approved call duration. |
 | `CALLMATE_DATA_DIR` | `/data` | Set by Compose to the volume mount; standalone image configuration requires an absolute non-root writable app directory. |
 
-Twilio and LLM credentials are not needed or consumed in this step. Provider configuration/Compose injection belongs to the later adapters. No secrets are built into the image: `.dockerignore` permits only workspace manifests, source, migrations, and offline tests; environment files, host dependencies, build artifacts, Git history, docs, and local data stay outside the build context.
+Real Twilio and LLM credentials are not needed or consumed in this step. Provider configuration/Compose injection belongs to the later adapters. No secrets are built into the image: `.dockerignore` permits only workspace manifests, source, migrations, and offline tests; environment files, host dependencies, build artifacts, Git history, docs, and local data stay outside the build context.
 
 Invalid configuration fails startup. Startup/error diagnostics deliberately omit supplied values, filesystem paths, provider tokens, raw request URLs/bodies/headers, and exception details. Request logs contain only a generated request ID, method, and status. Do not add arbitrary transcript/config objects to logs in future adapters.
 
@@ -53,7 +54,7 @@ Both Fastify listeners bind `0.0.0.0` **inside the container** so Docker forward
 | Listener | Implemented routes |
 | --- | --- |
 | Private API, default host port 3000 | `GET /health`, the development UI at `/`, its `/console/` assets and `/api/dev/conversations` controls, plus all [shared HTTP/SSE routes](interfaces.md#4-private-http-api) operating on persisted simulator attempts. |
-| Callback listener, default host port 3001 | Development-only WS upgrade `/ws/voice`, gated by simulator mode, development/test environment, mock provider, and `X-CallMate-Mock: true`. Ordinary HTTP and production provider callback routes return 404. |
+| Callback listener, default host port 3001 | Development-only WS upgrade `/ws/voice` and signed form POST `/callbacks/mock/status/:id`, gated by simulator mode, development/test environment, mock provider, and `X-CallMate-Mock: true`. Other HTTP and production provider callback routes return 404. See section 11 for callback authentication and ordering. |
 
 Settings use the existing shared schemas. Example update:
 
@@ -238,7 +239,7 @@ Storage uses the same SQLite `call_attempts`, `call_events` and idempotency-comm
 
 The initial text is persisted as a `withheld` assistant message, updated to `generated` when submitted to the relay. This does not claim that audio played or was heard. Final business text preserves whitespace, Unicode and locale exactly, with no invented English translation. Up to 2,000 messages are persisted per attempt; reaching the limit stops the call. The simple console shows the latest 50 replies within 32,000 characters. Initial text is capped at 8,000 characters. Retention is manual until the separate automatic-retention task is implemented. Terminal conversation deletion clears both initial/reply text and old transcript events; idempotency uses a SHA-256 request digest so deleted text is not retained in command records.
 
-A single database reservation covers both scripted and manual calls. Their idempotency keys also share one namespace. A background poll of the local Calls API (once per second) persists provider completion and publishes SSE even with no browser open; provider callbacks are not integrated here. An ambiguous create or failed hangup retains the reservation, and no create request is retried automatically. A relay disconnect becomes `reconciliation_required` and triggers status reconciliation and orphan hangup; failed Stop requests are also retried in the background. Manual completion means `not_booked`, never booking success.
+A single database reservation covers both scripted and manual calls. Their idempotency keys also share one namespace. Signed mock progress callbacks persist lifecycle updates and publish SSE even with no browser open; the once-per-second Calls API poll remains a reconciliation fallback. Both use the same monotonic lifecycle rules. An ambiguous create or failed hangup retains the reservation, and no create request is retried automatically. A relay disconnect becomes `reconciliation_required` and triggers status reconciliation and orphan hangup; failed Stop requests are also retried in the background. Manual completion means `not_booked`, never booking success.
 
 Completed snapshots, text, history and idempotency survive backend restart. Graceful shutdown attempts to hang up active console calls; crash recovery follows section 10.
 
@@ -254,14 +255,52 @@ At startup, recovery runs once after the listeners bind, then checks unresolved 
 | --- | --- |
 | Known CallSid, matching stored API origin/account, provider reports terminal | Persist the terminal state/outcome and SSE events, then release the slot. Do not hang up again. |
 | Known CallSid, matching identity, provider reports queued/ringing/in-progress | Verify resource SID/account/from/to; hang up the orphan through the Calls API. Persist `ended` only after confirmed termination, then release the slot. Recovery-initiated hangup records `not_booked/technical_failure`; explicit user Stop records `user_stopped`. |
-| Submitted creation, no known CallSid | Retain `reconciliation_required` and the slot. A late relay setup with the persisted token hash and matching identity can supply the CallSid/session ID for verified hangup. Send no greeting, consume no prompts, and never resume speech. |
+| Submitted creation, no known CallSid | Retain `reconciliation_required` and the slot. A signed status callback can supply the CallSid, or a late relay setup with the persisted token hash and matching identity can supply the CallSid/session ID, for verified reconciliation/hangup. Send no greeting, consume no prompts, and never resume speech. |
 | Provider unavailable, 404, malformed/mismatched resource, or hangup unconfirmed | Retain the reservation and a safe error; retry status/hangup. A missing record is not proof that a call ended. |
 | Stored API origin/account differs, or legacy active record lacks correlation | Send no provider request. Keep the slot reserved for inspection against the original provider; do not bind an old call to a new account/service. Completed legacy records remain readable. |
 
 Recovery always hangs up the provider before closing any surviving relay socket. Socket loss also triggers this policy; partial caller text is not restored and the initial message is never replayed. Existing persisted transcripts/history and SSE sequence numbers survive recovery. Manual completion never confirms a booking.
 
-Limits: this implements recovery for the configured local mock Calls adapter, not real Twilio. Provider status callbacks and signature validation remain separate work. An ambiguous call with no CallSid and no subsequent authenticated setup cannot be identified automatically; there is no guess by phone number or automatic reservation override. Inspect the original operator page, and preserve the backend data volume while unresolved. Hanging up an unidentified call in the operator page alone cannot release the backend reservation. The emulator itself is in-memory: if it restarts and loses records, the backend's 404 remains unresolved rather than inventing completion.
+Limits: this implements recovery for the configured local mock Calls adapter, not real Twilio. Signed local status callbacks are implemented; real-provider callbacks and WS signature validation remain separate work. An ambiguous call with no CallSid and no subsequent signed status callback or authenticated setup cannot be identified automatically; there is no guess by phone number or automatic reservation override. Inspect the original operator page, and preserve the backend data volume while unresolved. Hanging up an unidentified call in the operator page alone cannot release the backend reservation. The emulator itself is in-memory: if it restarts and loses records, the backend's 404 remains unresolved rather than inventing completion.
 
 The Docker checks include a separate backend process killed with SIGKILL, while the test provider remains running. They cover queued/ringing/connected and terminal calls, unavailable provider, failed hangup/retry, missing records, changed identities, lost create replies with late setup, pre-submission crashes, durable session IDs, preserved transcripts/events, and no redial/repeated greeting.
 
 If Start reports that the service is unavailable, start the emulator and verify both configured mock origins/ports. If credentials or account SID differ, set the same synthetic values in both Compose projects. Container-to-host access uses `host.docker.internal` (with Linux host-gateway mapping); the backend sends a local Host header accepted by the emulator. If Answer fails, inspect the operator diagnostic and check the relay destination as described in section 8.
+
+
+## 11. Reliable mock status callbacks
+
+Backend-started manual calls automatically subscribe to `initiated`, `ringing`, `answered` and `completed` through the Calls API's repeated `StatusCallbackEvent` form fields. `StatusCallback` points to `/callbacks/mock/status/:attemptId` on the callback listener. Its HTTP origin is derived from `CALLMATE_MOCK_RELAY_URL` by replacing `ws:` with `http:`; the exact destination URL is persisted before submitting the call. No separate URL setting is needed for the current local Docker setup.
+
+The emulator posts official-format `application/x-www-form-urlencoded` progress fields. An example body, before URL encoding:
+
+```text
+AccountSid=AC00000000000000000000000000000000
+CallSid=CA11111111111111111111111111111111
+From=+48000000000
+To=+48111111111
+CallStatus=in-progress
+SequenceNumber=2
+CallbackSource=call-progress-events
+Timestamp=Thu, 15 Oct 2026 12:00:00 GMT
+```
+
+`answered` is a subscription name; its payload status is `in-progress`. Form-encode plus signs as `%2B`. The request needs the mock marker and `X-Twilio-Signature`, verified by the official Twilio SDK with the shared synthetic `MOCK_AUTH_TOKEN`. Verification uses the persisted destination URL and **all** form fields, including extra provider fields, before schema parsing. The request path/Host must match that URL; query additions, browser Origin/Fetch-Metadata, duplicate form keys, malformed sequence/timestamp, and wrong account/call/from/to are rejected. Bodies are capped at 16KiB and 50 fields. Private API routes do not accept these callbacks. Production/live/fake modes return 404. WS signature verification remains separate work, so the existing local-only transport restriction still applies.
+
+SQLite stores a per-attempt callback sequence and highest provider progress alongside the existing correlation. Cursor, CallSid binding, snapshot and event batch commit atomically before the endpoint returns 204. Failed processing returns an error and rolls back the cursor as well, allowing the same event to be retried. Raw callback bodies, signatures and signing tokens are not persisted or logged. Existing active records without a callback URL continue using polling and relay correlation; they are not silently assigned a new callback destination. No database migration or UI contract change is required.
+
+| Delivery | Result |
+| --- | --- |
+| Duplicate or lower/equal `SequenceNumber` | Return 204 with no public revision, transcript, SSE event or provider side effect. |
+| Higher sequence with forward status | Advance the cursor and apply progress. Missing sequence numbers do not block processing. Order follows the sequence, not arrival time or timestamp. |
+| Higher sequence with regressing status | Advance only the internal cursor; never move `connected` back to ringing/dialing. Later lower-sequence callbacks are still stale. Polling can reconcile a missed terminal state. |
+| Progress during Stop/recovery | Record ordering/correlation, but preserve `ending` or `reconciliation_required`; do not resume output or cancel hangup. |
+| Terminal status | Atomically finalize the call/outcome and release its reservation once. A terminal callback can correlate a lost create response. |
+| Any event after a terminal result | Acknowledge valid retries with 204; preserve the first terminal state, outcome, revisions and messages, even if the retry has a higher sequence or conflicting terminal status. |
+| Late REST/create response or relay event | Apply the same forward-only lifecycle guards. A stale response cannot reopen a finished call or affect a newer attempt. |
+
+For example, delivery `in-progress/2 → ringing/1 → completed/3 → in-progress/100` produces only `connected → ended`. The delayed ringing and post-completion progress are acknowledged without UI events. Provider progress can mark a call connected before relay setup; the initial assistant message remains `withheld` until the actual relay submission and is never replayed by a callback.
+
+Callback sequence is separate from UI SSE sequence. Internal cursor-only changes do not alter the public revision or emit SSE. Retrying after restart or after transcript deletion still respects the terminal tombstone; deleted text cannot be recreated. A late callback for an older attempt cannot change the current call's reservation. Provider termination and booking outcome remain separate; no callback confirms an appointment. A persisted hangup intent preserves `technical_failure` for interrupted orphan calls even when their completion callback races the hangup response; explicit Stop retains `user_stopped`.
+
+The root Docker checks exercise signed HTTP traffic, concurrent duplicates, out-of-order progress, completion before the create response, delayed polls, Stop/recovery races, restart/deletion replay, invalid signatures/identities, and transaction rollback/retry. The standalone emulator sends callbacks once without automatic retries; retry/delay scenarios are injected by the backend tests. Missing callbacks remain recoverable through the local Calls poll. This implements the local mock path; real Twilio integration remains future work.

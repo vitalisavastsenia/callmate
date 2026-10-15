@@ -15,6 +15,8 @@ import { XMLParser } from "fast-xml-parser";
 import { WebSocket } from "ws";
 import { loadConfig } from "../dist/config.js";
 import { createRuntime } from "../dist/server.js";
+import twilio from "twilio";
+import Database from "better-sqlite3";
 
 const sid = (prefix) => prefix + randomBytes(16).toString("hex");
 async function until(predicate) {
@@ -39,8 +41,11 @@ async function fixture(t, options = {}) {
       const parsed = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "" }).parse(form.get("Twiml"));
       const relay = parsed.Response.Connect.ConversationRelay;
       const call = { sid: sid("CA"), account_sid: config.mockAccountSid, from: "+48000000000", to: "+48111111111",
-        status: options.createStatus ?? "ringing", relay, xml: form.get("Twiml") };
-      calls.set(call.sid, call); if (options.beforeCreateReply) await options.beforeCreateReply(); res.writeHead(201).end(JSON.stringify(call)); return;
+        status: options.createStatus ?? "ringing", relay, xml: form.get("Twiml"), callbackUrl: form.get("StatusCallback"), form };
+      calls.set(call.sid, call); const serialized = JSON.stringify(call);
+      if (options.beforeCreateReply) await options.beforeCreateReply(call);
+      if (options.loseCreateReply) res.destroy(); else res.writeHead(201).end(serialized);
+      return;
     }
     const id = /\/Calls\/(CA[0-9a-f]{32})\.json$/.exec(req.url)?.[1]; const call = calls.get(id);
     if (!call) { res.writeHead(404).end('{}'); return; }
@@ -48,8 +53,11 @@ async function fixture(t, options = {}) {
       assert.equal(new URLSearchParams(raw).get("Status"), "completed"); hungUp++;
       if (options.rejectHangup) { res.writeHead(503).end('{}'); return; }
       call.status = "completed"; call.peer?.close(1000);
+      if (options.beforeHangupReply) await options.beforeHangupReply(call);
     }
-    res.end(JSON.stringify({ sid: call.sid, status: call.status, account_sid: call.account_sid, from: call.from, to: call.to }));
+    const resource = { sid: call.sid, status: call.status, account_sid: call.account_sid, from: call.from, to: call.to };
+    if (req.method === "GET" && options.beforeGetReply) await options.beforeGetReply(call);
+    res.end(JSON.stringify(resource));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${server.address().port}`;
@@ -72,6 +80,20 @@ async function fixture(t, options = {}) {
     async api(path, method = "GET", body) {
       const response = await fetch(apiOrigin + path, { method, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
       return { status: response.status, body: await response.json() };
+    },
+    async callback(callSid, status, sequence, options = {}) {
+      const call = calls.get(callSid); const url = new URL(call.callbackUrl);
+      const fields = { AccountSid: config.mockAccountSid, CallSid: callSid, From: call.from, To: call.to,
+        CallStatus: status, SequenceNumber: String(sequence), CallbackSource: "call-progress-events", Timestamp: new Date().toUTCString(), ...options.fields };
+      const signature = twilio.getExpectedTwilioSignature(config.mockAuthToken, options.signUrl ?? url.href, fields);
+      const headers = { "content-type": "application/x-www-form-urlencoded", "x-callmate-mock": "true", host: url.host,
+        "x-twilio-signature": signature, ...options.headers };
+      const payload = options.payload ?? new URLSearchParams(fields).toString();
+      if (options.http) {
+        const response = await fetch(url, { method: "POST", headers, body: payload });
+        return { statusCode: response.status, body: await response.text() };
+      }
+      return runtime.callbacks.inject({ method: "POST", url: url.pathname + (options.query ?? ""), headers, payload });
     },
     async answer(id, overrides = {}) {
       const call = calls.get(id); const peer = new WebSocket(call.relay.url, { headers: { "X-CallMate-Mock": "true" } });
@@ -383,4 +405,185 @@ test('queued mock dialing and later ringing are reflected in common snapshots wi
   await until(() => app.runtime.controller.get(created.id).callState === 'ringing');
   const states = app.runtime.controller.replayEvents(created.id, 0).filter((e) => e.type === 'call.status').map((e) => e.payload.callState);
   assert.deepEqual(states, ['creating', 'dialing', 'ringing']);
+});
+
+test('official signed HTTP progress callbacks persist ordering and duplicates do not publish extra events', async (t) => {
+  const app = await fixture(t); const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  const call = app.calls.get(created.callSid);
+  assert.equal(call.form.get('StatusCallbackMethod'), 'POST');
+  assert.deepEqual(call.form.getAll('StatusCallbackEvent'), ['initiated', 'ringing', 'answered', 'completed']);
+  const live = await stream(t, app, created.id, app.runtime.controller.get(created.id).lastEventSequence);
+  assert.equal((await app.callback(call.sid, 'in-progress', 2, { http: true })).statusCode, 204);
+  const event = (await live.next()).data; assert.equal(event.type, 'call.status'); assert.equal(event.payload.callState, 'connected');
+  const connected = app.runtime.controller.get(created.id);
+  assert.equal(connected.messages[0].playback, 'withheld'); // Answered callback is not relay text submission.
+  for (const [status, sequence] of [['in-progress', 2], ['ringing', 1], ['initiated', 0]]) {
+    assert.equal((await app.callback(call.sid, status, sequence)).statusCode, 204);
+    assert.deepEqual(app.runtime.controller.get(created.id), connected);
+  }
+  const duplicates = await Promise.all(Array.from({ length: 10 }, () => app.callback(call.sid, 'in-progress', 2)));
+  assert.ok(duplicates.every((response) => response.statusCode === 204));
+  assert.deepEqual(app.runtime.controller.get(created.id), connected);
+  const repository = openStore(app.dataDir);
+  assert.equal(repository.calls.get(created.id).internal.correlation.callbackSequence, 2); repository.close();
+  assert.equal((await app.callback(call.sid, 'completed', 3)).statusCode, 204);
+  assert.equal((await live.next()).data.type, 'booking.updated'); assert.equal((await live.next()).data.payload.callState, 'ended');
+  const ended = app.runtime.controller.get(created.id);
+  for (const [status, sequence] of [['completed', 3], ['in-progress', 100], ['failed', 101], ['ringing', 1]]) {
+    assert.equal((await app.callback(call.sid, status, sequence)).statusCode, 204);
+    assert.deepEqual(app.runtime.controller.get(created.id), ended);
+  }
+  assert.equal(app.runtime.controller.replayEvents(created.id, 0).length, ended.lastEventSequence);
+  assert.equal(app.creates, 1); assert.equal(app.hungUp, 0);
+});
+
+test('higher-numbered regressions and stale REST results cannot move connected calls backwards', async (t) => {
+  const app = await fixture(t); const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  await app.callback(created.callSid, 'in-progress', 2);
+  const connected = app.runtime.controller.get(created.id);
+  await app.callback(created.callSid, 'ringing', 10);
+  assert.deepEqual(app.runtime.controller.get(created.id), connected);
+  await app.api(`/api/dev/conversations/${created.id}`); // The provider fixture still reports ringing.
+  assert.deepEqual(app.runtime.controller.get(created.id), connected);
+  await app.callback(created.callSid, 'completed', 9); // Older than the durable cursor, even though terminal.
+  assert.deepEqual(app.runtime.controller.get(created.id), connected);
+  await app.callback(created.callSid, 'completed', 11);
+  assert.equal(app.runtime.controller.get(created.id).callState, 'ended');
+});
+
+test('terminal callbacks before the create response returns cannot be overwritten by its stale ringing result', async (t) => {
+  let app; let terminalSnapshot;
+  app = await fixture(t, { beforeCreateReply: async (call) => {
+    assert.equal((await app.callback(call.sid, 'completed', 3, { http: true })).statusCode, 204);
+    terminalSnapshot = app.runtime.controller.get(new URL(call.callbackUrl).pathname.split('/').at(-1));
+  } });
+  const request = input(); const created = (await app.api('/api/dev/conversations', 'POST', request)).body.conversation;
+  assert.equal(created.status, 'completed'); assert.deepEqual(app.runtime.controller.get(created.id), terminalSnapshot);
+  assert.equal(app.creates, 1); assert.equal(app.hungUp, 0);
+});
+
+test('an answered callback before the create response cannot be regressed by queued or ringing create results', async (t) => {
+  let app;
+  app = await fixture(t, { createStatus: 'queued', beforeCreateReply: async (call) => {
+    await app.callback(call.sid, 'in-progress', 2, { http: true });
+  } });
+  const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  assert.equal(created.status, 'connected'); assert.equal(app.runtime.controller.get(created.id).callState, 'connected');
+  assert.equal(app.runtime.controller.get(created.id).messages[0].playback, 'withheld');
+});
+
+test('a late poll cannot reopen a completed call or interfere with the next attempt', async (t) => {
+  let release; let waiting = false; let hold = true;
+  const gate = new Promise((resolve) => { release = resolve; }); t.after(() => release());
+  const app = await fixture(t, { beforeGetReply: async () => { if (hold) { hold = false; waiting = true; await gate; } } });
+  const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  const pending = app.api(`/api/dev/conversations/${created.id}`); await until(() => waiting);
+  await app.callback(created.callSid, 'completed', 3);
+  const ended = app.runtime.controller.get(created.id);
+  const next = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  release(); await pending;
+  assert.deepEqual(app.runtime.controller.get(created.id), ended);
+  assert.equal(app.runtime.controller.get(next.id).callState, 'ringing'); assert.equal(app.creates, 2);
+});
+
+test('Stop and recovery states cannot be cleared by newer nonterminal callbacks', async (t) => {
+  const app = await fixture(t, { rejectHangup: true });
+  const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  await app.api(`/api/v1/calls/${created.id}/stop`, 'POST', {});
+  const stopping = app.runtime.controller.get(created.id);
+  await app.callback(created.callSid, 'in-progress', 2);
+  assert.deepEqual(app.runtime.controller.get(created.id), stopping);
+  await app.restart();
+  const recovering = app.runtime.controller.get(created.id);
+  assert.equal(recovering.callState, 'reconciliation_required');
+  await app.callback(created.callSid, 'ringing', 1); await app.callback(created.callSid, 'in-progress', 2);
+  assert.deepEqual(app.runtime.controller.get(created.id), recovering);
+  await app.callback(created.callSid, 'completed', 3);
+  assert.equal(app.runtime.controller.get(created.id).outcome.reason, 'user_stopped'); assert.equal(app.creates, 1);
+});
+
+test('callback cursor, terminal tombstone and deletion remain effective across backend restarts', async (t) => {
+  const app = await fixture(t); const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  await app.callback(created.callSid, 'completed', 3); const ended = app.runtime.controller.get(created.id);
+  await app.restart();
+  assert.equal((await app.callback(created.callSid, 'in-progress', 100)).statusCode, 204);
+  assert.deepEqual(app.runtime.controller.get(created.id), ended);
+  await app.api(`/api/v1/calls/${created.id}/conversation`, 'DELETE');
+  const deleted = app.runtime.controller.get(created.id); await app.restart();
+  await app.callback(created.callSid, 'completed', 3); await app.callback(created.callSid, 'ringing', 101);
+  assert.deepEqual(app.runtime.controller.get(created.id), deleted);
+  const repository = openStore(app.dataDir);
+  assert.equal(repository.calls.get(created.id).internal.correlation.callbackSequence, 3);
+  assert.equal(repository.calls.events(created.id, 0).length, 1); repository.close();
+  assert.equal(app.creates, 1);
+});
+
+test('signed callback can correlate a lost create response without another call or a replayed greeting', async (t) => {
+  const app = await fixture(t, { loseCreateReply: true });
+  const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  assert.equal(created.callSid, null); assert.equal(created.status, 'unknown');
+  const call = [...app.calls.values()][0];
+  assert.equal((await app.callback(call.sid, 'completed', 3)).statusCode, 204);
+  const view = (await app.api(`/api/dev/conversations/${created.id}`)).body.conversation;
+  assert.equal(view.callSid, call.sid); assert.equal(view.status, 'completed');
+  assert.equal(app.runtime.controller.get(created.id).messages[0].playback, 'withheld'); assert.equal(app.creates, 1);
+});
+
+test('callback authentication, encoding and correlation failures cannot consume a sequence or leak payloads', async (t) => {
+  const app = await fixture(t); const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  const original = app.runtime.controller.get(created.id);
+  const cases = [
+    { headers: { 'x-twilio-signature': '' } }, { headers: { 'x-twilio-signature': 'invalid' } },
+    { headers: { 'x-callmate-mock': 'false' } }, { headers: { origin: 'http://localhost:3000' } },
+    { headers: { 'sec-fetch-site': 'same-site' } }, { headers: { host: 'foreign.example' } },
+    { signUrl: 'http://localhost/wrong-path' }, { query: '?extra=1' },
+    { fields: { CallSid: sid('CA') } }, { fields: { AccountSid: sid('AC') } },
+    { fields: { From: '+34999999999' } }, { fields: { To: '+34999999999' } },
+    { fields: { SequenceNumber: '-1' } }, { fields: { SequenceNumber: '9007199254740992' } },
+    { fields: { SequenceNumber: '1.5' } }, { fields: { Timestamp: 'invalid-date' } },
+    { payload: 'CallStatus=ringing&CallStatus=completed' },
+    { payload: 'x'.repeat(17_000) }, { headers: { 'content-type': 'application/json' }, payload: '{}' },
+  ];
+  for (const options of cases) {
+    const response = await app.callback(created.callSid, 'in-progress', 99, options);
+    assert.ok([400, 403].includes(response.statusCode), `${response.statusCode}: ${JSON.stringify(options)}`);
+    assert.deepEqual(app.runtime.controller.get(created.id), original);
+  }
+  const response = await app.callback(created.callSid, 'in-progress', 2, { fields: { CustomMetadata: 'private-callback-body-value' } });
+  assert.equal(response.statusCode, 204);
+  const repository = openStore(app.dataDir);
+  assert.equal(repository.calls.get(created.id).internal.correlation.callbackSequence, 2);
+  assert.ok(!JSON.stringify(repository.calls.get(created.id)).includes('private-callback-body-value')); repository.close();
+  assert.ok(!app.logs.includes('private-callback-body-value')); assert.ok(!app.logs.includes(app.config.mockAuthToken));
+});
+
+test('callback cursor, lifecycle and SSE roll back together so failed processing can be retried', async (t) => {
+  const app = await fixture(t); const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  const original = app.runtime.controller.get(created.id); const db = new Database(join(app.dataDir, 'callmate.sqlite'));
+  try {
+    db.exec("CREATE TRIGGER fail_callback BEFORE INSERT ON call_events BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END");
+    assert.equal((await app.callback(created.callSid, 'in-progress', 2)).statusCode, 500);
+    assert.deepEqual(app.runtime.controller.get(created.id), original);
+    const repository = openStore(app.dataDir);
+    assert.equal(repository.calls.get(created.id).internal.correlation.callbackSequence, undefined); repository.close();
+    db.exec('DROP TRIGGER fail_callback');
+    assert.equal((await app.callback(created.callSid, 'in-progress', 2)).statusCode, 204);
+    assert.equal(app.runtime.controller.get(created.id).callState, 'connected');
+    assert.equal(app.runtime.controller.get(created.id).lastEventSequence, original.lastEventSequence + 1);
+  } finally { db.close(); }
+});
+
+test('terminal callback racing graceful recovery hangup is acknowledged once and preserves the interrupted outcome', async (t) => {
+  let app; let status;
+  app = await fixture(t, { beforeHangupReply: async (call) => {
+    status = (await app.callback(call.sid, 'completed', 3, { http: true })).statusCode;
+  } });
+  const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  await app.runtime.close(); assert.equal(status, 204);
+  const repository = openStore(app.dataDir);
+  const ended = repository.calls.get(created.id);
+  assert.equal(ended.call.callState, 'ended'); assert.equal(ended.call.outcome.reason, 'technical_failure');
+  assert.equal(repository.calls.events(created.id, 0).filter((event) => event.type === 'booking.updated').length, 1);
+  assert.equal(repository.calls.active(), undefined); repository.close();
+  assert.equal(app.hungUp, 1); assert.equal(app.creates, 1);
 });

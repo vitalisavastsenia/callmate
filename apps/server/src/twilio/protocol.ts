@@ -19,8 +19,8 @@ export function normalizeStatus(status: CallStatus | "initiated"): CallSnapshot[
 export const statusCallback = z.object({
   AccountSid: z.string().regex(/^AC[0-9a-f]{32}$/i), CallSid: z.string().regex(/^CA[0-9a-f]{32}$/i),
   From: z.string(), To: z.string(), CallStatus: z.enum([...callStatus.options, "initiated"]),
-  SequenceNumber: z.string().regex(/^\d+$/).transform(Number).pipe(z.number().safe()),
-  CallbackSource: z.literal("call-progress-events"), Timestamp: z.string(),
+  SequenceNumber: z.string().regex(/^\d+$/).transform(Number).pipe(z.number().nonnegative().safe()),
+  CallbackSource: z.literal("call-progress-events"), Timestamp: z.string().min(1).max(128).refine((value) => Number.isFinite(Date.parse(value))),
 });
 export const relayInbound = z.discriminatedUnion("type", [
   z.object({ type: z.literal("setup"), sessionId: z.string().regex(/^VX[0-9a-f]{32}$/i),
