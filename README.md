@@ -18,6 +18,7 @@ Read the documents in this order:
 8. [Twilio account and configuration runbook](docs/twilio-setup.md): account creation, paid/trial limits, Voice number, Spain permissions, credentials, ConversationRelay, callbacks, and connectivity checks for Engineer 2.
 9. [Docker backend development](docs/docker-development.md): container startup, configuration, SQLite storage, implemented endpoints, and checks.
 10. [Offline Twilio protocol mock](docs/twilio-mock.md): official-format REST/webhook/TwiML/WebSocket adapter tests and a Docker walkthrough.
+11. [Mock ConversationRelay development service](mock-conversation-relay/README.md): standalone Docker emulator with an operator browser UI, Calls façade, and outgoing relay connections.
 
 The shared contracts, TypeScript/Fastify backend, and scripted simulator are implemented. Simulator mode supports plan review, Start/Stop, approval decisions, persistent snapshots, replayable SSE, history, and conversation deletion without credentials or provider requests. The UI and real calling/dialogue adapters remain to be built. Readiness is true only in simulator mode; no real phone calls can start.
 
@@ -64,6 +65,7 @@ docker compose --profile checks run --build --rm checks npm run demo:twilio-mock
 - `docs/`: product requirements, architecture, and technology decisions.
 - `packages/contracts/`: shared runtime schemas, types, routes, adapter interfaces, fixtures, and contract checks.
 - `apps/server/`: Fastify API/SSE, SQLite migrations/storage, simulator/controller, fake adapters, and server tests.
+- `mock-conversation-relay/`: independently runnable development emulator and operator UI at `localhost:8080`; see its README for backend wiring and tests.
 - `Dockerfile`, `compose.yaml`, `.dockerignore`: container build, runtime, persistent data volume, and build-context exclusions.
 
 ## Development workflow

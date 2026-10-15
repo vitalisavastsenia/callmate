@@ -1,0 +1,27 @@
+{
+  "name": "@callmate/mock-conversation-relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/server/main.js",
+    "test": "npm run typecheck && npm run build && node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "fast-xml-parser": "5.11.2",
+    "fastify": "5.12.7",
+    "ws": "8.22.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/ws": "8.18.2",
+    "happy-dom": "20.14.6",
+    "typescript": "7.0.2"
+  }
+}

@@ -1,0 +1,39 @@
+services:
+  mock-relay:
+    build:
+      context: .
+      target: runtime
+    ports: ["127.0.0.1:${PORT:-8080}:${PORT:-8080}"]
+    environment:
+      NODE_ENV: development
+      PORT: "${PORT:-8080}"
+      MOCK_ACCOUNT_SID: "${MOCK_ACCOUNT_SID:-AC00000000000000000000000000000000}"
+      MOCK_API_USERNAME: "${MOCK_API_USERNAME:-mock}"
+      MOCK_API_PASSWORD: "${MOCK_API_PASSWORD:-mock-local-only}"
+      CALLMATE_WS_URL: "${CALLMATE_WS_URL:-ws://host.docker.internal:3001/ws/voice}"
+      CALLMATE_TWIML_URL: "${CALLMATE_TWIML_URL:-http://host.docker.internal:3001/twiml}"
+      DEFAULT_LANGUAGE: "${DEFAULT_LANGUAGE:-pl-PL}"
+      DEFAULT_FROM: "${DEFAULT_FROM:-+48000000000}"
+      DEFAULT_TO: "${DEFAULT_TO:-+48111111111}"
+      AUTO_ANSWER: "${AUTO_ANSWER:-false}"
+      ENABLE_BROWSER_SPEECH: "${ENABLE_BROWSER_SPEECH:-true}"
+      MAX_ACTIVE_CALLS: "${MAX_ACTIVE_CALLS:-5}"
+      CALL_TIMEOUT_SECONDS: "${CALL_TIMEOUT_SECONDS:-300}"
+      BACKEND_TIMEOUT_MS: "${BACKEND_TIMEOUT_MS:-2500}"
+      SESSION_RETENTION_MINUTES: "${SESSION_RETENTION_MINUTES:-60}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      ALLOWED_BACKEND_HOSTS: "${ALLOWED_BACKEND_HOSTS:-host.docker.internal,localhost,127.0.0.1}"
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    init: true
+    stop_grace_period: 10s
+  checks:
+    profiles: [checks]
+    build:
+      context: .
+      target: build
+    network_mode: none
+    command: ["npm", "test"]
