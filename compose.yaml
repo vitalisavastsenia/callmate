@@ -44,6 +44,17 @@ services:
       context: .
       target: build
     command: ["sh", "-c", "npm run typecheck && npm test"]
+  web:
+    profiles: [web]
+    build:
+      context: .
+      target: build
+    ports:
+      - "127.0.0.1:5173:5173"
+    environment:
+      VITE_MOCK: "true"
+      CALLMATE_DEV_API_TARGET: "http://server:3000"
+    command: ["npm", "run", "dev", "--workspace", "@callmate/web", "--", "--host", "0.0.0.0", "--port", "5173", "--strictPort"]
 
 volumes:
   callmate-data:

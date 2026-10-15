@@ -6,9 +6,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
 COPY package.json package-lock.json ./
 COPY packages/contracts/package.json ./packages/contracts/package.json
 COPY apps/server/package.json ./apps/server/package.json
+COPY apps/web/package.json ./apps/web/package.json
 RUN npm ci
 COPY packages/contracts/ ./packages/contracts/
 COPY apps/server/ ./apps/server/
+COPY apps/web/ ./apps/web/
+COPY tests/e2e/ ./tests/e2e/
 RUN npm run build
 
 FROM build AS production

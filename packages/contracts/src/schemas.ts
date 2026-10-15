@@ -16,7 +16,8 @@ export const MoneySchema = z.strictObject({
   currency: z.enum(["EUR", "USD"]),
 });
 export const ServiceMoneySchema = MoneySchema.extend({ currency: z.literal("EUR") });
-export const CallMoneySchema = MoneySchema.extend({ currency: z.literal("USD") });
+// New requests use EUR; USD remains valid for existing provider usage and saved calls.
+export const CallMoneySchema = MoneySchema;
 
 // Keep the displayed business time and the resolved instant consistent, including DST.
 export const ZonedTimeSchema = z.strictObject({
@@ -47,17 +48,42 @@ export const CallLimitsSchema = z.strictObject({
   maxDurationSeconds: z.number().int().min(30).max(600),
   maxEstimatedCost: CallMoneySchema,
 });
+export const RequestTypeSchema = z.enum(["book", "ask", "change", "other"]);
+const EditableListSchema = z.array(TextSchema).max(30);
 export const RequestDraftSchema = z.strictObject({
   business: z.strictObject({ name: TextSchema, phone: E164Schema }),
-  service: TextSchema,
-  bookingName: z.string().trim().min(1).max(200),
-  availability: z.array(AvailabilitySchema).min(1).max(20),
-  pricePolicy: z.strictObject({ maximum: ServiceMoneySchema.nullable(), allowUnknownPrice: z.boolean() }),
-  bookingAuthority: z.enum(["within_constraints", "ask_before_accepting"]),
+  // Optional additions keep existing v1 appointment drafts readable without migration.
+  requestType: RequestTypeSchema.optional(),
+  goal: TextSchema.optional(),
+  timeZone: TimeZoneSchema.optional(),
+  tone: z.array(z.string().trim().min(1).max(100)).max(10).optional(),
+  tone_notes: z.string().trim().max(2000).optional(),
+  contact_id: IdSchema.optional(),
+  boundaries: z.strictObject({ canDecideAlone: EditableListSchema, mustAskMe: EditableListSchema }).optional(),
+  questions: EditableListSchema.optional(),
+  changeRequest: z.strictObject({ description: TextSchema, bookingReference: z.string().trim().max(200) }).nullable().optional(),
+  service: z.string().trim().max(4000).default(""),
+  bookingName: z.string().trim().max(200).default(""),
+  availability: z.array(AvailabilitySchema).max(20).default([]),
+  pricePolicy: z.strictObject({ maximum: ServiceMoneySchema.nullable(), allowUnknownPrice: z.boolean() }).default({ maximum: null, allowUnknownPrice: false }),
+  bookingAuthority: z.enum(["within_constraints", "ask_before_accepting"]).default("ask_before_accepting"),
   shareableContact: z.strictObject({ phone: E164Schema.nullable(), email: z.email().nullable() }),
   callLimits: CallLimitsSchema,
-}).refine((value) => new Set(value.availability.map((window) => window.start.timeZone)).size === 1,
-"All windows must use the same business time zone");
+}).superRefine((value, ctx) => {
+  const issue = (path: string, message: string) => ctx.addIssue({ code: "custom", path: [path], message });
+  const kind = value.requestType ?? "book";
+  if (value.requestType && !value.goal) issue("goal", "Describe your goal in English");
+  if (value.requestType && !value.timeZone) issue("timeZone", "Choose the destination time zone");
+  if (kind === "book") {
+    if (!value.service) issue("service", "Enter the service to book");
+    if (!value.availability.length) issue("availability", "Add at least one availability window");
+  }
+  if (kind === "ask" && !value.questions?.length) issue("questions", "Add at least one question");
+  if (kind === "change" && !value.changeRequest) issue("changeRequest", "Describe what to change or cancel");
+  const zones = new Set(value.availability.map(window => window.start.timeZone));
+  if (zones.size > 1 || (value.timeZone && [...zones].some(zone => zone !== value.timeZone)))
+    issue("availability", "All windows must use the same business time zone");
+});
 export const ReviewPlanSchema = z.strictObject({
   id: IdSchema, version: VersionSchema, createdAt: InstantSchema, request: RequestDraftSchema,
 });
@@ -96,12 +122,18 @@ export const CallStateSchema = z.enum([
   "creating", "dialing", "ringing", "connected", "ending", "ended", "busy", "no_answer", "failed", "reconciliation_required",
 ]);
 export const BookingStateSchema = z.enum([
-  "pending", "offer_received", "awaiting_approval", "reading_back", "awaiting_business_confirmation", "confirmed", "not_booked", "uncertain",
+  "pending", "offer_received", "awaiting_approval", "reading_back", "awaiting_business_confirmation", "confirmed", "not_booked", "uncertain", "completed",
 ]);
 export const OutcomeSchema = z.discriminatedUnion("status", [
   z.strictObject({ status: z.literal("pending") }),
   z.strictObject({ status: z.literal("confirmed"), offer: OfferSchema,
     confirmedAt: InstantSchema, confirmationMessageIds: z.array(IdSchema).min(1).max(50), summaryEn: TextSchema }),
+  z.strictObject({ status: z.literal("completed"), resolution: z.enum(["resolved", "needs_follow_up"]),
+    summaryEn: TextSchema, findings: z.array(z.strictObject({ question: TextSchema, answerEn: TextSchema,
+      answered: z.boolean() })).min(1).max(30), nextSteps: EditableListSchema,
+    evidenceMessageIds: z.array(IdSchema).min(1).max(50) }).refine(value =>
+      value.resolution === "resolved" ? value.findings.every(finding => finding.answered) : value.nextSteps.length > 0,
+    "Resolved requests need all questions answered; follow-up results need next steps"),
   z.strictObject({ status: z.literal("not_booked"), reason: z.enum([
     "no_availability", "business_declined", "busy", "no_answer", "user_stopped", "policy_declined", "technical_failure", "development_only",
   ]), summaryEn: TextSchema }),
@@ -134,7 +166,7 @@ export const TestUsageSchema = z.strictObject({
   source: z.literal("test_rates"), rateVersion: z.literal("elapsed-minute-v1"),
   rateMinorPerMinute: z.number().int().min(1).max(60000), currency: z.literal("USD"),
   rateCapturedAt: InstantSchema, elapsedMs: z.number().int().nonnegative().safe(),
-  budget: CallMoneySchema,
+  budget: CallMoneySchema.extend({ currency: z.literal("USD") }),
 });
 export const UsageSchema = z.strictObject({
   estimate: CallMoneySchema.nullable(),
@@ -161,7 +193,7 @@ export const CallSnapshotSchema = z.strictObject({
     issue("Deleted conversation data requires a terminal call and an empty transcript");
   if (terminalCall && (value.outcome.status === "pending" || value.pendingApproval))
     issue("Terminal calls require an outcome and cannot have a pending approval");
-  const terminalBooking = ["confirmed", "not_booked", "uncertain"].includes(value.bookingState);
+  const terminalBooking = ["confirmed", "not_booked", "uncertain", "completed"].includes(value.bookingState);
   if ((terminalBooking && value.bookingState !== value.outcome.status)
     || (!terminalBooking && value.outcome.status !== "pending")) issue("Booking state and outcome disagree");
   if ((value.bookingState === "awaiting_approval") !== (value.pendingApproval !== null))
@@ -173,10 +205,16 @@ export const CallSnapshotSchema = z.strictObject({
       || approval.offer.id !== value.activeOffer.id || approval.offer.version !== value.activeOffer.version)
       issue("Pending approval must match this attempt, approved plan, and active offer");
   }
-  if (value.outcome.status === "confirmed" && value.conversationData === "retained") {
+  const kind = value.plan.request.requestType ?? "book";
+  if (kind !== "book" && (value.activeOffer || value.pendingApproval || value.outcome.status === "confirmed"))
+    issue("Non-booking tasks cannot carry appointment offers or claim a confirmed booking");
+  if (kind === "book" && value.outcome.status === "completed")
+    issue("Appointment results require the booking outcome and evidence");
+  if ((value.outcome.status === "confirmed" || value.outcome.status === "completed") && value.conversationData === "retained") {
     const messageIds = new Set(value.messages.filter((message) => message.final && message.speaker === "business")
       .map((message) => message.id));
-    if (!value.outcome.confirmationMessageIds.every((id) => messageIds.has(id)))
+    const evidence = value.outcome.status === "confirmed" ? value.outcome.confirmationMessageIds : value.outcome.evidenceMessageIds;
+    if (!evidence.every((id) => messageIds.has(id)))
       issue("Confirmation evidence must reference finalized business messages in this attempt");
   }
 });
@@ -277,7 +315,8 @@ export const SettingsSchema = z.strictObject({
   defaultCallLimits: CallLimitsSchema, transcriptRetentionDays: z.number().int().min(1).max(365),
 });
 export const HistoryEntrySchema = z.strictObject({
-  id: IdSchema, mode: z.enum(["simulator", "live"]), kind: z.literal("manual_mock").optional(), businessName: TextSchema,
+  id: IdSchema, mode: z.enum(["simulator", "live"]), kind: z.literal("manual_mock").optional(),
+  businessName: TextSchema, requestType: RequestTypeSchema.optional(),
   callState: CallStateSchema, outcome: OutcomeSchema, createdAt: InstantSchema, usage: UsageSchema,
 });
 

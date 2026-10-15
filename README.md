@@ -20,7 +20,9 @@ Read the documents in this order:
 10. [Offline Twilio protocol mock](docs/twilio-mock.md): official-format REST/webhook/TwiML/WebSocket adapter tests and a Docker walkthrough.
 11. [Mock ConversationRelay development service](mock-conversation-relay/README.md): standalone Docker emulator with an operator browser UI, SDK-compatible Calls subset, signed callbacks/relay handshakes, optional queued dialing, and Connect action continuation checks.
 
-The shared contracts, TypeScript/Fastify backend, and scripted simulator are implemented. Simulator mode supports plan review, Start/Stop, approval decisions, persistent snapshots, replayable SSE, history, and conversation deletion without credentials or provider requests. A simple development UI can start manual conversations through the local mock service and display operator replies. These calls share SQLite attempts, transcripts, history, Stop, the active-call reservation, and replayable SSE with the scripted simulator; they carry no booking authority. The full booking UI and real calling/dialogue adapters remain to be built. Completed conversation text and replay events expire automatically after 30 days by default; booking metadata remains in history. Optional explicit test rates provide persisted usage estimates and enforce per-call budgets; real provider charges remain unavailable. Readiness reports database/configuration health, local mock connectivity and enabled capabilities. Simulator mode is required; when the manual mock transport is enabled, its health probe must pass for overall readiness. No real phone calls can start.
+The shared contracts, TypeScript/Fastify backend, and scripted simulator are implemented. Simulator mode supports plan review, Start/Stop, approval decisions, persistent snapshots, replayable SSE, history, and conversation deletion without credentials or provider requests. A simple development UI can start manual conversations through the local mock service and display operator replies. These calls share SQLite attempts, transcripts, history, Stop, the active-call reservation, and replayable SSE with the scripted simulator; they carry no booking authority. The Zeus Llama booking/request UI is also present, with a standalone browser simulator and shared HTTP/SSE client. End-to-end integration between that UI and this backend remains to be verified; real calling/dialogue adapters remain to be built. Completed conversation text and replay events expire automatically after 30 days by default; booking metadata remains in history. Optional explicit test rates provide persisted usage estimates and enforce per-call budgets; real provider charges remain unavailable. Readiness reports database/configuration health, local mock connectivity and enabled capabilities. Simulator mode is required; when the manual mock transport is enabled, its health probe must pass for overall readiness. No real phone calls can start.
+
+See [the web UI guide](apps/web/README.md) for its workflow and current integration limits.
 
 ## Getting started
 
@@ -67,6 +69,14 @@ An independent [Twilio protocol harness](docs/twilio-mock.md) uses the official 
 docker compose --profile checks run --build --rm checks npm run demo:twilio-mock --workspace @callmate/server
 ```
 
+The web workspace is included in the Docker build, type checking, and unit tests. To run its standalone browser simulator in Docker:
+
+```sh
+docker compose --profile web up --build -d web
+```
+
+Open [Zeus Llama](http://localhost:5173/). This uses the browser simulator; the backend development console remains at port 3000. The UI's backend mode still requires integration validation for request policy, currencies, manual-call history, and readiness.
+
 ## Repository files
 
 - `README.md`: project overview and setup instructions.
@@ -74,6 +84,7 @@ docker compose --profile checks run --build --rm checks npm run demo:twilio-mock
 - `.gitignore`: excludes local environment files, operating-system artifacts, and temporary files.
 - `docs/`: product requirements, architecture, and technology decisions.
 - `packages/contracts/`: shared runtime schemas, types, routes, adapter interfaces, fixtures, and contract checks.
+- `apps/web/`: React/Vite/Tailwind UI, browser simulator, shared HTTP/SSE client, unit and browser tests.
 - `apps/server/`: Fastify API/SSE, SQLite migrations/storage, simulator/controller, fake adapters, and server tests.
 - `mock-conversation-relay/`: independently runnable development emulator and operator UI at `localhost:8080`; see its README for backend wiring and tests.
 - `Dockerfile`, `compose.yaml`, `.dockerignore`: container build, runtime, persistent data volume, and build-context exclusions.

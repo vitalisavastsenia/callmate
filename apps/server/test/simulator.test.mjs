@@ -65,6 +65,20 @@ function setup(t, scenario = "within_plan", extra = {}) {
   };
 }
 
+test("UI request extensions fail safely when unsupported by the backend simulator", async (t) => {
+  const app = setup(t);
+  const request = structuredClone(reviewPlanFixture.request);
+  const ask = { ...request, requestType: "ask", goal: "Ask about opening hours", timeZone: "Europe/Madrid",
+    questions: ["When are you open?"], service: "", bookingName: "", availability: [] };
+  for (const draft of [ask, { ...request, bookingName: "" },
+    { ...request, callLimits: { ...request.callLimits, maxEstimatedCost: { amountMinor: 200, currency: "EUR" } } }]) {
+    const response = await app.http("POST", "/api/v1/plans", draft);
+    assert.equal(response.status, 400);
+    assert.equal(response.data.error.code, "INVALID_REQUEST");
+  }
+  assert.equal((await app.http("GET", "/api/v1/history")).data.items.length, 0);
+});
+
 test("HTTP plan/start flow confirms only after simulated playback and final business evidence", async (t) => {
   const app = setup(t);
   const call = await app.begin();

@@ -64,8 +64,8 @@ This block describes a format, not literal JSON. `sequence` increases per attemp
 | `offer.updated` | `Offer` | Business proposed a particular service/time/price/conditions, with evidence IDs. This is not a booking. |
 | `approval.requested` | `ApprovalRequest` | Show the exact offer, reason, plan/offer versions, and expiry; enable decision controls only while valid. |
 | `approval.resolved` | `{ approvalId, offer: { offerId, offerVersion }, status }` | Status is `approved`, `rejected`, `expired`, or `invalidated`. Close/disable controls for that approval. |
-| `booking.updated` | `{ bookingState: BookingState, outcome: Outcome }` | Booking progress or result changed. Only `outcome.status: "confirmed"` permits a confirmed result/calendar export. |
-| `usage.updated` | `{ estimate, settledTotal, status, measuredAt, testUsage? }` | Show unavailable, estimated, partial, or settled USD call costs. |
+| `booking.updated` | `{ bookingState: BookingState, outcome: Outcome }` | Appointment/task progress or result changed. Generic completion uses `bookingState: "completed"`. Only `outcome.status: "confirmed"` permits a confirmed result/calendar export. |
+| `usage.updated` | `{ estimate, settledTotal, status, measuredAt, testUsage? }` | Show unavailable, estimated, partial, or settled costs in the recorded currency. Test-rate estimates remain separate from unavailable provider charges. |
 | `conversation.deleted` | `{ conversationData: "deleted" }` | Immediately clear cached transcript/translation text, then refetch the snapshot. |
 | `call.error` | `{ code: ErrorCode, message: string, recoverable: boolean }` | Show a safe error notice. `recoverable` does not authorize retrying a dial or deciding the booking outcome. |
 
@@ -300,3 +300,41 @@ For explicit test rates, `usage.updated`, snapshots and history may include `usa
 
 
 Readiness responses now include `capabilities: [{ name, enabled, ready }]` and `configuration`/`mock` checks. Display a disabled capability separately from an enabled capability whose prerequisites failed. A failed dependency still returns HTTP 200: inspect the report instead of treating HTTP success as call readiness. When the emulator is down, overall `ready=false` and `manual_mock_calls.ready=false`, but `scripted_calls.ready` and local history can remain true. Live calling, real dialogue integration and provider billing remain disabled; `voiceEngine=null` does not claim a real voice engine. Refreshing readiness never starts or retries a call. See the [full response example](docker-development.md#15-readiness-diagnostics); reverse callback/WS connectivity and provider credentials are not proven by the health probe.
+
+## Generic request extension
+
+The executable shared schemas now include a generic request extension requested for the web UI. Existing appointment fixtures/saved drafts remain readable. Backend and dialogue consumers must adopt and review this extension before enabling generic live calls; strict older consumers will reject the new fields. The existing version-1 routes and event envelope are retained, and no server/provider implementation is implied.
+
+New drafts supply `requestType` (`book`, `ask`, `change`, `other`), `goal` (English), `timeZone` (IANA), and `boundaries: { canDecideAlone: string[], mustAskMe: string[] }`, together with the existing destination, approved contact data and call limits. Empty boundary lists grant no extra authority. Free-text boundaries need authoritative backend policy handling; the browser never infers permissions by parsing their prose.
+
+New UI drafts also send `tone: string[]` (at most 10 nonempty strings, 100 characters each) and `tone_notes: string` (at most 2,000 characters), plus `contact_id?: string` (UUID) when referencing a selected/saved destination contact. These belong to `RequestDraft`, the body of `POST /api/v1/plans`, and are retained in `ReviewPlan.request` and call snapshots. They are optional in the shared schema so older plans remain readable. Backend consumers must accept/persist these fields before enabling the updated UI in live mode; the HTTP routes and SSE protocol are unchanged. Tone and notes express manner/context, not additional authority or permission to share data. The reviewed boundaries and sharing policy remain authoritative.
+
+Destination contacts currently live in browser localStorage behind `apps/web/src/contacts.ts`; no contacts endpoint is introduced. Contact name/phone/timezone/tone/notes are copied into the editable request when selected. Only the reviewed snapshot is sent to the call backend; later edits/deletion of a saved contact cannot alter a call already started. The form displays call duration in minutes and serializes `callLimits.maxDurationSeconds` in seconds, keeping the existing 30–600 second limits. Country-code timezone defaults are editable suggestions, including for countries with multiple zones.
+
+| Request type | Extra data and validation |
+| --- | --- |
+| `book` | Nonempty `service`, at least one `availability` window, `pricePolicy`, and `bookingAuthority`. The approved sharing name remains in `bookingName`, and may be withheld. A business that needs an unapproved name must be asked/left unbooked. |
+| `ask` | Nonempty `questions: string[]`; no appointment data required. |
+| `change` | `changeRequest: { description, bookingReference }`; reference may be empty. Optional `availability` describes new windows; cancellation needs no new window. |
+| `other` | No extra fields. |
+
+The UI clears unused service/availability/price/authority/question/change values when serializing a different type. Booking fields retain neutral defaults in parsed non-booking drafts for compatibility with existing consumers, not fabricated appointment details. Old drafts without `requestType` retain their appointment semantics. New requests use EUR call budgets; legacy USD limits/usage remain readable without currency conversion. Enforce budgets in a supported matching currency or reject them before dialing.
+
+Non-booking calls cannot carry appointment offers/pending appointment approvals or claim `outcome.status: "confirmed"`. They may emit the existing `booking.updated` event with `bookingState: "completed"` and this outcome:
+
+```json
+{
+  "status": "completed",
+  "resolution": "needs_follow_up",
+  "summaryEn": "The document list was explained, but the referral requirement still needs checking.",
+  "findings": [
+    { "question": "Do I need a referral?", "answerEn": "It depends on the service; the business did not verify this.", "answered": false }
+  ],
+  "nextSteps": ["Confirm the referral requirement with the business."],
+  "evidenceMessageIds": ["40000000-0000-4000-8000-000000000001"]
+}
+```
+
+`resolution: "resolved"` requires all findings answered. `needs_follow_up` requires next steps and renders “Follow-up needed,” never an appointment confirmation. While text is retained, evidence IDs must reference finalized recipient messages in the same attempt. History may include `requestType` so stopped/unanswered tasks display “Request not completed.” Calendar export remains exclusive to a structured confirmed appointment.
+
+The browser simulator preserves the original booking/approval scenarios. Its separate non-booking script explicitly reports unanswered questions and leaves existing bookings unchanged; there is no simulated generic commitment approval or arbitrary goal execution. Actual changes/cancellations, generic approval semantics, and dialogue policy remain integration work.

@@ -27,3 +27,7 @@ node_modules/
 dist/
 coverage/
 .data/
+
+# Browser test artifacts
+playwright-report/
+test-results/

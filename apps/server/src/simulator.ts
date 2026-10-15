@@ -135,10 +135,19 @@ export class Simulator {
   }
 
   private future(plan: ReviewPlan) {
+    if ((plan.request.requestType ?? "book") !== "book") {
+      throw new CommandError(400, "INVALID_REQUEST", "The backend simulator currently supports appointment requests only");
+    }
+    if (!plan.request.bookingName.trim()) {
+      throw new CommandError(400, "INVALID_REQUEST", "The backend simulator requires an approved booking name");
+    }
     if (plan.request.availability.some((window) => Date.parse(window.start.instant) <= this.now())) {
       throw new CommandError(400, "INVALID_REQUEST", "Availability must start in the future; review a new plan");
     }
     const limits = this.store.getSettings().defaultCallLimits;
+    if (plan.request.callLimits.maxEstimatedCost.currency !== limits.maxEstimatedCost.currency) {
+      throw new CommandError(400, "INVALID_REQUEST", "Call budget currency must match application settings; currency conversion is unavailable");
+    }
     if (plan.request.callLimits.maxDurationSeconds > limits.maxDurationSeconds
       || plan.request.callLimits.maxEstimatedCost.amountMinor > limits.maxEstimatedCost.amountMinor) {
       throw new CommandError(400, "INVALID_REQUEST", "Call limits exceed the current application settings");

@@ -45,3 +45,11 @@ test('large budgets use exact arithmetic without unsafe multiplication or premat
   measureUsage(a, start + 600000, () => {});
   assert.equal(a.usage.estimate.amountMinor, 600000);
 });
+
+test('EUR budgets never acquire USD test charges through an implicit conversion', () => {
+  const eur = { amountMinor: 200, currency: 'EUR' };
+  assert.equal(initialUsage(at, undefined, eur).status, 'unavailable');
+  assert.throws(() => initialUsage(at, 60, eur), error => error.code === 'INVALID_REQUEST');
+  const usage = initialUsage(at, 60, budget(200));
+  assert.equal(UsageSchema.safeParse({ ...usage, testUsage: { ...usage.testUsage, budget: eur } }).success, false);
+});

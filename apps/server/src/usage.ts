@@ -7,12 +7,13 @@ type Emit = (type: "usage.updated", payload: Usage) => void;
 export const terminalUsage = (call: StoredCallSnapshot) => ["ended", "busy", "no_answer", "failed"].includes(call.callState);
 
 /** Explicit synthetic rates only. No provider price, rounding policy or billing API is inferred. */
-export function initialUsage(now: string, rate: number | undefined, budget: { amountMinor: number; currency: "USD" }): Usage {
+export function initialUsage(now: string, rate: number | undefined, budget: { amountMinor: number; currency: "USD" | "EUR" }): Usage {
   if (rate === undefined) return { estimate: null, settledTotal: null, status: "unavailable", measuredAt: now };
+  if (budget.currency !== "USD") throw new CommandError(400, "INVALID_REQUEST", "USD test rates require a USD call budget; currency conversion is unavailable");
   if (budget.amountMinor === 0) throw new CommandError(409, "BUDGET_EXCEEDED", "The test-rate call budget allows no elapsed time");
   return { estimate: { amountMinor: 0, currency: "USD" }, settledTotal: null, status: "estimated", measuredAt: now,
     testUsage: { source: "test_rates", rateVersion: "elapsed-minute-v1", rateMinorPerMinute: rate, currency: "USD",
-      rateCapturedAt: now, elapsedMs: 0, budget: { ...budget } } };
+      rateCapturedAt: now, elapsedMs: 0, budget: { amountMinor: budget.amountMinor, currency: "USD" } } };
 }
 function elapsed(call: StoredCallSnapshot, now: number) {
   return Math.max(call.usage.testUsage?.elapsedMs ?? 0, Math.max(0, now - Date.parse(call.createdAt)));

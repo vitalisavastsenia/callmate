@@ -19,6 +19,11 @@
 !apps/server/migrations/**
 !apps/server/test/
 !apps/server/test/**
+!apps/web/
+!apps/web/**
+!tests/
+!tests/e2e/
+!tests/e2e/**
 **/.env
 **/.env.*
 **/node_modules
