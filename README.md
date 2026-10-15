@@ -16,7 +16,7 @@ Read the documents in this order:
 6. [Shared interfaces v1](docs/interfaces.md): technical reference for executable schemas, API routes, event/reconnect protocol, and dialogue/voice boundaries.
 7. [Backend to UI message contract](docs/ui-message-contract.md): case-by-case HTTP/SSE rules, payload formats, JSON examples, and expected UI behavior.
 
-The application remains a proposed implementation. The shared TypeScript contracts package is implemented; the UI, backend, and calling adapters are not yet built.
+The shared TypeScript contracts package and Zeus Llama UI workflow are implemented. The UI includes a standalone simulator, a natural-language Home flow, a full manual Request form with searchable local contacts and CSV/vCard import, generic request types, tone and notes, editable boundaries, Stop, expiring approvals, explicit outcomes, Summary with history and Repeat, calendar export, remembered shareable details, readiness checks, and browser tests. The browser client uses the shared v1 HTTP/SSE contract. Backend/provider integration remains to be built and verified; see the [UI scope calibration](apps/web/UI-CALIBRATION.md).
 
 ## Getting started
 
@@ -27,7 +27,16 @@ cd callmate
 
 Read [AGENTS.md](AGENTS.md) before making changes. It contains the working instructions for Codex and the project's Git conventions.
 
-Use Node.js 24 or newer to validate the shared contracts:
+Use Node.js 24 or newer. Start the web demo from the repository root:
+
+```sh
+npm ci
+VITE_MOCK=true npm run dev
+```
+
+Open the local URL printed by Vite (normally `http://127.0.0.1:5173`). No backend, credentials, or real calls are involved in mock mode. See [apps/web/README.md](apps/web/README.md) for the demo flow, client boundaries, and backend mode.
+
+Validate the workspace:
 
 ```sh
 npm ci
@@ -35,7 +44,7 @@ npm run typecheck
 npm test
 ```
 
-`npm test` builds the contracts and runs offline checks. It does not make calls. Use `npm run build` to generate the package's JavaScript and declarations. No application start command exists yet.
+`npm test` builds the contracts and runs offline contract and web-client checks. It does not make calls. `npm run build` generates the contracts package's JavaScript/declarations and the production web app in `apps/web/dist`. `npm run typecheck` checks both workspaces. Run `npm run test:e2e --workspace @callmate/web` for isolated Playwright checks in installed Google Chrome; this starts fake UI test servers on ports 5174/5175 and never makes real calls.
 
 ## Repository files
 
@@ -44,6 +53,7 @@ npm test
 - `.gitignore`: excludes local environment files, operating-system artifacts, and temporary files.
 - `docs/`: product requirements, architecture, and technology decisions.
 - `packages/contracts/`: shared runtime schemas, types, routes, adapter interfaces, fixtures, and contract checks.
+- `apps/web/`: React, Vite, TypeScript, and Tailwind web UI, with a standalone mock call.
 
 ## Development workflow
 

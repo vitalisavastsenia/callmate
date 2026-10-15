@@ -24,6 +24,15 @@ test("review data cannot carry credentials or silent extra authority", () => {
   rejects(RequestDraftSchema, { ...reviewPlanFixture.request, paymentAllowed: true });
 });
 
+test("request plans preserve bounded tone, notes, and contact references without breaking older plans", () => {
+  const request = { ...reviewPlanFixture.request, tone: ['Very polite', 'Formal "usted"'], tone_notes: 'Be patient.', contact_id: ids.plan };
+  assert.deepEqual(RequestDraftSchema.parse(request), request);
+  assert.deepEqual(RequestDraftSchema.parse(reviewPlanFixture.request), reviewPlanFixture.request);
+  rejects(RequestDraftSchema, { ...request, tone: Array(11).fill('Friendly') });
+  rejects(RequestDraftSchema, { ...request, tone_notes: 'x'.repeat(2001) });
+  rejects(RequestDraftSchema, { ...request, contact_id: 'not-a-contact-id' });
+});
+
 test("reject malformed destinations and require explicit simulator/live choice", () => {
   rejects(E164Schema, "612 345 678");
   rejects(E164Schema, "+000000000");
@@ -155,4 +164,35 @@ test("history pagination is bounded and contracts expose no callback routes", ()
   rejects(api.history.query, { limit: 101 });
   assert.equal(api.history.query.parse({}).limit, 20);
   assert.ok(Object.values(api).every((route) => route.path.startsWith("/api/v1/")));
+});
+
+test('generic tasks need only their relevant details and carry EUR limits', () => {
+  const common = { ...copy(reviewPlanFixture.request), service: '', bookingName: '', availability: [],
+    goal: 'Find out the required documents.', timeZone: 'Europe/Madrid',
+    boundaries: { canDecideAlone: ['Ask clarifying questions'], mustAskMe: ['Ask before accepting fees'] },
+    callLimits: { maxDurationSeconds: 300, maxEstimatedCost: { amountMinor: 200, currency: 'EUR' } } };
+  assert.ok(RequestDraftSchema.safeParse({ ...common, requestType: 'other' }).success);
+  assert.ok(RequestDraftSchema.safeParse({ ...common, requestType: 'ask', questions: ['Which documents are required?'] }).success);
+  rejects(RequestDraftSchema, { ...common, requestType: 'ask', questions: [] });
+  rejects(RequestDraftSchema, { ...common, requestType: 'ask', questions: [' '] });
+  assert.ok(RequestDraftSchema.safeParse({ ...common, requestType: 'change', changeRequest: { description: 'Cancel the existing visit.', bookingReference: '' } }).success);
+  rejects(RequestDraftSchema, { ...common, requestType: 'change' });
+  rejects(RequestDraftSchema, { ...common, requestType: 'book' });
+  rejects(RequestDraftSchema, { ...common, requestType: 'other', goal: ' ' });
+  rejects(RequestDraftSchema, { ...common, requestType: 'other', timeZone: 'invalid-zone' });
+});
+
+test('information results require business evidence and cannot claim an appointment', () => {
+  const snapshot = copy(connectedCallFixture);
+  snapshot.plan.request.requestType = 'ask'; snapshot.plan.request.goal = 'Find out the price.';
+  snapshot.plan.request.timeZone = 'Europe/Madrid'; snapshot.plan.request.questions = ['What is the price?'];
+  snapshot.activeOffer = null; snapshot.bookingState = 'completed'; snapshot.callState = 'ended';
+  snapshot.outcome = { status: 'completed', resolution: 'needs_follow_up', summaryEn: 'The price still needs checking.',
+    findings: [{ question: 'What is the price?', answerEn: 'No price was verified.', answered: false }],
+    nextSteps: ['Check with the business.'], evidenceMessageIds: [ids.businessMessage] };
+  assert.ok(CallSnapshotSchema.safeParse(snapshot).success);
+  rejects(CallSnapshotSchema, { ...snapshot, outcome: { ...snapshot.outcome, evidenceMessageIds: [ids.approval] } });
+  rejects(CallSnapshotSchema, { ...snapshot, activeOffer: connectedCallFixture.activeOffer });
+  const fakeBooking = copy(confirmedCallFixture); fakeBooking.plan.request = snapshot.plan.request;
+  rejects(CallSnapshotSchema, fakeBooking);
 });
