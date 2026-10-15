@@ -281,3 +281,9 @@ For v1, use snapshots as authoritative state and SSE as change notifications. On
 6. Heartbeats are SSE comments without IDs. Reconnection never issues Start. Keep stream/reconnect handling available for later usage/deletion updates even after telephone termination.
 
 Browser connection state, request-in-flight indicators, and countdown display are UI state. Telephone state, pending approvals, booking authority, and final outcomes are backend state.
+
+## Development manual-call extension
+
+Backend-started mock calls now use the same persisted attempt GET/Stop/history/deletion/SSE routes. Their snapshot is identified by `kind: "manual_mock"`, with `plan: null`, `mode: "simulator"`, no offer/approval and no booking authority. History entries include the same kind marker. Consumers must branch on this marker before rendering booking-plan fields; existing booking snapshots retain their format. See [the manual-call contract](interfaces.md#9-persisted-manual-mock-calls-development-extension).
+
+For manual `transcript.updated` events, preserve the exact text/locale, render a missing translation as unavailable, and replace a message with the same ID when its playback changes from `withheld` to `generated`. Do not show played/heard or booked: this path has no audio-playback acknowledgment or booking engine. A relay disconnect uses `reconciliation_required`; completion is `not_booked`. SSE replay, deletion resets and sequence handling follow the existing rules. The simple development console continues polling a projection of these persisted records; clients can consume the common SSE endpoint directly.

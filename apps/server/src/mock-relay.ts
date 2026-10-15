@@ -53,7 +53,7 @@ export function mountMockRelay(app: FastifyInstance, config: Config, maxDuration
         ws.send(JSON.stringify(relayOutbound.parse(message)));
       };
       ws.on("error", () => {}); // Do not log provider frames or exception values.
-      ws.once("close", () => { clearTimeout(deadline); clearTimeout(setupDeadline); partial = ""; identities.forEach((key) => active.delete(key)); consumer?.close(); });
+      ws.once("close", () => { clearTimeout(deadline); clearTimeout(setupDeadline); partial = ""; identities.forEach((key) => active.delete(key)); try { consumer?.close(); } catch { /* Keep unresolved calls reserved after storage failure. */ } });
       ws.on("message", (raw, binary) => {
         if (closing || ended || ws.readyState !== WebSocket.OPEN) return;
         let parsed;
@@ -86,7 +86,11 @@ export function mountMockRelay(app: FastifyInstance, config: Config, maxDuration
           partial += message.voicePrompt; language = message.lang;
           if (!message.last) return;
           const text = partial; partial = "";
-          if (consumer) { if (text.trim()) consumer.prompt(text, language); return; }
+          if (consumer) {
+            try { if (text.trim()) consumer.prompt(text, language); }
+            catch { stop(1011, "Cannot persist development conversation"); }
+            return;
+          }
           if (text === "/end") {
             ended = true;
             send({ type: "end", handoffData: JSON.stringify({ reasonCode: "development_complete", bookingStatus: "not_booked" }) });

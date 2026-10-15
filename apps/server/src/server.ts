@@ -8,6 +8,7 @@ import type { Config } from "./config.js";
 import { openStore } from "./storage.js";
 import type { Store } from "./storage.js";
 import { CommandError } from "./errors.js";
+import { CallController } from "./call-controller.js";
 import { callRoutes } from "./call-routes.js";
 import { Simulator } from "./simulator.js";
 import type { SimulatorOptions } from "./simulator.js";
@@ -63,7 +64,7 @@ function createListener(config: Config, stream?: Writable) {
   return app;
 }
 
-function privateRoutes(app: FastifyInstance, config: Config, store: Store, simulator: Simulator) {
+function privateRoutes(app: FastifyInstance, config: Config, store: Store, controller: CallController) {
   app.addHook("onRequest", async (request, reply) => {
     const address = app.server.address();
     const port = typeof address === "object" && address !== null ? address.port : config.apiPort;
@@ -102,7 +103,7 @@ function privateRoutes(app: FastifyInstance, config: Config, store: Store, simul
   });
   app.get(api.getSettings.path, async () => SettingsSchema.parse(store.getSettings()));
   app.put(api.updateSettings.path, async (request) => store.setSettings(SettingsSchema.parse(request.body)));
-  callRoutes(app, simulator);
+  callRoutes(app, controller);
 }
 
 export function createRuntime(config: Config, logStream?: Writable, simulatorOptions?: SimulatorOptions) {
@@ -110,10 +111,11 @@ export function createRuntime(config: Config, logStream?: Writable, simulatorOpt
   const privateApi = createListener(config, logStream);
   const callbacks = createListener(config, logStream);
   const simulator = new Simulator(config, store, simulatorOptions);
-  const development = new DevelopmentConversations(config);
+  const development = new DevelopmentConversations(config, store);
+  const controller = new CallController(store, simulator, development);
   mountMockRelay(callbacks, config, () => store.getSettings().defaultCallLimits.maxDurationSeconds,
     (setup, send, disconnect) => development.attach(setup, send, disconnect));
-  privateRoutes(privateApi, config, store, simulator);
+  privateRoutes(privateApi, config, store, controller);
   mountDevelopmentConsole(privateApi, development);
   let closing: Promise<void> | undefined;
   const close = () => closing ??= (async () => {
@@ -121,7 +123,7 @@ export function createRuntime(config: Config, logStream?: Writable, simulatorOpt
     finally { store.close(); }
   })();
   return {
-    privateApi, callbacks, simulator, close,
+    privateApi, callbacks, simulator, controller, close,
     async start() {
       try {
         await privateApi.listen({ host: "0.0.0.0", port: config.apiPort });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  ApprovalDecisionSchema, CallSnapshotSchema, CandidateActionSchema, DialogueInputSchema,
+  ApprovalDecisionSchema, CallSnapshotSchema, ManualCallSnapshotSchema, StoredCallSnapshotSchema, CandidateActionSchema, DialogueInputSchema,
   DomainEventSchema, E164Schema, EventCursorSchema, PlaybackPermitSchema,
   RequestDraftSchema, StartCallRequestSchema, ZonedTimeSchema, api,
 } from "../dist/index.js";
@@ -155,4 +155,25 @@ test("history pagination is bounded and contracts expose no callback routes", ()
   rejects(api.history.query, { limit: 101 });
   assert.equal(api.history.query.parse({}).limit, 20);
   assert.ok(Object.values(api).every((route) => route.path.startsWith("/api/v1/")));
+});
+
+test('manual mock snapshots preserve exact multilingual text but cannot contain booking authority, confirmation or fabricated playback', () => {
+  const manual = {
+    ...copy(connectedCallFixture), kind: 'manual_mock', plan: null, language: 'ru-RU',
+    activeOffer: null, pendingApproval: null, bookingState: 'pending', outcome: { status: 'pending' },
+    messages: [{ ...copy(connectedCallFixture.messages[0]), language: 'ru-RU',
+      originalText: '  Здравствуйте! 🧪\n ', translationEn: null }],
+  };
+  assert.deepEqual(ManualCallSnapshotSchema.parse(manual), manual);
+  assert.deepEqual(api.getCall.response.parse({ call: manual }), { call: manual });
+  assert.deepEqual(StoredCallSnapshotSchema.parse(connectedCallFixture), connectedCallFixture);
+  rejects(ManualCallSnapshotSchema, { ...manual, plan: connectedCallFixture.plan });
+  rejects(ManualCallSnapshotSchema, { ...manual, activeOffer: connectedCallFixture.activeOffer });
+  rejects(ManualCallSnapshotSchema, { ...manual, pendingApproval: approvalFixture });
+  rejects(ManualCallSnapshotSchema, { ...manual, mode: 'live' });
+  rejects(ManualCallSnapshotSchema, { ...manual, callState: 'ended' });
+  rejects(ManualCallSnapshotSchema, { ...manual, bookingState: 'confirmed', outcome: confirmedCallFixture.outcome });
+  rejects(ManualCallSnapshotSchema, { ...manual, messages: [{ ...manual.messages[0], speaker: 'assistant', playback: 'played' }] });
+  const event = { ...copy(transcriptEventFixture), payload: manual.messages[0] };
+  assert.equal(DomainEventSchema.parse(event).payload.originalText, manual.messages[0].originalText);
 });

@@ -161,3 +161,35 @@ The tests cover malformed input, unknown properties, currencies, DST resolution,
 ## 8. Change process
 
 Engineer 2 maintains shared definitions; Engineers 1 and 3 review affected boundaries before merging. Contract v1 is an app protocol version, separate from the package's development version. Renames, removed fields, stricter semantics, or new event variants require coordinated consumer updates and a version bump. Update fixtures, tests, and this document together. Do not duplicate schema definitions in the frontend or backend.
+
+## 9. Persisted manual mock calls (development extension)
+
+The existing booking `CallSnapshotSchema` and plan/start contracts remain unchanged. `GET /api/v1/calls/:attemptId` and Stop now return `StoredCallSnapshotSchema`, the union of a booking snapshot and `ManualCallSnapshotSchema`. Manual attempts originate from the local console's strict `POST /api/dev/conversations` input:
+
+```json
+{
+  "requestId": "10000000-0000-4000-8000-000000000010",
+  "initialMessage": "Hola, quisiera información.",
+  "language": "es-ES"
+}
+```
+
+`requestId` is also the persisted attempt ID and the globally namespaced idempotency key. Reusing it with different input or for another endpoint returns `409 IDEMPOTENCY_CONFLICT`. Manual calls share the database-enforced active slot with scripted calls. The console response remains `{ "conversation": ... }` as documented in the Docker guide; it is a projection of the same attempt.
+
+| Snapshot field | Manual meaning |
+| --- | --- |
+| `kind` | Always `"manual_mock"`; history entries also include this marker. |
+| `mode` / `plan` | `"simulator"` / `null`; no invented review plan or booking authority. |
+| `language` | `es-ES`, `ru-RU`, `en-US` or `pl-PL`. |
+| `callState` | Shared lifecycle enum; disconnected/ambiguous calls use `reconciliation_required` and retain the active slot. |
+| `bookingState` / `outcome` | `pending` while active; `not_booked` after termination. A normal manual end has reason `development_only`. No offer, approval or confirmed booking is permitted. |
+| `activeOffer` / `pendingApproval` | Always `null`; approval commands return `409 CALL_NOT_ACTIVE`. |
+| `messages` | `ManualTranscriptMessageSchema[]`: exact text up to 8,000 characters, locale tag, final-only, and `translationEn: null`. |
+| Assistant `playback` | `withheld` before relay setup; `generated` after submission. Neither is proof of audible playback. Business messages use `not_applicable`. |
+| Other fields | Shared revisions/sequences/timestamps, conversation deletion state, and unavailable usage. |
+
+SSE uses the existing envelope and event names. `transcript.updated` accepts the manual transcript schema as well as the existing Spanish booking schema; fetch the snapshot first to identify its kind. An initial assistant message has one stable message ID: the withheld and generated events update that same message rather than append two messages. Final business utterances append messages; partial fragments are not published. No translation, offer extraction, approval or confirmation is fabricated.
+
+The common GET/Stop/history/deletion/SSE routes work for either kind. Deletion removes manual text from snapshots, compatibility views and replay payloads; request digests retain idempotency without keeping the deleted input. A stale SSE cursor receives the existing `reset` event. Direct operator-created echo calls without a backend attempt remain outside this API.
+
+This extension does not enable live mode, real Twilio routes, signature verification, dialogue integration, provider billing or automatic restart reconciliation. Keep the callback listener local.

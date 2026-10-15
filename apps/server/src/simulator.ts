@@ -8,6 +8,7 @@ import type {
 } from "@callmate/contracts";
 import type { z } from "zod";
 import type { RequestDraftSchema, StartCallRequestSchema } from "@callmate/contracts";
+import { isManualAttempt } from "./call-store.js";
 import type { Attempt, CallStore } from "./call-store.js";
 import type { Config } from "./config.js";
 import type { Store } from "./storage.js";
@@ -41,7 +42,7 @@ export class Simulator {
     });
     // Fake providers have no surviving external call. Never resume an old script or redial on restart.
     const interrupted = this.db.active();
-    if (interrupted?.call.mode === "simulator") this.change(interrupted.call.id, (a, emit) => {
+    if (interrupted && !isManualAttempt(interrupted) && interrupted.call.mode === "simulator") this.change(interrupted.call.id, (a, emit) => {
       this.finish(a, emit, a.internal.accepted ? this.uncertain("provider_state_unknown")
         : this.notBooked("technical_failure", "Simulation interrupted by a server restart; no real call was made."));
     });
@@ -54,7 +55,7 @@ export class Simulator {
   private timestamp() { return new Date(this.now()).toISOString(); }
   private require(id: string): Attempt {
     const attempt = this.db.get(id);
-    if (!attempt) throw new CommandError(404, "NOT_FOUND", "Call attempt not found");
+    if (!attempt || isManualAttempt(attempt)) throw new CommandError(404, "NOT_FOUND", "Call attempt not found");
     return attempt;
   }
   get(id: string) { return this.require(id).call; }
@@ -121,7 +122,7 @@ export class Simulator {
   private failActive() {
     if (this.closed) return;
     const active = this.db.active();
-    if (active) this.change(active.call.id, (a, emit) => {
+    if (active && !isManualAttempt(active)) this.change(active.call.id, (a, emit) => {
       emit("call.error", { code: "INTERNAL_ERROR", message: "The simulation could not continue", recoverable: false });
       this.finish(a, emit, a.internal.accepted ? this.uncertain("provider_state_unknown")
         : this.notBooked("technical_failure", "The simulation stopped after an internal error."), "failed");
@@ -239,10 +240,10 @@ export class Simulator {
     });
   }
   history(limit: number, cursor?: string) {
-    if (cursor) this.require(cursor);
+    if (cursor && !this.db.get(cursor)) throw new CommandError(404, "NOT_FOUND", "Call attempt not found");
     const calls = this.db.list(limit + 1, cursor);
     return { items: calls.slice(0, limit).map((call) => ({ id: call.id, mode: call.mode,
-      businessName: call.plan.request.business.name, callState: call.callState, outcome: call.outcome,
+      businessName: call.plan?.request.business.name ?? "Manual mock call", callState: call.callState, outcome: call.outcome, ...("kind" in call ? { kind: call.kind } : {}),
       createdAt: call.createdAt, usage: call.usage })), nextCursor: calls.length > limit ? calls[limit - 1]!.id : null };
   }
   deleteConversation(id: string) {
@@ -295,7 +296,7 @@ export class Simulator {
   async tick() {
     if (this.closed) return;
     const a = this.db.active();
-    if (!a || a.call.mode !== "simulator") return;
+    if (!a || isManualAttempt(a) || a.call.mode !== "simulator") return;
     const id = a.call.id;
     if (a.call.callState === "ending") {
       await this.telephony.requestHangup(`simulator:${id}`);

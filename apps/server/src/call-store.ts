@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
-import { CallSnapshotSchema, DomainEventSchema, ReviewPlanSchema } from "@callmate/contracts";
-import type { CallSnapshot, DomainEvent, ReviewPlan, SimulatorScenario } from "@callmate/contracts";
+import { StoredCallSnapshotSchema, DomainEventSchema, ReviewPlanSchema } from "@callmate/contracts";
+import type { CallSnapshot, ManualCallSnapshot, DomainEvent, ReviewPlan, SimulatorScenario, StoredCallSnapshot } from "@callmate/contracts";
 
 export type Internal = {
   scenario: SimulatorScenario;
@@ -11,12 +11,25 @@ export type Internal = {
 };
 export type Attempt = { call: CallSnapshot; internal: Internal; replayFloor: number };
 
+export type ManualInternal = {
+  kind: "manual_mock";
+  callSid: string | null;
+  status: "creating" | "ringing" | "connected" | "disconnected" | "completed" | "failed" | "unknown";
+  error: string | null;
+  stopRequested: boolean;
+};
+export type ManualAttempt = { call: ManualCallSnapshot; internal: ManualInternal; replayFloor: number };
+export type StoredAttempt = Attempt | ManualAttempt;
+export function isManualAttempt(attempt: StoredAttempt): attempt is ManualAttempt {
+  return "kind" in attempt.call && attempt.call.kind === "manual_mock";
+}
+
 export function callStore(db: Database.Database) {
-  const get = (id: string): Attempt | undefined => {
+  const get = (id: string): StoredAttempt | undefined => {
     const row = db.prepare("SELECT snapshot, internal, replay_floor FROM call_attempts WHERE id = ?").get(id) as
       { snapshot: string; internal: string; replay_floor: number } | undefined;
-    return row && { call: CallSnapshotSchema.parse(JSON.parse(row.snapshot)),
-      internal: JSON.parse(row.internal) as Internal, replayFloor: row.replay_floor };
+    return row && { call: StoredCallSnapshotSchema.parse(JSON.parse(row.snapshot)),
+      internal: JSON.parse(row.internal) as Internal | ManualInternal, replayFloor: row.replay_floor } as StoredAttempt;
   };
   return {
     get,
@@ -28,12 +41,18 @@ export function callStore(db: Database.Database) {
       const row = db.prepare("SELECT value FROM review_plans WHERE id = ?").get(id) as { value: string } | undefined;
       return row && ReviewPlanSchema.parse(JSON.parse(row.value));
     },
-    active(): Attempt | undefined {
+    latestManual(): ManualAttempt | undefined {
+      const row = db.prepare("SELECT id FROM call_attempts WHERE json_extract(snapshot, '$.kind') = 'manual_mock' ORDER BY rowid DESC LIMIT 1")
+        .get() as { id: string } | undefined;
+      const attempt = row && get(row.id);
+      return attempt && isManualAttempt(attempt) ? attempt : undefined;
+    },
+    active(): StoredAttempt | undefined {
       const row = db.prepare("SELECT id FROM call_attempts WHERE active = 1").get() as { id: string } | undefined;
       return row && get(row.id);
     },
-    save(attempt: Attempt, events: DomainEvent[] = []) {
-      const call = CallSnapshotSchema.parse(attempt.call);
+    save(attempt: StoredAttempt, events: DomainEvent[] = []) {
+      const call = StoredCallSnapshotSchema.parse(attempt.call);
       const active = !["ended", "busy", "no_answer", "failed"].includes(call.callState);
       db.prepare(`INSERT INTO call_attempts (id, snapshot, internal, active, replay_floor) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET snapshot=excluded.snapshot, internal=excluded.internal,
@@ -55,12 +74,12 @@ export function callStore(db: Database.Database) {
         .all(id, after) as { value: string }[]).map((row) => DomainEventSchema.parse(JSON.parse(row.value)));
     },
     purgeEvents(id: string) { db.prepare("DELETE FROM call_events WHERE attempt_id = ?").run(id); },
-    list(limit: number, cursor?: string): CallSnapshot[] {
+    list(limit: number, cursor?: string): StoredCallSnapshot[] {
       // Rowid is a stable insertion order even when timestamps match. Cursor is an attempt UUID.
       return (db.prepare(`SELECT snapshot FROM call_attempts
         WHERE rowid < COALESCE((SELECT rowid FROM call_attempts WHERE id = ?), 9223372036854775807)
         ORDER BY rowid DESC LIMIT ?`).all(cursor ?? null, limit) as { snapshot: string }[])
-        .map((row) => CallSnapshotSchema.parse(JSON.parse(row.snapshot)));
+        .map((row) => StoredCallSnapshotSchema.parse(JSON.parse(row.snapshot)));
     },
   };
 }

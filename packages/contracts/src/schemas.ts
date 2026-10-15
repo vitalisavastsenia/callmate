@@ -103,7 +103,7 @@ export const OutcomeSchema = z.discriminatedUnion("status", [
   z.strictObject({ status: z.literal("confirmed"), offer: OfferSchema,
     confirmedAt: InstantSchema, confirmationMessageIds: z.array(IdSchema).min(1).max(50), summaryEn: TextSchema }),
   z.strictObject({ status: z.literal("not_booked"), reason: z.enum([
-    "no_availability", "business_declined", "busy", "no_answer", "user_stopped", "policy_declined", "technical_failure",
+    "no_availability", "business_declined", "busy", "no_answer", "user_stopped", "policy_declined", "technical_failure", "development_only",
   ]), summaryEn: TextSchema }),
   z.strictObject({ status: z.literal("uncertain"), reason: z.enum([
     "disconnected_near_confirmation", "ambiguous_confirmation", "creation_unknown", "provider_state_unknown",
@@ -172,6 +172,38 @@ export const CallSnapshotSchema = z.strictObject({
   }
 });
 
+// Manual mock calls carry no approved booking plan or authority. Booking snapshots stay unchanged.
+export const ManualTranscriptMessageSchema = z.strictObject({
+  id: IdSchema, turnId: IdSchema, speaker: z.enum(["business", "assistant"]),
+  originalText: z.string().min(1).max(8000).refine((text) => text.trim().length > 0),
+  language: z.string().max(35).regex(/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/),
+  translationEn: z.null(), final: z.literal(true),
+  playback: z.enum(["not_applicable", "withheld", "generated"]), createdAt: InstantSchema,
+}).refine((value) => (value.speaker === "business") === (value.playback === "not_applicable"),
+"Business speech has no assistant playback state");
+export const ManualCallSnapshotSchema = z.strictObject({
+  id: IdSchema, revision: VersionSchema, lastEventSequence: SequenceSchema,
+  kind: z.literal("manual_mock"), mode: z.literal("simulator"), plan: z.null(),
+  language: z.enum(["es-ES", "ru-RU", "pl-PL", "en-US"]),
+  callState: CallStateSchema, bookingState: z.enum(["pending", "not_booked"]),
+  outcome: z.union([z.strictObject({ status: z.literal("pending") }),
+    z.strictObject({ status: z.literal("not_booked"),
+      reason: z.enum(["development_only", "user_stopped", "technical_failure", "busy", "no_answer"]), summaryEn: TextSchema })]),
+  activeOffer: z.null(), pendingApproval: z.null(), conversationData: z.enum(["retained", "deleted"]),
+  messages: z.array(ManualTranscriptMessageSchema).max(2000), usage: UsageSchema,
+  createdAt: InstantSchema, updatedAt: InstantSchema,
+}).superRefine((value, ctx) => {
+  const terminal = ["ended", "busy", "no_answer", "failed"].includes(value.callState);
+  if ((value.bookingState === "not_booked") !== (value.outcome.status === "not_booked")
+    || (terminal !== (value.outcome.status === "not_booked"))
+    || (value.conversationData === "deleted" && (!terminal || value.messages.length))) {
+    ctx.addIssue({ code: "custom", message: "Manual call outcome, lifecycle and conversation data disagree" });
+  }
+});
+export const StoredCallSnapshotSchema = z.union([CallSnapshotSchema, ManualCallSnapshotSchema]);
+export type ManualCallSnapshot = z.infer<typeof ManualCallSnapshotSchema>;
+export type StoredCallSnapshot = z.infer<typeof StoredCallSnapshotSchema>;
+
 export const DialogueInputSchema = z.strictObject({
   attemptId: IdSchema, turnId: IdSchema, turnVersion: VersionSchema, plan: ApprovedPlanSchema,
   bookingState: BookingStateSchema, offer: OfferSchema.nullable(),
@@ -210,7 +242,7 @@ function event<T extends string, S extends z.ZodType>(type: T, payload: S) {
 }
 export const DomainEventSchema = z.discriminatedUnion("type", [
   event("call.status", z.strictObject({ callState: CallStateSchema })),
-  event("transcript.updated", TranscriptMessageSchema),
+  event("transcript.updated", z.union([ManualTranscriptMessageSchema, TranscriptMessageSchema])),
   event("offer.updated", OfferSchema),
   event("approval.requested", ApprovalRequestSchema),
   event("approval.resolved", ApprovalResolutionSchema),
@@ -230,7 +262,7 @@ export const SettingsSchema = z.strictObject({
   defaultCallLimits: CallLimitsSchema, transcriptRetentionDays: z.number().int().min(1).max(365),
 });
 export const HistoryEntrySchema = z.strictObject({
-  id: IdSchema, mode: z.enum(["simulator", "live"]), businessName: TextSchema,
+  id: IdSchema, mode: z.enum(["simulator", "live"]), kind: z.literal("manual_mock").optional(), businessName: TextSchema,
   callState: CallStateSchema, outcome: OutcomeSchema, createdAt: InstantSchema, usage: UsageSchema,
 });
 
