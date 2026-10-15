@@ -100,7 +100,17 @@ export function initializeOperator(win: Browser, doc: Document) {
       label.append(doc.createTextNode(message.speaker === "operator" ? "YOU · BUSINESS" : message.speaker === "platform" ? "SIMULATED PLATFORM GREETING" : "CALLMATE AI"));
       const stamp = doc.createElement("time"); stamp.dateTime = message.at; stamp.textContent = time(message.at) + (message.final ? "" : " · partial"); label.append(stamp);
       const body = doc.createElement("div"); body.className = "message-body"; body.textContent = message.text;
-      item.append(label, body); transcript.append(item);
+      item.append(label, body);
+      if (message.speaker !== "operator" && message.final && message.text.trim()) {
+        const listen = doc.createElement("button"); listen.type = "button"; listen.className = "listen-message";
+        listen.textContent = "▶ Listen"; listen.setAttribute("aria-label", "Listen to backend message");
+        listen.disabled = !ready || !config?.browserSpeech || !speech.synthesisAvailable;
+        listen.addEventListener("click", () => {
+          if (selected === session.id && controlsOwned() && active()?.connection === "connected" && config?.browserSpeech) speech.listen(message);
+        });
+        item.append(listen);
+      }
+      transcript.append(item);
     }
     if (atBottom) transcript.scrollTop = transcript.scrollHeight;
     text("destination", session.relayWsUrl ?? "Resolved when answered"); text("sid", session.id); text("session-id", session.sessionId ?? "Not connected");
@@ -177,6 +187,7 @@ export function initializeOperator(win: Browser, doc: Document) {
   el("language").addEventListener("change", () => { speech.stopMic(); speech.language = el<HTMLSelectElement>("language").value; send("language", { language: speech.language }); });
   el("mic-start").addEventListener("click", () => speech.startMic()); el("mic-stop").addEventListener("click", () => speech.stopMic());
   el("interrupt").addEventListener("click", () => { const payload = speech.interrupt(); if (payload) send("interrupt", { payload }); });
+  el("stop-audio").addEventListener("click", () => speech.cancelPlayback());
   el("tts").addEventListener("change", () => { speech.enabled = el<HTMLInputElement>("tts").checked && Boolean(config?.browserSpeech); if (!speech.enabled) speech.cancelPlayback(); });
   el("volume").addEventListener("input", () => { speech.volume = Number(el<HTMLInputElement>("volume").value); });
   el("voice").addEventListener("change", () => { speech.voiceURI = el<HTMLSelectElement>("voice").value; });

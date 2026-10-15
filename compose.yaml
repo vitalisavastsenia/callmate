@@ -9,6 +9,12 @@ services:
     environment:
       NODE_ENV: "${NODE_ENV:-development}"
       TELEPHONY_PROVIDER: "${TELEPHONY_PROVIDER:-mock}"
+      CALLMATE_MOCK_API_BASE: "${CALLMATE_MOCK_API_BASE:-http://host.docker.internal:8080}"
+      CALLMATE_MOCK_OPERATOR_ORIGIN: "${CALLMATE_MOCK_OPERATOR_ORIGIN:-http://localhost:8080}"
+      CALLMATE_MOCK_RELAY_URL: "${CALLMATE_MOCK_RELAY_URL:-ws://host.docker.internal:${CALLMATE_CALLBACK_PORT:-3001}/ws/voice}"
+      MOCK_ACCOUNT_SID: "${MOCK_ACCOUNT_SID:-AC00000000000000000000000000000000}"
+      MOCK_API_USERNAME: "${MOCK_API_USERNAME:-mock}"
+      MOCK_API_PASSWORD: "${MOCK_API_PASSWORD:-mock-local-only}"
       CALLMATE_API_PORT: "${CALLMATE_API_PORT:-3000}"
       CALLMATE_CALLBACK_PORT: "${CALLMATE_CALLBACK_PORT:-3001}"
       CALLMATE_DATA_DIR: /data
@@ -19,6 +25,7 @@ services:
       CALLMATE_SIMULATOR_APPROVAL_SECONDS: "${CALLMATE_SIMULATOR_APPROVAL_SECONDS:-30}"
     volumes:
       - callmate-data:/data
+    extra_hosts: ["host.docker.internal:host-gateway"]
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m

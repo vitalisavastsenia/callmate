@@ -2,7 +2,7 @@
 
 A standalone local replacement for the supported Twilio Calls REST and ConversationRelay transport. A human uses the browser to answer CallMate's simulated outbound call and act as the business. The emulator opens the outbound WebSocket **to your backend**, sends caller speech as `prompt`, and displays the backend's streamed `text` replies.
 
-There is no AI agent, appointment logic, Twilio SDK, real phone call, paid speech provider, or external database in this service. Browser speech is optional. Text mode needs only Docker and your local backend.
+There is no AI agent, appointment logic, real phone call, paid speech provider, or external database in this service. The official Twilio SDK is used only by development compatibility tests and is omitted from the runtime image. Browser speech is optional. Text mode needs only Docker and your local backend.
 
 ## Start and stop
 
@@ -38,11 +38,15 @@ docker compose up --build -d --wait server
 docker compose -f mock-conversation-relay/compose.yaml up --build -d --wait mock-relay
 ```
 
-The root Compose defaults select `NODE_ENV=development`, `TELEPHONY_PROVIDER=mock`, and `CALLMATE_MODE=simulator`. Create a call at `localhost:8080` using `ws://host.docker.internal:3001/ws/voice`, answer it, and send text. You receive a development greeting and streamed echo replies in the caller's language (Russian, Spanish, Polish, or English). Type `/end` to test backend hangup, or use **Hang up**. For a changed callback port, update the relay URL accordingly.
+The root Compose defaults select `NODE_ENV=development`, `TELEPHONY_PROVIDER=mock`, and `CALLMATE_MODE=simulator`. For the simple two-window flow, open **http://localhost:3000/**, enter an initial message and click **Start conversation**. Follow **Open operator window**, answer, and type a reply. The initial message appears here with a **Listen** button: click it after answering to hear the message using your browser/OS voice. The operator's reply appears on the backend page. Stop on the backend page ends the mock call. See the [backend UI guide](../docs/docker-development.md#9-simple-backend-conversation-ui) for configuration and lifecycle details.
 
-This verifies the actual emulator-to-backend transport. The handler does not make booking decisions or create/update persisted API/SSE attempts; `taskId` and other custom parameters do not authorize actions. The automatic API/SSE simulator and earlier signed loopback harness remain separate tools. Connecting the booking controller/dialogue implementation to provider events is subsequent integration work. No AI agent runs inside the emulator.
+For the independent echo flow, create a call at `localhost:8080` using `ws://host.docker.internal:3001/ws/voice`, answer it, and send text. You receive a development greeting and streamed echo replies in the caller's language (Russian, Spanish, Polish, or English). Type `/end` to test backend hangup, or use **Hang up**. For a changed callback port, update the relay URL accordingly.
 
-Configure the **consuming backend** explicitly:
+This verifies the actual emulator-to-backend transport. The handler does not make booking decisions or create/update persisted API/SSE attempts; `taskId` and other custom parameters do not authorize booking actions. Backend-started console calls use `conversationId` and an opaque correlation token to attach to their in-memory console record only. The automatic API/SSE simulator and earlier signed loopback harness remain separate tools. Connecting the booking controller/dialogue implementation to provider events is subsequent integration work. No AI agent runs inside the emulator.
+
+The root backend uses `CALLMATE_MOCK_API_BASE`, `CALLMATE_MOCK_OPERATOR_ORIGIN`, `CALLMATE_MOCK_RELAY_URL`, and `MOCK_ACCOUNT_SID` / `MOCK_API_USERNAME` / `MOCK_API_PASSWORD` from the root `.env.example`. Its Compose defaults connect the separate containers through the host gateway. The `MOCK_TWILIO_*` names below belong only to the reusable adapter example, not the root backend.
+
+For another consuming backend, adapt this example configuration:
 
 ```dotenv
 NODE_ENV=development
@@ -74,9 +78,13 @@ There are two separate network directions:
 - Backend → emulator Calls API: use `http://localhost:8080` when the backend runs on the host. On a shared Docker network, use `http://mock-relay:8080`.
 - Emulator → backend TwiML/webhooks/relay: use `http://host.docker.internal:3001/...` / `ws://host.docker.internal:3001/...` for a host backend. Docker Compose includes `host.docker.internal:host-gateway` for Linux. A host backend must bind to an address reachable from Docker, not only its host loopback when that prevents Docker access. Restrict access with your local firewall. If both services share a Docker network, use the backend's service name and explicitly add it to `ALLOWED_BACKEND_HOSTS`.
 
-The emulator marks HTTP requests and WS upgrades with **`X-CallMate-Mock: true`**. It never creates an `X-Twilio-Signature`. In your backend, allow this unsigned path only when **both** `NODE_ENV=development|test` and `TELEPHONY_PROVIDER=mock` hold. `isDevelopmentMockTraffic` in the example adapter implements that gate. Apply it before accepting a WS upgrade or webhook, then use the same event parser/controller you intend to use with Twilio. The marker is not authentication and must not bypass production signature validation.
+The emulator sends **`X-CallMate-Mock: true`** plus **`X-Twilio-Signature`** on TwiML fetches, status callbacks, Connect action requests and relay WebSocket handshakes. Signatures use Twilio's HMAC-SHA1 algorithm with the synthetic `MOCK_AUTH_TOKEN`. HTTP POST signs the full destination URL and sorted form fields; HTTP GET signs the URL including all appended query fields, with an empty form. WebSocket upgrades sign the exact configured WS/WSS URL with an empty form. The tests verify these signatures with the official SDK, including query strings and Unicode values.
 
-To return to actual Twilio, select the real backend provider, restore the real SDK base URL/auth, require official SDK signature checks, and configure public HTTPS/WSS endpoints. Run separate real-provider tests. The emulator cannot verify Twilio signatures, carrier behavior, billing, live TTS/STT, or production networking.
+Configure your development verifier with the same synthetic token and the externally requested URL. Do not reconstruct a different URL from an internal proxy address. The extra mock marker identifies development traffic; it grants no production authentication. The root backend currently keeps its existing development/mock gate and accepts the marker; the standalone compatibility fixtures require valid signatures. This extension supersedes the original specification's unsigned-only mock behavior; no real account credentials are used or published.
+
+Calls Basic auth accepts either the original `MOCK_API_USERNAME:MOCK_API_PASSWORD` pair or the SDK-compatible `MOCK_ACCOUNT_SID:MOCK_AUTH_TOKEN` pair. Both are development credentials. [The SDK compatibility tests](tests/twilio-compatibility.test.mjs) provide a bounded custom HTTP transport that sends the official SDK's Calls requests to the emulator. No global DNS replacement is needed.
+
+These improvements do not yet make the root app switchable to real Twilio through configuration alone: its mock health probe, local-only Calls client and development relay gate remain. A production adapter still needs real SDK transport, signature validation against the public endpoint, credentials, phone-number configuration, durable call correlation and HTTPS/WSS. The emulator verifies protocol behavior against SDK validation, not Twilio infrastructure, carrier behavior, billing, live TTS/STT or production networking. A real-provider integration test is still required.
 
 ## Quick manual session
 
@@ -111,7 +119,9 @@ Copy `.env.example` to `.env` in this directory to override Compose defaults. Th
 | `NODE_ENV` | `development`; service refuses production mode. Compose fixes this to development. |
 | `PORT` | `8080`, both container port and loopback host port |
 | `MOCK_ACCOUNT_SID` | `AC` followed by 32 zeroes |
-| `MOCK_API_USERNAME`, `MOCK_API_PASSWORD` | `mock`, `mock-local-only`; Calls REST Basic auth |
+| `MOCK_API_USERNAME`, `MOCK_API_PASSWORD` | `mock`, `mock-local-only`; original local Calls REST Basic auth |
+| `MOCK_AUTH_TOKEN` | `mock-auth-token-local-only`; synthetic outgoing-signature token and SDK-compatible Calls Basic password with `MOCK_ACCOUNT_SID` as username |
+| `MOCK_DIAL_DELAY_MS` | `0`; 0–60,000ms in `queued` before dialing, processed by the 500ms sweep; zero preserves immediate ringing |
 | `CALLMATE_WS_URL` | `ws://host.docker.internal:3001/ws/voice`, direct-session fallback |
 | `CALLMATE_TWIML_URL` | `http://host.docker.internal:3001/twiml`, published in `/api/config` for tooling; use it explicitly as Calls `Url` / direct `url` to fetch TwiML |
 | `DEFAULT_LANGUAGE` | `pl-PL`; UI also offers Spanish `es-ES`, Russian `ru-RU`, English `en-US` and session-provided language tags |
@@ -125,7 +135,7 @@ Copy `.env.example` to `.env` in this directory to override Compose defaults. Th
 | `LOG_LEVEL` | `info`; `silent`, `error`, `warn`, `debug` also supported |
 | `ALLOWED_BACKEND_HOSTS` | `host.docker.internal,localhost,127.0.0.1`; exact hostname allowlist |
 
-The default ringing timeout is 30 seconds, capped by maximum call lifetime. Direct `timeout` / Calls `Timeout` may select 1–600 seconds without exceeding the configured lifetime. No-answer ends with `no-answer`; reaching the maximum duration after answer ends with `failed` / `CALL_TIMEOUT`. Cleanup runs every 500ms. Terminal call status never reopens. Rejecting a ringing call produces `busy`. Backend/user hangup produces `completed`, which says nothing about appointment success.
+The default ringing timeout is 30 seconds, capped by maximum call lifetime. Direct `timeout` / Calls `Timeout` may select 1–600 seconds without exceeding the configured lifetime. No-answer ends with `no-answer`; reaching the maximum duration after answer ends with `failed` / `CALL_TIMEOUT`. Cleanup runs every 500ms. Terminal call status never reopens. Rejecting a ringing call produces `busy`. The existing mock Hang up / `Status=completed` operation produces `completed`, including pending calls, for compatibility with the development console; use `Status=canceled` to test Twilio-style pre-answer cancellation. Neither status indicates appointment success.
 
 ## REST contract
 
@@ -149,14 +159,16 @@ JSON management endpoints are local, same-origin development APIs. Invalid field
 
 Browser ownership locks also protect management mutations. Unowned calls can be controlled through REST; when a browser owns a call, competing controls receive 409. Its operator commands use the separate WS channel. Backend-authenticated Calls REST completion always takes priority over an operator lock.
 
-Calls façade routes use configured Basic credentials and account SID:
+Calls façade routes use the configured account SID and either supported Basic credential pair:
 
-- `POST /2010-04-01/Accounts/:accountSid/Calls.json`: form fields `To`, `From`, either `Url` or `Twiml`, optional `Method`, `StatusCallback`, `StatusCallbackMethod`, repeated `StatusCallbackEvent`, `Timeout`. A whitespace-separated event list is also accepted for local examples. `Url` wins if both sources are provided. HTTP 201 returns the current ringing resource. Unsupported fields/updates are rejected.
-- `GET /2010-04-01/Accounts/:accountSid/Calls/:callSid.json`: snake_case resource with SID/account/from/to/direction/status, runtime RFC 2822 dates, start/end, duration, URI, `api_version`, and null price fields. Duration is a string after terminal state; unknown dates/duration are null.
-- POST to the same call resource with `Status=completed`: idempotent mock hangup. This subset does not support call forwarding, recordings, cancel updates, or TwiML replacement.
+- `POST /2010-04-01/Accounts/:accountSid/Calls.json`: form fields `To`, `From`, either `Url` or `Twiml`, optional `Method`, `StatusCallback`, `StatusCallbackMethod`, repeated `StatusCallbackEvent`, `Timeout`. A whitespace-separated event list is also accepted for local examples. `Url` wins if both sources are provided. HTTP 201 returns the current queued or ringing resource, depending on the configured dial delay. Unsupported fields/updates are rejected.
+- `GET /2010-04-01/Accounts/:accountSid/Calls/:callSid.json`: snake_case resource with SID/account/from/to/direction/status, runtime RFC 2822 dates, start/end, duration, URI, `api_version`, and null price fields. Duration is a string after successful completion; unsuccessful/ongoing calls have null duration/end time, and unknown dates are null.
+- POST to the same call resource with `Status=completed`: idempotent mock hangup.
+- POST with `Status=canceled`: cancel a queued or ringing call; already terminal calls remain unchanged. Canceling an answered call returns 400. Queue cancellation sends no status callbacks and never starts dialing. Ringing cancellation produces the subscribed `completed` event with `CallStatus=canceled`.
+- This subset does not support call forwarding, recordings or TwiML replacement.
 - Errors are Twilio-shaped `{code,message,more_info,status}`: auth uses 20003, missing resources 20404, unsupported/invalid requests 20001 with a mock-specific diagnostic. This is not Twilio's full validation/error catalogue.
 
-Callbacks run serially per call with a configurable per-request deadline (2.5s by default), no retries, response size limits, and no redirects. Failure appears in `callbacks` and `lastError`, never blocks controls, and does not redial. Subscriptions default to `completed`; `answered` sends `CallStatus=in-progress`. Callbacks include account/call/from/to/direction, sequence starting at zero, RFC 2822 timestamp, callback source, and terminal duration. `<Connect action>` is called with session details after relay end; its response is recorded but no additional TwiML is executed. All requests are explicitly marked local mock traffic.
+Callbacks run serially per call with a configurable per-request deadline (2.5s by default), no retries, response size limits, and no redirects. Failure appears in `callbacks` and `lastError`, never blocks controls, and does not redial. Subscriptions default to `completed`; `answered` sends `CallStatus=in-progress`. Callbacks include account/call/from/to/direction, sequence starting at zero, RFC 2822 timestamp, callback source, and terminal duration. `<Connect action>` is called with session details after relay end. For backend `end`, the call remains `in-progress` while this response is fetched and interpreted; see the continuation subset below. Action responses after an already terminal caller hangup/failure are recorded without resuming the call. All requests are explicitly marked local mock traffic.
 
 ## TwiML and WebSocket contract
 
@@ -167,11 +179,19 @@ The emulator is the relay **client**, one socket per call. It sends a complete `
 Backend messages:
 
 - `text`: string `token` (empty allowed), optional `last` default false, `lang`, `interruptible`, `preemptible`. Tokens concatenate exactly. Final utterances may be spoken in the browser; partial tokens are displayed without restarting TTS.
-- `end`: optional **string** `handoffData`, preserved exactly. Completes the call and closes the socket, without synthesizing an outbound `end` or prompt. Normal caller hangup uses socket closure and status callbacks.
+- `end`: optional **string** `handoffData`, preserved exactly. Ends the relay socket and returns control to the Connect action, with `SessionStatus=ended`, `CallStatus=in-progress`, session duration and optional `HandoffData`. It does not itself complete a call when an action is pending. With no action, the supported initial TwiML has no remaining instructions, so the call completes. No outbound `end` or caller prompt is synthesized. Normal caller hangup uses socket closure and status callbacks.
 - `language`: `ttsLanguage` and/or `transcriptionLanguage` updates future defaults and UI controls.
 - `sendDigits`: validated digit string is recorded as a visible raw event; no tones are produced.
 - `play`: validated request is recorded with `UNSUPPORTED_MEDIA_PLAYBACK`; media URLs are never fetched.
 - Invalid/unknown messages send protocol `error`. Valid frames reset the counter; ten consecutive invalid frames close 1007. Unexpected socket closure, even close 1000 without `end`, is a failure, never a successful booking. No automatic relay reconnect occurs.
+
+### Queue and Connect continuation checks
+
+Set `MOCK_DIAL_DELAY_MS=1000` in the emulator's `.env` and recreate its Docker service to expose the queued state through Calls GET/create responses. `initiated` fires when dialing starts, followed by `ringing`; `Timeout` starts then. Maximum call lifetime includes queue time. Queued calls occupy the active-call limit. The normal operator Answer controls appear when ringing starts; cancel a queued call through the Calls API. Reset the delay to zero for the original immediate-ringing workflow. Terminal calls never resume.
+
+For backend `end`, the Connect action's XML response supports an empty `<Response/>`, `<Hangup/>`, and up to 20 `<Pause length="1..60"/>` / Hangup instructions. For example, `<Response><Pause length="2"/><Hangup/></Response>` keeps the call active with a disconnected relay for two seconds, then completes it. Completion callbacks fire only after continuation finishes. A pending continuation is bounded by the call lifetime and can be ended by Hang up / Calls completion. Late action responses cannot reopen a terminal call; actions are delivered once without automatic retry.
+
+Unsupported or malformed action TwiML fails the call with an explicit diagnostic. This is not a full TwiML interpreter: new Connect sessions, Dial/transfer, Say/Gather/Redirect, media execution and sibling instructions after the initial Connect are not implemented. Initial TwiML still requires exactly the Response/Connect/ConversationRelay structure above. The original mock completed on every relay `end`; callers with an action now must return supported continuation XML. Returning `<Response><Hangup/></Response>` preserves immediate completion after the action.
 
 ## Browser control channel and speech
 
@@ -183,7 +203,9 @@ Both the new-call and active-call language selectors offer Polski (`pl-PL`), Esp
 
 Text is always authoritative. The microphone requests permission only on Start, emits final recognition results, and handles unsupported/denied/ended recognition with a text fallback. Recognition pauses during AI synthesis to reduce feedback; browser behavior varies. Browser STT **may contact a browser vendor's service**. Offline STT/privacy is not promised; automated tests stub speech APIs and never use paid services.
 
-TTS is opt-in. It uses available browser/OS voices and the message/session language. If voices or synthesis are unavailable, text remains visible. Only the controlling tab speaks the selected call, buffered until `last=true`. Current `interruptible=false` prevents the manual speech interrupt; current `preemptible=true` allows the next completed speech turn to cancel it. These are browser approximations, not Twilio audio timing guarantees. Interrupt's heard-text prefix uses optional browser word-boundary positions and elapsed playback time; it is not character-accurate. Manual protocol interrupt is available with empty text/zero duration when no audio is playing. No playback-completed ACK is sent to the backend.
+Audio is opt-in. After answering a call, click **Listen** beside any finalized backend message, including the initial message from the backend UI. This plays that exact text once without enabling automatic speech, redialing, or sending another caller prompt. **Stop audio** cancels local playback. Partial messages and caller text have no Listen button; playback is available only to the controlling tab while connected.
+
+Enable **Auto-play backend messages** above the transcript before answering to hear new messages automatically. Turning it on after a message arrives does not replay old messages; use Listen for those. Refresh remains silent until you explicitly request playback. Volume and Voice remain under **Speech & keypad**. It uses available browser/OS voices and the message/session language; the default chooses a matching language voice when available, and an explicit Voice selection overrides it. If voices or synthesis are unavailable, text remains visible. Only the controlling tab speaks the selected call, buffered until `last=true`. Current `interruptible=false` prevents the manual speech interrupt; current `preemptible=true` allows the next completed speech turn to cancel it. These are browser approximations, not Twilio audio timing guarantees. Interrupt's heard-text prefix uses optional browser word-boundary positions and elapsed playback time; it is not character-accurate. Manual protocol interrupt is available with empty text/zero duration when no audio is playing. No playback-completed ACK is sent to the backend.
 
 ## Limits and troubleshooting
 
@@ -207,6 +229,6 @@ From this directory, run the complete suite inside a disposable container:
 docker compose --profile checks run --build --rm checks
 ```
 
-The checks container has **external networking disabled**. Tests use loopback HTTP/WS backend fixtures, never an agent or a paid API. REST/lifecycle/protocol tests exercise real sockets; browser tests execute the TypeScript UI/speech controller against a DOM with stubbed speech APIs. The full operator-flow test also sends browser commands through real operator/relay sockets to a fixture backend. Tests inject clock/ID factories through `Controller(config, {now, makeId})`; HTTP clients cannot select deterministic IDs. Normal IDs use cryptographic randomness. Those tests do not establish actual device/browser STT quality. For manual acceptance, use the operator with your backend, test text and optional speech, interrupt/hangup, refresh, and inspect the diagnostics.
+The checks container has **external networking disabled**. Tests use loopback HTTP/WS backend fixtures, never an agent or a paid API. REST/lifecycle/protocol tests exercise real sockets; SDK compatibility tests exercise create/fetch/complete/cancel, SDK-deserialized resources and errors, signed GET/POST callbacks and WS upgrades, token mismatches, queued cancellation, action continuations and late responses; browser tests execute the TypeScript UI/speech controller against a DOM with stubbed speech APIs. The full operator-flow test also sends browser commands through real operator/relay sockets to a fixture backend. Tests inject clock/ID factories through `Controller(config, {now, makeId})`; HTTP clients cannot select deterministic IDs. Normal IDs use cryptographic randomness. Those tests do not establish actual device/browser STT quality. For manual acceptance, use the operator with your backend, test text and optional speech, interrupt/hangup, refresh, and inspect the diagnostics.
 
 Normative format references: [ConversationRelay messages](https://www.twilio.com/docs/voice/conversationrelay/websocket-messages), [ConversationRelay TwiML](https://www.twilio.com/docs/voice/twiml/connect/conversationrelay), [Calls resource](https://www.twilio.com/docs/voice/api/call-resource), [SpeechRecognition](https://developer.mozilla.org/en-US/docs/Web/API/SpeechRecognition), [SpeechSynthesis](https://developer.mozilla.org/en-US/docs/Web/API/SpeechSynthesis). This is a development emulator for a documented subset, not an official Twilio implementation.

@@ -18,9 +18,9 @@ Read the documents in this order:
 8. [Twilio account and configuration runbook](docs/twilio-setup.md): account creation, paid/trial limits, Voice number, Spain permissions, credentials, ConversationRelay, callbacks, and connectivity checks for Engineer 2.
 9. [Docker backend development](docs/docker-development.md): container startup, configuration, SQLite storage, implemented endpoints, and checks.
 10. [Offline Twilio protocol mock](docs/twilio-mock.md): official-format REST/webhook/TwiML/WebSocket adapter tests and a Docker walkthrough.
-11. [Mock ConversationRelay development service](mock-conversation-relay/README.md): standalone Docker emulator with an operator browser UI, Calls façade, and outgoing relay connections.
+11. [Mock ConversationRelay development service](mock-conversation-relay/README.md): standalone Docker emulator with an operator browser UI, SDK-compatible Calls subset, signed callbacks/relay handshakes, optional queued dialing, and Connect action continuation checks.
 
-The shared contracts, TypeScript/Fastify backend, and scripted simulator are implemented. Simulator mode supports plan review, Start/Stop, approval decisions, persistent snapshots, replayable SSE, history, and conversation deletion without credentials or provider requests. The UI and real calling/dialogue adapters remain to be built. Readiness is true only in simulator mode; no real phone calls can start.
+The shared contracts, TypeScript/Fastify backend, and scripted simulator are implemented. Simulator mode supports plan review, Start/Stop, approval decisions, persistent snapshots, replayable SSE, history, and conversation deletion without credentials or provider requests. A simple development UI can start manual conversations through the local mock service and display operator replies. The full booking UI and real calling/dialogue adapters remain to be built. Readiness is true only in simulator mode; no real phone calls can start.
 
 ## Getting started
 
@@ -47,7 +47,9 @@ To answer manual calls through the emulator, start the backend above and then:
 docker compose -f mock-conversation-relay/compose.yaml up --build -d --wait mock-relay
 ```
 
-Open [the relay operator UI](http://localhost:8080/), create a call with the default backend URL, and click **Answer call**. The backend sends a development greeting and echoes final caller utterances in streamed text, supporting Russian, Spanish, Polish, and English. Type `/end` to exercise backend hangup. These are transport checks: no AI, booking decisions, or persisted API/SSE call attempts are created. The root Compose defaults enable the handler with `NODE_ENV=development`, `TELEPHONY_PROVIDER=mock`, and `CALLMATE_MODE=simulator`. See the [relay setup and limits](docs/docker-development.md#8-manual-conversationrelay-development-transport).
+Open [the backend UI](http://localhost:3000/), enter an initial message, choose Spanish, Russian, English, or Polish, and click **Start conversation**. Click **Open operator window**, answer the ringing call, and type a reply in the mock service. Your initial message appears in the operator transcript; click **Listen** beside it to hear it using a browser/OS voice. Enable **Auto-play backend messages** before answering for automatic playback. The operator's reply appears in the backend UI's response field. **Stop conversation** hangs up the call. Refreshing the page restores the current conversation while the backend is running.
+
+You can also create a call directly in [the relay operator UI](http://localhost:8080/) using the default backend URL. Those manual calls receive a development greeting and scripted echo replies; `/end` exercises backend hangup. Both paths are transport checks: no AI, booking decisions, or persisted API/SSE call attempts are created. The root Compose defaults enable the handler with `NODE_ENV=development`, `TELEPHONY_PROVIDER=mock`, and `CALLMATE_MODE=simulator`. See the [relay setup and limits](docs/docker-development.md#8-manual-conversationrelay-development-transport).
 
 Run type checking and offline tests inside a disposable container:
 

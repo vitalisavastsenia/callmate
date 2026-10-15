@@ -29,6 +29,11 @@ Defaults work without `.env`. For overrides, copy `.env.example` to ignored `.en
 | `CALLMATE_MODE` | `simulator` | `simulator` is ready without credentials; `live` remains unavailable. |
 | `NODE_ENV` | `development` in Compose; `production` in standalone image | Only `development` or `test` permits the unsigned mock relay. |
 | `TELEPHONY_PROVIDER` | `mock` in Compose; `fake` without Compose | `mock` enables the development relay gate; `fake` disables it. The automatic API/SSE simulator continues to use fake telephony. Neither choice enables live calls. |
+| `CALLMATE_MOCK_API_BASE` | `http://host.docker.internal:8080` | Backend-to-emulator HTTP origin. Local hosts only, no credentials/query/path. |
+| `CALLMATE_MOCK_OPERATOR_ORIGIN` | `http://localhost:8080` | Browser-facing operator origin; change alongside the emulator's published port. |
+| `CALLMATE_MOCK_RELAY_URL` | `ws://host.docker.internal:3001/ws/voice` | Emulator-to-backend WS destination; Compose follows `CALLMATE_CALLBACK_PORT` unless explicitly overridden. |
+| `MOCK_ACCOUNT_SID` | `AC` + 32 zeroes | Synthetic account SID, matching the emulator. |
+| `MOCK_API_USERNAME`, `MOCK_API_PASSWORD` | `mock`, `mock-local-only` | Synthetic local Calls credentials, matching the emulator. Never use real provider credentials. |
 | `CALLMATE_API_PORT` | `3000` | Integer 1–65535; same port inside the container and on host loopback. |
 | `CALLMATE_CALLBACK_PORT` | `3001` | Integer 1–65535; different from the API port. |
 | `CALLMATE_LOG_LEVEL` | `info` | `silent`, `error`, `warn`, `info`, or `debug`. |
@@ -47,7 +52,7 @@ Both Fastify listeners bind `0.0.0.0` **inside the container** so Docker forward
 
 | Listener | Implemented routes |
 | --- | --- |
-| Private API, default host port 3000 | `GET /health` and all [shared HTTP/SSE routes](interfaces.md#4-private-http-api), operating on persisted simulator attempts. |
+| Private API, default host port 3000 | `GET /health`, the development UI at `/`, its `/console/` assets and `/api/dev/conversations` controls, plus all [shared HTTP/SSE routes](interfaces.md#4-private-http-api) operating on persisted simulator attempts. |
 | Callback listener, default host port 3001 | Development-only WS upgrade `/ws/voice`, gated by simulator mode, development/test environment, mock provider, and `X-CallMate-Mock: true`. Ordinary HTTP and production provider callback routes return 404. |
 
 Settings use the existing shared schemas. Example update:
@@ -83,7 +88,7 @@ docker compose --profile checks run --build --rm checks
 
 The checks service uses the build image and runs `npm run typecheck` and `npm test` entirely in its container with external networking disabled. The root workspace scripts build the contracts before consumers and run both contract and server checks. Server tests use temporary databases and internal loopback HTTP connections inside the disposable checks container; they do not mount the live data volume, publish ports, make phone calls, or contact model providers.
 
-Checks cover configuration, migrations/transaction rollback, storage permissions, schemas, local-origin controls, listener separation, log/error redaction, scripted outcomes, approval/version/expiry handling, idempotency, Stop with a late model result, duration caps, restart recovery, history/deletion, and real HTTP/SSE replay/live/reset/shutdown.
+Checks cover browser Start/Stop, refresh recovery and safe text rendering, mock call creation/correlation/replies, configuration, migrations/transaction rollback, storage permissions, schemas, local-origin controls, listener separation, log/error redaction, scripted outcomes, approval/version/expiry handling, idempotency, Stop with a late model result, duration caps, restart recovery, history/deletion, and real HTTP/SSE replay/live/reset/shutdown.
 
 For source edits, rerun the startup command with `--build`; this scaffold uses image rebuilds rather than host `node_modules` or a bind-mounted development server. To update dependency lock metadata without installing on the host, a maintainer can run:
 
@@ -200,3 +205,35 @@ The upgrade is accepted only when all of these hold: `CALLMATE_MODE=simulator`, 
 Each socket must send one valid `setup` first, within five seconds. Call/session IDs are independently checked; duplicate setup and active/recent identity reuse close 1008. The replay guard is process-local and bounded to the latest 200 call/session pairs; it is not durable provider correlation. There are at most five concurrent sockets. Partial prompts are buffered to 8,000 characters and produce no reply until `last=true`; a language change inside a partial utterance is rejected. Interrupt clears buffered caller fragments; the synchronous scripted adapter has no queued speech to cancel. DTMF is validated and accepted without booking side effects. Provider `error` closes 1011 without reflecting its description. Malformed/unsupported/binary input closes 1007; frames over 32KiB close 1009. Outgoing buffers are bounded, call duration is capped by the application setting at connection time, and shutdown terminates sockets before closing SQLite. No transcript, custom parameter, raw request URL or provider exception value is logged.
 
 The root Docker checks exercise actual WebSocket connections to this handler, including language/streaming behavior, partial prompts, isolation, replay rejection, access gates, malformed input, end, and shutdown. To verify the full Docker path manually, create a Russian or Spanish call in the emulator, answer it, send text, inspect the streamed echo, and hang up. No Twilio or model credentials are required.
+
+
+## 9. Simple backend conversation UI
+
+Start both services using the commands in the root README, then open **http://localhost:3000/**:
+
+1. Enter the initial message and choose its language (Spanish, Russian, English, or Polish).
+2. Click **Start conversation**. The backend creates one ringing call via the emulator's Calls API using inline ConversationRelay TwiML.
+3. Click **Open operator window**, then **Answer call** in the mock service at port 8080. The backend sends your initial message once, preserving Unicode and whitespace. Click **Listen** beside it in the operator transcript to hear the message, or enable **Auto-play backend messages** before answering. **Stop audio** cancels local playback; Voice and Volume are under **Speech & keypad**. Browser/OS voice availability determines audio support.
+4. Type a reply in the operator UI and send it. Final caller prompts appear verbatim in the backend's read-only response field, refreshed once per second. Partial prompts wait for their final fragment.
+5. Click **Stop conversation** in the backend UI to hang up. The replies remain visible. Refresh restores the latest conversation; closing the page does not hang up.
+
+Console calls capture the operator's replies rather than automatically echoing them. Directly created operator calls without console correlation retain section 8's greeting/echo behavior. This page has no AI or automatic response generation, translation, booking logic, or real phone service.
+
+The browser talks only to the private backend. The backend talks to the local Calls façade and correlates the relay with an opaque, per-conversation token; the browser receives no credentials or token. `conversationId` plus this token may attach only to an in-memory development conversation, never a persisted booking attempt. The marker alone grants no booking authority. Synthetic `To`/`From` values are display-only.
+
+Development-only JSON routes (separate from the shared v1 booking contracts):
+
+| Method | Route | Body / result |
+| --- | --- | --- |
+| GET | `/api/dev/conversations` | `{conversation: latestOrNull}`; reconciles with mock call status. |
+| POST | `/api/dev/conversations` | `{requestId: UUID, initialMessage: string, language: "es-ES" or "ru-RU" or "pl-PL" or "en-US"}` → 202 `{conversation}`. Message must contain non-whitespace text, up to 8,000 characters. |
+| GET | `/api/dev/conversations/:id` | `{conversation}` or 404. |
+| POST | `/api/dev/conversations/:id/stop` | `{}` → `{conversation}`. |
+
+Each conversation exposes `id`, `initialMessage`, `language`, `status`, `callSid`, `operatorUrl`, `responses: [{text, language, at}]`, and safe `error` text. Status is `creating`, `ringing`, `connected`, `disconnected`, `completed`, `failed`, or `unknown`. Only `completed`/`failed` allow another Start. Completion describes the call, not a booking.
+
+Repeated Start with the same request ID and body returns the same conversation without redial; changed input with the same ID returns 409. Another active conversation returns 409. Creation is never retried automatically. An ambiguous create remains `unknown` and blocks new calls: inspect/hang up any call in the operator UI before restarting the backend. A disconnected relay remains reserved until the provider confirms a terminal state or Stop succeeds.
+
+Storage is process-local: at most 20 conversations and 50 replies / 32,000 reply characters per conversation. Backend restart clears these records. Graceful shutdown attempts to hang up active console calls; the emulator's own deadlines clean up calls after crashes. This console does not write SQLite transcripts or shared API/SSE history.
+
+If Start reports that the service is unavailable, start the emulator and verify both configured mock origins/ports. If credentials or account SID differ, set the same synthetic values in both Compose projects. Container-to-host access uses `host.docker.internal` (with Linux host-gateway mapping); the backend sends a local Host header accepted by the emulator. If Answer fails, inspect the operator diagnostic and check the relay destination as described in section 8.

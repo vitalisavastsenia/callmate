@@ -19,6 +19,12 @@ test("served operator UI answers a Calls-created call, sends Polish text, render
   win.document.write(html.replace(/<script[^>]*>.*?<\/script>/gs, ""));
   Object.defineProperty(win, "WebSocket", { value: WebSocket, configurable: true });
   Object.defineProperty(win, "fetch", { value: (path, options) => fetch(new URL(path, local.origin), options), configurable: true });
+  const spoken = [];
+  const synthesis = new win.EventTarget();
+  synthesis.getVoices = () => [{ voiceURI: "polski", name: "Polski", lang: "pl-PL" }];
+  synthesis.speak = (utterance) => spoken.push(utterance); synthesis.cancel = () => {};
+  Object.defineProperty(win, "speechSynthesis", { value: synthesis, configurable: true });
+  Object.defineProperty(win, "SpeechSynthesisUtterance", { value: class { constructor(text) { this.text = text; } }, configurable: true });
   const ui = initializeOperator(win, win.document);
   t.after(() => { ui.cleanup(); win.happyDOM.abort(); });
   const el = (id) => win.document.getElementById(id);
@@ -38,6 +44,10 @@ test("served operator UI answers a Calls-created call, sends Polish text, render
   target.send(id, { type: "text", token: "Czy jest tańsza opcja?", last: true });
   await until(() => el("transcript").textContent.includes("Czy jest tańsza opcja?"));
   assert.equal([...el("transcript").querySelectorAll(".assistant .message-body")].at(-1).textContent, "Dziękuję. Czy jest tańsza opcja?");
+  assert.equal(spoken.length, 0);
+  el("transcript").querySelector(".assistant .listen-message").click();
+  assert.equal(spoken.length, 1); assert.equal(spoken[0].text, "Dziękuję. Czy jest tańsza opcja?");
+  assert.equal(spoken[0].lang, "pl-PL"); assert.equal(el("tts").checked, false);
   assert.equal(el("utterance").value, "");
   el("hangup").click(); await until(() => el("call-status").textContent === "completed");
   assert.equal(el("send").disabled, true); assert.equal(target.connections, 1);

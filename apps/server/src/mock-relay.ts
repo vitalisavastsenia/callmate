@@ -4,16 +4,19 @@ import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import type { Config } from "./config.js";
 import { relayInbound, relayOutbound } from "./twilio/protocol.js";
-import type { RelayOutbound } from "./twilio/protocol.js";
+import type { RelayInbound, RelayOutbound } from "./twilio/protocol.js";
 import { scriptedRelayReply } from "./simulator-adapters.js";
 
 export function mockRelayEnabled(config: Config) {
   return config.mode === "simulator" && config.telephonyProvider === "mock"
     && ["development", "test"].includes(config.nodeEnv);
 }
+export type RelaySend = (message: RelayOutbound) => void;
+export type RelayConsumer = { prompt(text: string, language: string): void; close(): void };
+type AttachRelay = (setup: Extract<RelayInbound, { type: "setup" }>, send: RelaySend, disconnect: () => void) => RelayConsumer | undefined;
 
 /** Development transport in the existing backend. It cannot invoke booking or live providers. */
-export function mountMockRelay(app: FastifyInstance, config: Config, maxDurationSeconds: () => number) {
+export function mountMockRelay(app: FastifyInstance, config: Config, maxDurationSeconds: () => number, attach?: AttachRelay) {
   const server = new WebSocketServer({ noServer: true, maxPayload: 32_768 });
   const recent = new Set<string>();
   const active = new Set<string>();
@@ -34,6 +37,7 @@ export function mountMockRelay(app: FastifyInstance, config: Config, maxDuration
       let partial = "";
       let language = "en-US";
       let identities: string[] = [];
+      let consumer: RelayConsumer | undefined;
       const deadline = setTimeout(() => stop(1008, "Development relay duration limit"), maxDurationSeconds() * 1000);
       const setupDeadline = setTimeout(() => stop(1008, "Expected setup first"), 5000);
       deadline.unref(); setupDeadline.unref();
@@ -49,7 +53,7 @@ export function mountMockRelay(app: FastifyInstance, config: Config, maxDuration
         ws.send(JSON.stringify(relayOutbound.parse(message)));
       };
       ws.on("error", () => {}); // Do not log provider frames or exception values.
-      ws.once("close", () => { clearTimeout(deadline); clearTimeout(setupDeadline); partial = ""; identities.forEach((key) => active.delete(key)); });
+      ws.once("close", () => { clearTimeout(deadline); clearTimeout(setupDeadline); partial = ""; identities.forEach((key) => active.delete(key)); consumer?.close(); });
       ws.on("message", (raw, binary) => {
         if (closing || ended || ws.readyState !== WebSocket.OPEN) return;
         let parsed;
@@ -63,10 +67,13 @@ export function mountMockRelay(app: FastifyInstance, config: Config, maxDuration
             || Object.keys(message.customParameters).length > 30
             || Object.entries(message.customParameters).some(([key, value]) => key.length > 100 || value.length > 1000)
             || keys.some((key) => recent.has(key) || active.has(key))) { stop(1008, "Duplicate or invalid relay setup"); return; }
-          // Bounded replay guard for this process, including recently closed sessions.
+          try { consumer = attach?.(message, send, () => stop(1000, "Development conversation stopped")); }
+          catch { stop(1008, "Uncorrelated development conversation"); return; }
+          // Register identities only after correlation succeeds; invalid tokens cannot poison a valid call.
           identities = keys; keys.forEach((key) => { recent.add(key); active.add(key); });
           while (recent.size > 400) recent.delete(recent.values().next().value!);
           setup = true; clearTimeout(setupDeadline);
+          if (consumer) return;
           send({ type: "text", token: "Development relay connected. Scripted echo only; no appointment will be booked.",
             lang: "en-US", last: true, interruptible: true, preemptible: true });
           return;
@@ -79,6 +86,7 @@ export function mountMockRelay(app: FastifyInstance, config: Config, maxDuration
           partial += message.voicePrompt; language = message.lang;
           if (!message.last) return;
           const text = partial; partial = "";
+          if (consumer) { if (text.trim()) consumer.prompt(text, language); return; }
           if (text === "/end") {
             ended = true;
             send({ type: "end", handoffData: JSON.stringify({ reasonCode: "development_complete", bookingStatus: "not_booked" }) });

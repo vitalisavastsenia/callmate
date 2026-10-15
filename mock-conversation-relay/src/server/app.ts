@@ -50,9 +50,11 @@ export function createApp(config: Config, controller = new Controller(config)) {
     reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     app.log.info({ method: req.method, route: req.routeOptions.url ?? "unmatched", mockGenerated: true }, "mock request");
     if (req.url.startsWith("/2010-04-01/")) {
-      const expected = Buffer.from(`Basic ${Buffer.from(`${config.MOCK_API_USERNAME}:${config.MOCK_API_PASSWORD}`).toString("base64")}`);
       const actual = Buffer.from(req.headers.authorization ?? "");
-      if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+      const credentials = [`${config.MOCK_API_USERNAME}:${config.MOCK_API_PASSWORD}`, `${config.MOCK_ACCOUNT_SID}:${config.MOCK_AUTH_TOKEN}`];
+      const authenticated = credentials.map((value) => Buffer.from(`Basic ${Buffer.from(value).toString("base64")}`))
+        .some((expected) => actual.length === expected.length && timingSafeEqual(actual, expected));
+      if (!authenticated) {
         return reply.code(401).header("WWW-Authenticate", 'Basic realm="Local mock Calls API"').send({
           code: 20003, message: "UNAUTHORIZED_MOCK_API: use configured local mock credentials", more_info: "https://www.twilio.com/docs/errors/20003", status: 401 });
       }
@@ -121,11 +123,12 @@ export function createApp(config: Config, controller = new Controller(config)) {
   app.get("/2010-04-01/Accounts/:accountSid/Calls/:callSid.json", async (req) => controller.resource(account(req)!));
   app.post("/2010-04-01/Accounts/:accountSid/Calls/:callSid.json", async (req) => {
     const id = account(req)!; const fields = formFields(req.body);
-    if (Object.keys(fields).length !== 1 || fields.Status?.length !== 1 || fields.Status[0] !== "completed") {
-      throw new MockError("INVALID_REQUEST", "This mock supports only Status=completed updates");
+    if (Object.keys(fields).length !== 1 || fields.Status?.length !== 1 || !["completed", "canceled"].includes(fields.Status[0]!)) {
+      throw new MockError("INVALID_REQUEST", "This mock supports Status=completed or canceled updates");
     }
     // Backend hangup takes priority over an operator lock, like a real provider command.
-    controller.hangup(id); return controller.resource(id);
+    if (fields.Status[0] === "canceled") controller.cancel(id); else controller.hangup(id);
+    return controller.resource(id);
   });
 
   app.server.on("upgrade", (req, socket, head) => {

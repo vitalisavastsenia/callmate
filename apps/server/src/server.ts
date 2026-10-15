@@ -12,6 +12,7 @@ import { callRoutes } from "./call-routes.js";
 import { Simulator } from "./simulator.js";
 import type { SimulatorOptions } from "./simulator.js";
 import { mockRelayEnabled, mountMockRelay } from "./mock-relay.js";
+import { DevelopmentConversations, mountDevelopmentConsole } from "./development-conversations.js";
 
 type ErrorCode = z.infer<typeof ApiErrorSchema>["error"]["code"];
 function fail(reply: FastifyReply, request: FastifyRequest, status: number, code: ErrorCode, message: string,
@@ -109,11 +110,14 @@ export function createRuntime(config: Config, logStream?: Writable, simulatorOpt
   const privateApi = createListener(config, logStream);
   const callbacks = createListener(config, logStream);
   const simulator = new Simulator(config, store, simulatorOptions);
-  mountMockRelay(callbacks, config, () => store.getSettings().defaultCallLimits.maxDurationSeconds);
+  const development = new DevelopmentConversations(config);
+  mountMockRelay(callbacks, config, () => store.getSettings().defaultCallLimits.maxDurationSeconds,
+    (setup, send, disconnect) => development.attach(setup, send, disconnect));
   privateRoutes(privateApi, config, store, simulator);
+  mountDevelopmentConsole(privateApi, development);
   let closing: Promise<void> | undefined;
   const close = () => closing ??= (async () => {
-    try { await simulator.close(); await Promise.all([privateApi.close(), callbacks.close()]); }
+    try { await development.close(); await simulator.close(); await Promise.all([privateApi.close(), callbacks.close()]); }
     finally { store.close(); }
   })();
   return {

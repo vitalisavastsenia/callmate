@@ -10,6 +10,8 @@ services:
       MOCK_ACCOUNT_SID: "${MOCK_ACCOUNT_SID:-AC00000000000000000000000000000000}"
       MOCK_API_USERNAME: "${MOCK_API_USERNAME:-mock}"
       MOCK_API_PASSWORD: "${MOCK_API_PASSWORD:-mock-local-only}"
+      MOCK_AUTH_TOKEN: "${MOCK_AUTH_TOKEN:-mock-auth-token-local-only}"
+      MOCK_DIAL_DELAY_MS: "${MOCK_DIAL_DELAY_MS:-0}"
       CALLMATE_WS_URL: "${CALLMATE_WS_URL:-ws://host.docker.internal:3001/ws/voice}"
       CALLMATE_TWIML_URL: "${CALLMATE_TWIML_URL:-http://host.docker.internal:3001/twiml}"
       DEFAULT_LANGUAGE: "${DEFAULT_LANGUAGE:-pl-PL}"

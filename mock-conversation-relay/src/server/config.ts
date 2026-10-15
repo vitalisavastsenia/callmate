@@ -8,6 +8,8 @@ const envSchema = z.object({
   MOCK_ACCOUNT_SID: z.string().regex(/^AC[0-9a-f]{32}$/i).default(`AC${"0".repeat(32)}`),
   MOCK_API_USERNAME: z.string().min(1).max(100).default("mock"),
   MOCK_API_PASSWORD: z.string().min(1).max(200).default("mock-local-only"),
+  MOCK_AUTH_TOKEN: z.string().min(1).max(200).default("mock-auth-token-local-only"),
+  MOCK_DIAL_DELAY_MS: z.coerce.number().int().min(0).max(60_000).default(0),
   CALLMATE_WS_URL: z.string().default("ws://host.docker.internal:3001/ws/voice"),
   CALLMATE_TWIML_URL: z.string().default("http://host.docker.internal:3001/twiml"),
   DEFAULT_LANGUAGE: language.default("pl-PL"), DEFAULT_FROM: z.string().min(1).max(100).default("+48000000000"),

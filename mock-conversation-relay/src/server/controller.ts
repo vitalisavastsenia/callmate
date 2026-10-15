@@ -6,7 +6,8 @@ import { backendUrl, MockError } from "./config.js";
 import { createSession, dtmf, interruption, relayMessage, utterance } from "../protocol/schemas.js";
 import type { CreateSession } from "../protocol/schemas.js";
 import type { Diagnostic, LogEvent, SessionView, Status, Transcript } from "../shared/types.js";
-import { mockRequest, parseTwiml } from "./twiml.js";
+import { mockRequest, parseContinuation, parseTwiml } from "./twiml.js";
+import { requestSignature } from "./signature.js";
 import type { RelaySettings } from "./twiml.js";
 
 export const terminal = new Set<Status>(["completed", "busy", "canceled", "no-answer", "failed"]);
@@ -14,6 +15,7 @@ type Call = {
   view: SessionView; input: CreateSession; socket?: WebSocket; settings?: RelaySettings;
   abort: AbortController; deadline: number; ringDeadline: number; invalid: number;
   output: Transcript | null; callbackSequence: number; work: Promise<void>; endedByBackend: boolean;
+  dialAt: number; resumeAt?: number; actionStarted: boolean;
 };
 type Options = { now?: () => number; makeId?: (prefix: "CA" | "VX") => string;
   log?: (event: { type: string; callSid: string; at: string; mockGenerated: true }) => void };
@@ -86,12 +88,13 @@ export class Controller extends EventEmitter {
   }
   private transition(call: Call, status: Status) {
     if (terminal.has(call.view.status)) return;
+    const canceledInQueue = call.view.status === "queued" && status === "canceled";
     call.view.status = status;
     if (status === "in-progress") call.view.startedAt = this.timestamp();
     if (terminal.has(status)) call.view.endedAt = this.timestamp();
     call.view.transitions.push({ status, at: this.timestamp() });
     this.event(call, "lifecycle", "call.status", { status });
-    this.scheduleCallback(call, status === "in-progress" ? "answered" : terminal.has(status) ? "completed" : status);
+    if (!canceledInQueue) this.scheduleCallback(call, status === "in-progress" ? "answered" : terminal.has(status) ? "completed" : status);
   }
   create(raw: unknown) {
     if (this.closed) throw new MockError("SHUTTING_DOWN", "Mock service is shutting down", 503);
@@ -116,17 +119,24 @@ export class Controller extends EventEmitter {
       transitions: [{ status: "queued", at }], transcript: [], events: [], droppedEvents: 0, callbacks: [], operatorId: null };
     const call: Call = { view, input, abort: new AbortController(), deadline: this.now() + this.config.CALL_TIMEOUT_SECONDS * 1000,
       ringDeadline: this.now() + (input.timeout ?? Math.min(30, this.config.CALL_TIMEOUT_SECONDS)) * 1000,
-      invalid: 0, output: null, callbackSequence: 0, work: Promise.resolve(), endedByBackend: false };
+      invalid: 0, output: null, callbackSequence: 0, work: Promise.resolve(), endedByBackend: false,
+      dialAt: this.now() + this.config.MOCK_DIAL_DELAY_MS, actionStarted: false };
     this.calls.set(id, call);
     this.event(call, "lifecycle", "call.created", { from: view.from, to: view.to });
-    // initiated is an event name; its CallStatus is initiated rather than queued.
+    if (this.config.MOCK_DIAL_DELAY_MS === 0) this.startDialing(call);
+    return this.view(id);
+  }
+  private startDialing(call: Call) {
+    if (call.view.status !== "queued" || this.closed) return;
+    call.ringDeadline = this.now() + (call.input.timeout ?? Math.min(30, this.config.CALL_TIMEOUT_SECONDS)) * 1000;
+    // initiated fires when a call leaves the queue, never at queued creation.
+    const input = call.input;
     if (input.statusCallback && input.statusCallbackEvents?.includes("initiated")) {
       // The callback chain captures fields at scheduling time.
       this.scheduleCallback(call, "initiated");
     }
     this.transition(call, "ringing");
-    if (input.autoAnswer ?? this.config.AUTO_ANSWER) setImmediate(() => { void this.answer(id).catch(() => {}); });
-    return this.view(id);
+    if (input.autoAnswer ?? this.config.AUTO_ANSWER) setImmediate(() => { void this.answer(call.view.id).catch(() => {}); });
   }
   assertOperator(id: string, operatorId?: string) {
     const owner = this.get(id).view.operatorId;
@@ -191,7 +201,8 @@ export class Controller extends EventEmitter {
       if (!/^VX[0-9a-f]{32}$/i.test(call.view.sessionId)
         || [...this.calls.values()].some((other) => other !== call && other.view.sessionId === call.view.sessionId)) throw new Error("Invalid or duplicate session ID");
       this.event(call, "lifecycle", "relay.connecting", { target: settings.url });
-      const ws = new WebSocket(settings.url, { headers: { "X-CallMate-Mock": "true" }, followRedirects: false,
+      const ws = new WebSocket(settings.url, { headers: { "X-CallMate-Mock": "true",
+        "X-Twilio-Signature": requestSignature(this.config.MOCK_AUTH_TOKEN, settings.url) }, followRedirects: false,
         handshakeTimeout: this.config.BACKEND_TIMEOUT_MS, maxPayload: 32_768 });
       call.socket = ws;
       ws.once("unexpected-response", (_request, response) => {
@@ -203,7 +214,7 @@ export class Controller extends EventEmitter {
       });
       ws.on("error", () => {
         const connecting = call.view.connection === "connecting";
-        if (!terminal.has(call.view.status)) this.end(call, "failed", connecting
+        if (!terminal.has(call.view.status) && !call.endedByBackend) this.end(call, "failed", connecting
           ? "BACKEND_WS_CONNECT_FAILED" : "BACKEND_WS_DISCONNECTED", connecting
           ? "Cannot connect to the backend relay. Start its ConversationRelay WebSocket handler and check the relay URL, Docker networking and firewall."
           : "Mock relay WebSocket transport failed");
@@ -211,10 +222,10 @@ export class Controller extends EventEmitter {
       ws.on("close", (code, reason) => {
         call.view.lastClose = { code, reason: reason.toString().slice(0, 300) };
         this.event(call, "lifecycle", "relay.close", call.view.lastClose);
-        if (!terminal.has(call.view.status)) this.end(call, "failed", "BACKEND_WS_DISCONNECTED", "Backend closed the relay without an end control message");
+        if (!terminal.has(call.view.status) && !call.endedByBackend) this.end(call, "failed", "BACKEND_WS_DISCONNECTED", "Backend closed the relay without an end control message");
       });
       ws.on("message", (data, binary) => {
-        if (terminal.has(call.view.status)) return;
+        if (terminal.has(call.view.status) || call.endedByBackend) return;
         try { this.receive(call, data.toString(), binary); }
         catch { this.end(call, "failed", "BACKEND_WS_DISCONNECTED", "Cannot exchange relay messages with the backend"); }
       });
@@ -273,8 +284,7 @@ export class Controller extends EventEmitter {
       if (message.last) call.output = null;
     } else if (message.type === "end") {
       call.view.handoffData = message.handoffData ?? null;
-      call.endedByBackend = true;
-      this.end(call, "completed");
+      this.finishRelay(call);
     } else if (message.type === "language") {
       if (message.ttsLanguage) call.view.ttsLanguage = message.ttsLanguage;
       if (message.transcriptionLanguage) call.view.language = message.transcriptionLanguage;
@@ -305,19 +315,56 @@ export class Controller extends EventEmitter {
     if (!terminal.has(call.view.status)) { this.event(call, "operator", "operator.hangup", {}); this.end(call, "completed"); }
     return this.view(id);
   }
+  cancel(id: string) {
+    const call = this.get(id);
+    if (terminal.has(call.view.status)) return this.view(id);
+    if (!["queued", "ringing"].includes(call.view.status)) throw new MockError("INVALID_CALL_STATE", "Only queued or ringing calls can be canceled");
+    this.event(call, "operator", "call.cancel", {}); this.end(call, "canceled");
+    return this.view(id);
+  }
+  private closeRelay(call: Call, closeCode = 1000) {
+    if (call.socket?.readyState === WebSocket.CONNECTING) call.socket.terminate();
+    else if (call.socket?.readyState === WebSocket.OPEN) {
+      call.socket.close(closeCode, closeCode === 1007 ? "Too many consecutive malformed messages." : "Mock relay ended");
+      const socket = call.socket;
+      const timer = setTimeout(() => socket.terminate(), 500); timer.unref(); socket.once("close", () => clearTimeout(timer));
+    }
+  }
+  private finishRelay(call: Call) {
+    call.endedByBackend = true; call.output = null; call.view.connection = "disconnected";
+    this.closeRelay(call);
+    if (!call.settings?.action) { this.end(call, "completed"); return; }
+    call.actionStarted = true;
+    const fields = { ...this.fields(call), SessionId: call.view.sessionId!, SessionStatus: "ended",
+      SessionDuration: this.duration(call), ...(call.view.handoffData === null ? {} : { HandoffData: call.view.handoffData }) };
+    this.event(call, "lifecycle", "relay.ended", { callContinues: true });
+    call.work = call.work.then(async () => {
+      if (terminal.has(call.view.status)) return;
+      try {
+        const response = await mockRequest(call.settings!.action!, call.settings!.actionMethod, fields, this.config, call.abort.signal);
+        if (terminal.has(call.view.status)) return;
+        this.event(call, "callback", "connect.action", { status: response.status });
+        if (!response.ok) throw new MockError("CALLBACK_DELIVERY_FAILED", "Connect action callback returned an error");
+        const continuation = parseContinuation(response.text);
+        if (continuation.pauseSeconds) {
+          call.resumeAt = this.now() + continuation.pauseSeconds * 1000;
+          this.event(call, "lifecycle", "twiml.pause", { seconds: continuation.pauseSeconds });
+        } else this.end(call, "completed");
+      } catch (error) {
+        if (!terminal.has(call.view.status)) this.end(call, "failed", error instanceof MockError ? error.code : "CALLBACK_DELIVERY_FAILED",
+          error instanceof MockError ? error.message : "Connect action callback failed or timed out");
+      }
+    }).catch(() => {});
+  }
   private end(call: Call, status: Status, code?: string, message?: string, closeCode = 1000) {
     if (terminal.has(call.view.status)) return;
     call.abort.abort();
     if (code) this.diagnostic(call, code, message!);
     call.view.connection = status === "failed" ? "failed" : "disconnected";
-    if (call.socket?.readyState === WebSocket.CONNECTING) call.socket.terminate();
-    else if (call.socket?.readyState === WebSocket.OPEN) {
-      call.socket.close(closeCode, closeCode === 1007 ? "Too many consecutive malformed messages." : "Mock call ended");
-      const socket = call.socket;
-      const timer = setTimeout(() => socket.terminate(), 500); timer.unref(); socket.once("close", () => clearTimeout(timer));
-    }
+    this.closeRelay(call, closeCode);
     this.transition(call, status);
-    if (call.settings?.action && call.view.sessionId) {
+    if (call.settings?.action && call.view.sessionId && !call.actionStarted) {
+      call.actionStarted = true;
       const fields = { ...this.fields(call), ...(call.endedByBackend ? { CallStatus: "in-progress" } : {}), SessionId: call.view.sessionId,
         SessionStatus: status === "failed" ? "failed" : call.endedByBackend ? "ended" : "completed",
         SessionDuration: this.duration(call), ...(call.view.handoffData === null ? {} : { HandoffData: call.view.handoffData }) };
@@ -336,7 +383,7 @@ export class Controller extends EventEmitter {
     const date = (value: string | null) => value ? new Date(value).toUTCString() : null;
     return { sid: id, account_sid: view.accountSid, from: view.from, to: view.to, direction: "outbound-api",
       status: view.status, date_created: date(view.createdAt), date_updated: date(view.updatedAt), start_time: date(view.startedAt),
-      end_time: date(view.endedAt), duration: terminal.has(view.status) ? this.duration(call) : null,
+      end_time: date(view.status === "completed" ? view.endedAt : null), duration: view.status === "completed" ? this.duration(call) : null,
       uri: `/2010-04-01/Accounts/${view.accountSid}/Calls/${id}.json`, api_version: "2010-04-01", price: null, price_unit: null };
   }
   delete(id: string) {
@@ -350,9 +397,14 @@ export class Controller extends EventEmitter {
         if (this.now() - Date.parse(call.view.endedAt!) >= this.config.SESSION_RETENTION_MINUTES * 60_000) this.delete(call.view.id);
       } else if (call.view.status === "ringing" && this.now() >= call.ringDeadline) this.end(call, "no-answer", "CALL_TIMEOUT", "No operator answered before the ringing deadline");
       else if (this.now() >= call.deadline) this.end(call, "failed", "CALL_TIMEOUT", "Maximum mock call duration reached");
+      else if (call.view.status === "queued" && this.now() >= call.dialAt) this.startDialing(call);
+      else if (call.resumeAt !== undefined && this.now() >= call.resumeAt) this.end(call, "completed");
     }
   }
-  async drain(id: string) { await this.get(id).work; }
+  async drain(id: string) {
+    const call = this.get(id);
+    for (;;) { const work = call.work; await work; if (call.work === work) return; }
+  }
   async shutdown() {
     this.closed = true;
     for (const call of this.calls.values()) if (!terminal.has(call.view.status)) this.end(call, "failed", "SERVICE_SHUTDOWN", "Mock service stopped; session will not resume");

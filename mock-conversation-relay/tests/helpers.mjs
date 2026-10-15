@@ -6,22 +6,28 @@ import { WebSocketServer } from "ws";
 import { loadConfig } from "../dist/server/config.js";
 import { createApp } from "../dist/server/app.js";
 import { Controller } from "../dist/server/controller.js";
+import twilio from "twilio";
 
 export async function until(predicate) {
   for (let index = 0; index < 250; index++) { if (predicate()) return; await delay(10); }
   assert.fail("Timed out waiting for local fixture traffic");
 }
-export async function backend(t) {
+export async function backend(t, options = {}) {
   const messages = []; const callbacks = []; const twimlRequests = []; const sockets = new Map(); const closes = [];
-  let origin; let xml;
+  let origin; let xml; let actionXml = "<Response><Hangup/></Response>";
+  const authToken = options.authToken ?? "mock-auth-token-local-only";
+  const handshakes = [];
   const server = createServer((req, res) => { void (async () => {
     let body = ""; for await (const chunk of req) body += chunk.toString();
     const url = new URL(req.url, origin);
     const fields = Object.fromEntries(req.method === "GET" ? url.searchParams : new URLSearchParams(body));
-    const capture = { path: url.pathname, method: req.method, headers: req.headers, fields };
+    const signatureValid = twilio.validateRequest(authToken, req.headers["x-twilio-signature"] ?? "", origin + req.url, req.method === "GET" ? {} : fields);
+    const capture = { path: url.pathname, method: req.method, headers: req.headers, fields, signatureValid };
+    if (!signatureValid) { res.writeHead(403).end(); return; }
     if (url.pathname === "/status" || url.pathname === "/action" || url.pathname === "/broken-status") {
       callbacks.push(capture);
-      res.writeHead(url.pathname === "/broken-status" ? 503 : 200, { "content-type": "text/xml" }).end("<Response><Hangup/></Response>");
+      const response = url.pathname === "/action" ? options.onAction ? await options.onAction() : actionXml : "<Response><Hangup/></Response>";
+      res.writeHead(url.pathname === "/broken-status" ? 503 : 200, { "content-type": "text/xml" }).end(response);
     } else if (url.pathname === "/twiml") { twimlRequests.push(capture); res.writeHead(200, { "content-type": "text/xml" }).end(xml); }
     else if (url.pathname === "/redirect") res.writeHead(302, { location: "http://example.com/" }).end();
     else res.writeHead(404).end();
@@ -30,7 +36,10 @@ export async function backend(t) {
   let connections = 0;
   server.on("upgrade", (req, socket, head) => {
     assert.equal(req.headers["x-callmate-mock"], "true");
-    assert.equal(req.headers["x-twilio-signature"], undefined);
+    const signedUrl = origin.replace("http:", "ws:") + req.url;
+    const signatureValid = twilio.validateRequest(authToken, req.headers["x-twilio-signature"] ?? "", signedUrl, {});
+    handshakes.push({ url: signedUrl, signatureValid });
+    if (!signatureValid) { socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n"); return; }
     if (new URL(req.url, origin).pathname !== "/voice") {
       socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"); return;
     }
@@ -49,7 +58,8 @@ export async function backend(t) {
   const wsUrl = origin.replace("http:", "ws:") + "/voice";
   xml = `<Response><Connect action="${origin}/action"><ConversationRelay url="${wsUrl}" language="pl-PL" welcomeGreeting="Dzień dobry."><Parameter name="taskId" value="task-demo-001"/><Parameter name="customerName" value="Alex &amp; Ola"/></ConversationRelay></Connect></Response>`;
   t.after(async () => { for (const ws of wss.clients) ws.terminate(); wss.close(); server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); });
-  return { origin, wsUrl, messages, callbacks, twimlRequests, sockets, closes,
+  return { origin, wsUrl, messages, callbacks, twimlRequests, sockets, closes, handshakes,
+    set actionXml(value) { actionXml = value; },
     set xml(value) { xml = value; }, get xml() { return xml; }, get connections() { return connections; },
     send(id, value) { sockets.get(id).send(typeof value === "string" ? value : JSON.stringify(value)); },
     async setup(id) { await until(() => sockets.has(id)); return messages.find((entry) => entry.callSid === id && entry.message.type === "setup").message; },

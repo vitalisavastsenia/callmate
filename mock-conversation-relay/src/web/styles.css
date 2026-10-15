@@ -354,6 +354,17 @@ input[type=range]{
 .conversation-tools button{
   font-size:11px;
   padding:3px}
+.audio-controls{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:16px}
+.audio-hint{
+  margin:8px 0 14px}
+.listen-message{
+  margin-top:8px;
+  padding:5px 10px;
+  font-size:12px}
 .transcript{
   min-height:240px;
   max-height:440px;

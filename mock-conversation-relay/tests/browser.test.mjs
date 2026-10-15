@@ -138,6 +138,44 @@ test("streaming output is visible before final, spoken once on final, and future
   assert.equal(typeof ui.sent.at(-1).payload.durationUntilInterruptMs, "number"); assert.ok(ui.canceled > 0);
 });
 
+test("Listen plays the initial backend message on demand without enabling automatic speech or sending another relay prompt", (t) => {
+  const ui = browser(t, true);
+  const russian = { voiceURI: "russian", name: "Русский", lang: "ru-RU" };
+  ui.win.speechSynthesis.getVoices = () => [{ voiceURI: "spanish", name: "Español", lang: "es-ES" }, russian];
+  ui.win.speechSynthesis.dispatchEvent(new ui.win.Event("voiceschanged"));
+  const initial = entry("Здравствуйте! Хочу записаться. 🧪\nБез депозита. ", "initial", { lang: "ru-RU" });
+  ui.socket.message({ type: "session", session: { ...ui.view, transcript: [{ ...initial, final: false }] } });
+  assert.equal(ui.el("transcript").querySelector(".listen-message"), null);
+  // Snapshot restore must remain silent, but explicit Listen can replay the received message.
+  ui.socket.message({ type: "snapshot", operatorId: "browser-1", config: { language: "ru-RU", browserSpeech: true }, sessions: [{ ...ui.view, transcript: [initial] }] });
+  assert.equal(ui.spoken.length, 0);
+  const sent = ui.sent.length;
+  ui.el("volume").value = "0.4"; ui.el("volume").dispatchEvent(new ui.win.Event("input"));
+  ui.el("transcript").querySelector(".listen-message").click();
+  assert.equal(ui.spoken.length, 1); assert.equal(ui.spoken[0].text, initial.text);
+  assert.equal(ui.spoken[0].lang, "ru-RU"); assert.equal(ui.spoken[0].voice, russian); assert.equal(ui.spoken[0].volume, 0.4);
+  assert.equal(ui.el("tts").checked, false); assert.equal(ui.ui.speech.enabled, false); assert.equal(ui.sent.length, sent);
+  ui.spoken[0].onend();
+  ui.socket.message({ type: "session", session: { ...ui.view, transcript: [initial, entry("No automatic playback", "next")] } });
+  assert.equal(ui.spoken.length, 1);
+  const canceled = ui.canceled; ui.el("stop-audio").click(); assert.ok(ui.canceled > canceled);
+  ui.socket.message({ type: "session", session: { ...ui.view, operatorId: "other-tab", transcript: [initial] } });
+  assert.equal(ui.el("transcript").querySelector(".listen-message").disabled, true);
+});
+
+test("Listen stays unavailable without synthesis and absent on caller text; an empty voice list gives a text fallback", (t) => {
+  const unsupported = browser(t);
+  unsupported.socket.message({ type: "session", session: { ...unsupported.view, transcript: [entry("Backend message"), entry("Caller message", "caller", { speaker: "operator" })] } });
+  assert.equal(unsupported.el("transcript").querySelectorAll(".listen-message").length, 1);
+  assert.equal(unsupported.el("transcript").querySelector(".listen-message").disabled, true);
+  const ui = browser(t, true);
+  ui.win.speechSynthesis.getVoices = () => [];
+  ui.socket.message({ type: "session", session: { ...ui.view, transcript: [entry("Visible message")] } });
+  ui.el("transcript").querySelector(".listen-message").click();
+  assert.equal(ui.spoken.length, 0); assert.match(ui.el("speech-status").textContent, /audio is unavailable/);
+  assert.equal(ui.el("transcript").querySelector(".message-body").textContent, "Visible message");
+});
+
 test("browser recognition emits one final Polish prompt, handles denied/onend/repeated controls, and pauses for TTS", (t) => {
   const ui = browser(t, true);
   ui.el("mic-start").click(); const recognition = ui.recognitions[0]; assert.equal(recognition.lang, "pl-PL");

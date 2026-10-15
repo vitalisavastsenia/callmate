@@ -76,7 +76,7 @@ test("Basic auth, account validation, bounded input, and consistent façade erro
   assert.equal((await local.request(local.root + `/CA${"f".repeat(32)}.json`, "GET", undefined, { authorization: local.auth })).body.code, 20404);
 });
 
-test("subscribed callbacks are ordered, marked unsigned mock traffic, and delivery failures are observable", async (t) => {
+test("subscribed callbacks are ordered, signed mock traffic, and delivery failures are observable", async (t) => {
   const target = await backend(t); const local = await service(t, target);
   const fields = new URLSearchParams({ To: "to", From: "from", Twiml: target.xml, StatusCallback: target.origin + "/status" });
   for (const event of ["initiated", "ringing", "answered", "completed"]) fields.append("StatusCallbackEvent", event);
@@ -86,7 +86,7 @@ test("subscribed callbacks are ordered, marked unsigned mock traffic, and delive
   const events = target.callbacks.filter((entry) => entry.path === "/status");
   assert.deepEqual(events.map((entry) => entry.fields.CallStatus), ["initiated", "ringing", "in-progress", "completed"]);
   assert.deepEqual(events.map((entry) => entry.fields.SequenceNumber), ["0", "1", "2", "3"]);
-  for (const event of events) { assert.equal(event.headers["x-callmate-mock"], "true"); assert.equal(event.headers["x-twilio-signature"], undefined); }
+  for (const event of events) { assert.equal(event.headers["x-callmate-mock"], "true"); assert.equal(event.signatureValid, true); }
   assert.equal(local.controller.view(id).callbacks.length, 4);
   const failed = await local.create({ statusCallback: target.origin + "/broken-status", statusCallbackEvents: ["ringing"] });
   await local.controller.drain(failed.id);

@@ -13,7 +13,7 @@ export class SpeechController {
   private recognition: Recognition | null = null;
   private listening = false;
   private wantsMic = false;
-  private queue: Transcript[] = [];
+  private queue: { entry: Transcript; manual: boolean }[] = [];
   private current: { entry: Transcript; started: number; boundary: number; epoch: number } | null = null;
   private epoch = 0;
   enabled = false;
@@ -65,22 +65,36 @@ export class SpeechController {
     this.recognition = null;
   }
   speak(entry: Transcript) {
-    if (!this.enabled || !entry.final || entry.speaker === "operator" || !entry.text) return;
+    this.enqueue(entry, false);
+  }
+  listen(entry: Transcript) {
+    if (!entry.final || entry.speaker === "operator" || !entry.text.trim()) return;
+    this.cancelPlayback();
+    this.enqueue(entry, true);
+  }
+  private enqueue(entry: Transcript, manual: boolean) {
+    if ((!this.enabled && !manual) || !entry.final || entry.speaker === "operator" || !entry.text) return;
     if (!this.synthesisAvailable || !this.voices().length) {
       this.hooks.status("Browser audio is unavailable; all AI text remains visible.", "BROWSER_TTS_UNAVAILABLE"); return;
     }
     if (this.current?.entry.preemptible) this.cancelPlayback();
-    this.queue.push(entry); this.playNext();
+    this.queue.push({ entry, manual }); this.playNext();
   }
   private playNext() {
-    if (this.current || !this.enabled) return;
-    const entry = this.queue.shift();
-    if (!entry) { if (this.wantsMic) this.startMic(); return; }
+    if (this.current) return;
+    const next = this.queue.shift();
+    if (!next) { if (this.wantsMic) this.startMic(); return; }
+    if (!this.enabled && !next.manual) { this.playNext(); return; }
+    const { entry } = next;
     this.pauseMic();
     const Utterance = this.win.SpeechSynthesisUtterance!;
     const utterance = new Utterance(entry.text);
     utterance.lang = entry.lang || this.language; utterance.volume = this.volume;
-    const voice = this.voices().find((item) => item.voiceURI === this.voiceURI); if (voice) utterance.voice = voice;
+    const voices = this.voices();
+    const voice = voices.find((item) => item.voiceURI === this.voiceURI)
+      ?? voices.find((item) => item.lang.toLowerCase() === utterance.lang.toLowerCase())
+      ?? voices.find((item) => item.lang.split("-")[0]?.toLowerCase() === utterance.lang.split("-")[0]?.toLowerCase());
+    if (voice) utterance.voice = voice;
     const epoch = ++this.epoch;
     const playback = { entry, started: this.win.performance.now(), boundary: 0, epoch };
     this.current = playback;
