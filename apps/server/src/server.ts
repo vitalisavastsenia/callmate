@@ -11,6 +11,7 @@ import { CommandError } from "./errors.js";
 import { callRoutes } from "./call-routes.js";
 import { Simulator } from "./simulator.js";
 import type { SimulatorOptions } from "./simulator.js";
+import { mockRelayEnabled, mountMockRelay } from "./mock-relay.js";
 
 type ErrorCode = z.infer<typeof ApiErrorSchema>["error"]["code"];
 function fail(reply: FastifyReply, request: FastifyRequest, status: number, code: ErrorCode, message: string,
@@ -89,7 +90,8 @@ function privateRoutes(app: FastifyInstance, config: Config, store: Store, simul
         { name: "telephony", status: config.mode === "simulator" ? "ready" : "missing",
           message: config.mode === "simulator" ? "Fake telephony only; cannot dial" : "Live telephony is not implemented" },
         { name: "voice", status: config.mode === "simulator" ? "not_required" : "missing",
-          message: config.mode === "simulator" ? "Simulated text playback; no audio provider" : "Live voice is not implemented" },
+          message: mockRelayEnabled(config) ? "Development mock relay available at /ws/voice; scripted echo only"
+            : config.mode === "simulator" ? "Simulated text playback; no audio provider" : "Live voice is not implemented" },
         { name: "dialogue", status: config.mode === "simulator" ? "ready" : "missing",
           message: config.mode === "simulator" ? "Deterministic scripted dialogue; no model requests" : "Live dialogue is not implemented" },
         { name: "tunnel", status: config.mode === "simulator" ? "not_required" : "missing",
@@ -107,7 +109,7 @@ export function createRuntime(config: Config, logStream?: Writable, simulatorOpt
   const privateApi = createListener(config, logStream);
   const callbacks = createListener(config, logStream);
   const simulator = new Simulator(config, store, simulatorOptions);
-  // No provider callback or WebSocket route is accepted until authentication/session adapters exist.
+  mountMockRelay(callbacks, config, () => store.getSettings().defaultCallLimits.maxDurationSeconds);
   privateRoutes(privateApi, config, store, simulator);
   let closing: Promise<void> | undefined;
   const close = () => closing ??= (async () => {

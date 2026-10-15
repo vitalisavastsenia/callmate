@@ -31,7 +31,16 @@ All state is in memory. Restarting deletes sessions. SIGTERM marks active calls 
 
 ## Point CallMate at the emulator
 
-The existing CallMate API/SSE simulator and earlier signed loopback test harness are separate tools. This service does **not** add an agent or open callback routes on CallMate's current server; those routes still need the real backend implementation. Use your engineer's ConversationRelay endpoint, or the local fixtures in the test suite to verify this service independently.
+The existing CallMate backend now includes a development relay handler. From the repository root, start both Docker services:
+
+```sh
+docker compose up --build -d --wait server
+docker compose -f mock-conversation-relay/compose.yaml up --build -d --wait mock-relay
+```
+
+The root Compose defaults select `NODE_ENV=development`, `TELEPHONY_PROVIDER=mock`, and `CALLMATE_MODE=simulator`. Create a call at `localhost:8080` using `ws://host.docker.internal:3001/ws/voice`, answer it, and send text. You receive a development greeting and streamed echo replies in the caller's language (Russian, Spanish, Polish, or English). Type `/end` to test backend hangup, or use **Hang up**. For a changed callback port, update the relay URL accordingly.
+
+This verifies the actual emulator-to-backend transport. The handler does not make booking decisions or create/update persisted API/SSE attempts; `taskId` and other custom parameters do not authorize actions. The automatic API/SSE simulator and earlier signed loopback harness remain separate tools. Connecting the booking controller/dialogue implementation to provider events is subsequent integration work. No AI agent runs inside the emulator.
 
 Configure the **consuming backend** explicitly:
 
@@ -182,7 +191,7 @@ All outbound HTTP/WS destinations must match the configured host allowlist; cred
 
 Untrusted Host/Origin/cross-site requests are rejected; no CORS access is granted. Use `localhost` or `127.0.0.1`, or `mock-relay` from a shared Docker network. The UI/API is not production authentication: keep its published port local and do not put it behind a public proxy.
 
-- **Answer changes the call to Failed:** the emulator must connect to a running backend ConversationRelay WebSocket handler before input can be sent. The current CallMate scaffold has no such handler: its callback listener on port 3001 returns 404 at `/ws/voice`. Starting the API/SSE simulator alone is insufficient. Implement/start the backend relay handler, enter its WebSocket URL when creating a new call (or set `CALLMATE_WS_URL` and recreate the emulator), then answer the new call. The emulator does not supply an agent. Failed calls cannot be answered again. The call view displays the failure reason and destination without opening diagnostics; HTTP upgrade rejection includes the status code. Other connection failures require checking listener binding, Docker reachability/firewall, and acceptance of explicitly marked development traffic.
+- **Answer changes the call to Failed:** rebuild/start the root backend with the development/mock/simulator settings above, and use its `/ws/voice` URL when creating a new call. An older backend image, disabled mock gate, or wrong URL returns HTTP 404; a missing marker or browser Origin returns 403. Failed calls cannot be answered again. The call view displays the failure reason and destination without opening diagnostics; HTTP upgrade rejection includes the status code. Other connection failures require checking listener binding, Docker reachability/firewall, and acceptance of explicitly marked development traffic.
 - **Docker cannot reach the host:** use `host.docker.internal`, check host listener binding/firewall, and use the included Linux host-gateway mapping. Container `localhost` is the container itself.
 - **Host rejected:** add the backend's exact service hostname to `ALLOWED_BACKEND_HOSTS`; arbitrary internet destinations are denied by default.
 - **409 controls locked:** release the call in the other browser tab or close that tab. Refreshing does not duplicate the relay connection.

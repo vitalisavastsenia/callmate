@@ -39,7 +39,15 @@ curl http://127.0.0.1:3000/health
 curl http://127.0.0.1:3000/api/v1/readiness
 ```
 
-The private API is published at `127.0.0.1:3000`; the separate callback listener is at `127.0.0.1:3001` and currently returns 404 for all routes. No UI is served yet. SQLite persists in the `callmate-data` Docker volume.
+The private API is published at `127.0.0.1:3000`; the separate callback listener at `127.0.0.1:3001` accepts development mock WebSocket upgrades at `/ws/voice` when the development/mock gates are enabled. Production provider callbacks remain unavailable. SQLite persists in the `callmate-data` Docker volume.
+
+To answer manual calls through the emulator, start the backend above and then:
+
+```sh
+docker compose -f mock-conversation-relay/compose.yaml up --build -d --wait mock-relay
+```
+
+Open [the relay operator UI](http://localhost:8080/), create a call with the default backend URL, and click **Answer call**. The backend sends a development greeting and echoes final caller utterances in streamed text, supporting Russian, Spanish, Polish, and English. Type `/end` to exercise backend hangup. These are transport checks: no AI, booking decisions, or persisted API/SSE call attempts are created. The root Compose defaults enable the handler with `NODE_ENV=development`, `TELEPHONY_PROVIDER=mock`, and `CALLMATE_MODE=simulator`. See the [relay setup and limits](docs/docker-development.md#8-manual-conversationrelay-development-transport).
 
 Run type checking and offline tests inside a disposable container:
 

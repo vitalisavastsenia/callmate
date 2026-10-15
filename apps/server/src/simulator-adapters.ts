@@ -5,6 +5,17 @@ import type {
   PlaybackPermit, ProviderCallStatus, SimulatorScenario, TelephonyPort, TextVoicePort,
 } from "@callmate/contracts";
 
+/** Wire-level development feedback only; never extracts offers or accepts a booking. */
+export function scriptedRelayReply(text: string, language: string) {
+  const prefixes: Record<string, string> = {
+    "en-US": "Development echo — no appointment is booked: ",
+    "es-ES": "Eco de desarrollo — no se reserva ninguna cita: ",
+    "ru-RU": "Тестовое эхо — запись не оформляется: ",
+    "pl-PL": "Echo testowe — żadna wizyta nie jest rezerwowana: ",
+  };
+  return (prefixes[language] ?? prefixes["en-US"]!) + text;
+}
+
 /** Deliberately has no SDK, network client, credentials, or real phone-number handling. */
 export class FakeTelephony implements TelephonyPort {
   private calls = new Map<string, ProviderCallStatus>();

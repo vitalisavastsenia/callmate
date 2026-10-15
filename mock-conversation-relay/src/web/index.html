@@ -22,7 +22,7 @@
         <form id="create-form"><div class="form-grid"><label>From<input id="from" required maxlength="100"></label><label>To<input id="to" required maxlength="100"></label>
           <label class="wide">Backend relay WebSocket<input id="relay-url" required maxlength="2048" placeholder="ws://host.docker.internal:3001/ws/voice"></label>
           <label>Task ID<input id="task-id" maxlength="100" placeholder="task-demo-001"></label><label>Language<select id="create-language"><option value="pl-PL">Polski (pl-PL)</option><option value="es-ES">Español (es-ES)</option><option value="ru-RU">Русский (ru-RU)</option><option value="en-US">English (en-US)</option></select></label></div>
-          <p class="muted">Answer requires a running backend with a ConversationRelay WebSocket handler at this URL. The current CallMate API simulator does not provide that handler.</p><button type="submit" class="primary">Create ringing call</button></form>
+          <p class="muted">Start the CallMate backend in development mock mode before answering. Its development relay returns scripted echo replies; it does not book appointments.</p><button type="submit" class="primary">Create ringing call</button></form>
       </section>
       <section id="empty" class="empty-state"><div class="empty-symbol" aria-hidden="true">⌁</div><p class="eyebrow">READY WHEN YOU ARE</p><h2>Your development line is open.</h2><p>Start an outbound call from CallMate or create a local session.<br>Answer here to act as the business on the other end.</p><button id="empty-create" class="primary">Create a mock call <span aria-hidden="true">↗</span></button><p class="empty-caption">No Twilio account · No tunnel · No paid calls</p></section>
       <section id="conversation" hidden>

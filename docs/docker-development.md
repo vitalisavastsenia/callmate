@@ -27,6 +27,8 @@ Defaults work without `.env`. For overrides, copy `.env.example` to ignored `.en
 | Setting | Default | Rule |
 | --- | --- | --- |
 | `CALLMATE_MODE` | `simulator` | `simulator` is ready without credentials; `live` remains unavailable. |
+| `NODE_ENV` | `development` in Compose; `production` in standalone image | Only `development` or `test` permits the unsigned mock relay. |
+| `TELEPHONY_PROVIDER` | `mock` in Compose; `fake` without Compose | `mock` enables the development relay gate; `fake` disables it. The automatic API/SSE simulator continues to use fake telephony. Neither choice enables live calls. |
 | `CALLMATE_API_PORT` | `3000` | Integer 1–65535; same port inside the container and on host loopback. |
 | `CALLMATE_CALLBACK_PORT` | `3001` | Integer 1–65535; different from the API port. |
 | `CALLMATE_LOG_LEVEL` | `info` | `silent`, `error`, `warn`, `info`, or `debug`. |
@@ -46,7 +48,7 @@ Both Fastify listeners bind `0.0.0.0` **inside the container** so Docker forward
 | Listener | Implemented routes |
 | --- | --- |
 | Private API, default host port 3000 | `GET /health` and all [shared HTTP/SSE routes](interfaces.md#4-private-http-api), operating on persisted simulator attempts. |
-| Callback listener, default host port 3001 | No accepted routes yet; all requests return the shared structured 404 error. |
+| Callback listener, default host port 3001 | Development-only WS upgrade `/ws/voice`, gated by simulator mode, development/test environment, mock provider, and `X-CallMate-Mock: true`. Ordinary HTTP and production provider callback routes return 404. |
 
 Settings use the existing shared schemas. Example update:
 
@@ -58,7 +60,7 @@ curl --request PUT http://127.0.0.1:3000/api/v1/settings \
 
 Private requests require a recognized loopback Host and, when present, a same-app Origin. Cross-site browser requests are rejected. POST/PUT commands require JSON; DELETE conversation requests have no body. Use a same-origin UI or a future development proxy; cross-origin CORS access is not enabled. Error bodies use `ApiErrorSchema`; validation errors do not echo supplied values. Settings cannot include provider credentials.
 
-No Twilio callback/WSS route is active until signature validation and session correlation exist. A future host tunnel must forward only port 3001, never the private API.
+No production Twilio callback/WSS route is active until signature validation and durable session correlation exist. Never tunnel the unsigned development mock relay. A future production host tunnel must forward only port 3001, never the private API, and must disable mock mode.
 
 ## 4. SQLite persistence and migrations
 
@@ -186,3 +188,15 @@ Approvals use the existing [message contract](ui-message-contract.md): retrieve 
 History and terminal conversation deletion use the shared routes. Deletion clears Spanish/English transcript messages and old replay payloads, emits `conversation.deleted` to connected clients, and preserves booking metadata and idempotency tombstones. `transcriptRetentionDays` is stored but automatic retention scheduling remains future work.
 
 The fake adapters implement the shared telephony/dialogue/text-voice ports. Their behavior is scripted, including offer extraction, Spanish replies, translations, and confirmation evidence; they do not validate arbitrary real conversations. Usage is marked unavailable, with no fabricated provider charges. No UI, audio generation, Twilio/LLM connectivity, real booking, or live recovery guarantee is delivered by this simulator.
+
+## 8. Manual ConversationRelay development transport
+
+The existing backend's callback listener accepts the emulator's outgoing WebSocket at `ws://host.docker.internal:3001/ws/voice`. Start/rebuild the root backend and the standalone emulator as described in the [emulator README](../mock-conversation-relay/README.md#point-callmate-at-the-emulator). In its UI, create a call, answer it, and type a caller utterance. A successful answer displays a development greeting; final prompts receive two `text` frames whose concatenation preserves Unicode and whitespace. The reply is explicitly labelled as development echo, using Russian, Spanish, Polish, or English wording according to the prompt locale. Other locale tags preserve the original input with an English prefix. No translation or natural-language understanding is performed. `/end` returns an `end` message with string `handoffData` declaring `bookingStatus: "not_booked"`; the emulator then closes the socket. Ordinary Hang up closes the transport from the provider side.
+
+This endpoint is a transport integration inside the existing server. It reuses the ConversationRelay parser and a scripted development adapter. It does not start the automatic simulator, create plans/attempts, issue playback permits, evaluate offers, change booking outcomes, write relay transcripts to SQLite, or produce API/SSE history. Custom parameters remain untrusted metadata and cannot attach to or authorize an existing attempt. Controller/policy/real-dialogue integration and provider reconciliation remain separate work. The private contracts currently describe Spanish booking attempts; this development wire path can test additional language tags without changing those contracts.
+
+The upgrade is accepted only when all of these hold: `CALLMATE_MODE=simulator`, `NODE_ENV=development|test`, `TELEPHONY_PROVIDER=mock`, exact path `/ws/voice` without query parameters, and `X-CallMate-Mock: true`. Browser Origin and Fetch-Metadata headers are refused. The marker is not authentication; keep both services on host loopback, and never publish or tunnel this endpoint. Production/live/fake settings reject upgrades with 404; a missing marker or browser request is 403. Private API routes remain inaccessible on the callback listener. An ordinary HTTP GET is not a WebSocket upgrade and continues to return 404.
+
+Each socket must send one valid `setup` first, within five seconds. Call/session IDs are independently checked; duplicate setup and active/recent identity reuse close 1008. The replay guard is process-local and bounded to the latest 200 call/session pairs; it is not durable provider correlation. There are at most five concurrent sockets. Partial prompts are buffered to 8,000 characters and produce no reply until `last=true`; a language change inside a partial utterance is rejected. Interrupt clears buffered caller fragments; the synchronous scripted adapter has no queued speech to cancel. DTMF is validated and accepted without booking side effects. Provider `error` closes 1011 without reflecting its description. Malformed/unsupported/binary input closes 1007; frames over 32KiB close 1009. Outgoing buffers are bounded, call duration is capped by the application setting at connection time, and shutdown terminates sockets before closing SQLite. No transcript, custom parameter, raw request URL or provider exception value is logged.
+
+The root Docker checks exercise actual WebSocket connections to this handler, including language/streaming behavior, partial prompts, isolation, replay rejection, access gates, malformed input, end, and shutdown. To verify the full Docker path manually, create a Russian or Spanish call in the emulator, answer it, send text, inspect the streamed echo, and hang up. No Twilio or model credentials are required.
