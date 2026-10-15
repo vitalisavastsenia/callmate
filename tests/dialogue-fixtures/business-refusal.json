@@ -1,0 +1,57 @@
+{
+  "formatVersion": 1,
+  "id": "dialogue-business-refusal",
+  "description": "The business refuses to speak with an AI assistant.",
+  "messages": [
+    {
+      "id": "30000000-0000-4000-8000-000000000301",
+      "turnId": "30000000-0000-4000-8000-000000005301",
+      "speaker": "assistant",
+      "originalText": "Hola, soy un asistente de inteligencia artificial. Llamo en nombre de Alex Example para pedir una cita para un corte de pelo.",
+      "language": "es-ES",
+      "translationEn": null,
+      "final": true,
+      "playback": "played",
+      "createdAt": "2026-10-15T10:01:00Z"
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000302",
+      "turnId": "30000000-0000-4000-8000-000000005302",
+      "speaker": "business",
+      "originalText": "No atendemos a asistentes de inteligencia artificial. Tiene que llamar la persona interesada.",
+      "language": "es-ES",
+      "translationEn": null,
+      "final": true,
+      "playback": "not_applicable",
+      "createdAt": "2026-10-15T10:01:05Z"
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000303",
+      "turnId": "30000000-0000-4000-8000-000000005303",
+      "speaker": "assistant",
+      "originalText": "Entendido. Gracias por su tiempo. Hasta luego.",
+      "language": "es-ES",
+      "translationEn": null,
+      "final": true,
+      "playback": "played",
+      "createdAt": "2026-10-15T10:01:10Z"
+    }
+  ],
+  "turns": [
+    {
+      "triggerMessageId": "30000000-0000-4000-8000-000000000302",
+      "bookingState": "pending",
+      "activeOffer": null,
+      "candidate": {
+        "action": "end_call",
+        "reason": "business_declined"
+      },
+      "translationEn": "We do not speak with AI assistants. The person requesting the appointment must call."
+    }
+  ],
+  "expectedOutcome": {
+    "status": "not_booked",
+    "reason": "business_declined",
+    "summaryEn": "The business declined to speak with an AI assistant. Contact it directly to arrange an appointment."
+  }
+}

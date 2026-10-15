@@ -16,7 +16,7 @@ Read the documents in this order:
 6. [Shared interfaces v1](docs/interfaces.md): technical reference for executable schemas, API routes, event/reconnect protocol, and dialogue/voice boundaries.
 7. [Backend to UI message contract](docs/ui-message-contract.md): case-by-case HTTP/SSE rules, payload formats, JSON examples, and expected UI behavior.
 
-The application remains a proposed implementation. The shared TypeScript contracts package is implemented; the UI, backend, and calling adapters are not yet built.
+The shared TypeScript contracts and dialogue/booking library are implemented. The dialogue library supports Codex CLI through a ChatGPT login and an optional OpenAI Responses API adapter; the UI, application backend, and telephone adapters are not yet built.
 
 ## Getting started
 
@@ -37,6 +37,30 @@ npm test
 
 `npm test` builds the contracts and runs offline checks. It does not make calls. Use `npm run build` to generate the package's JavaScript and declarations. No application start command exists yet.
 
+The dialogue package is not registered in the root workspace yet. After installing
+root dependencies, build contracts and check dialogue with:
+
+```sh
+npm run build --workspace @callmate/contracts
+npm --prefix packages/dialogue run typecheck
+npm --prefix packages/dialogue test
+```
+
+For a text-only turn using your ChatGPT subscription, install Codex CLI, run
+`codex login` and choose ChatGPT, then build dialogue and run:
+
+```sh
+npm --prefix packages/dialogue run build
+node packages/dialogue/examples/codex-turn.mjs < packages/dialogue/examples/ambiguous-time.json
+```
+
+This uses your included Codex limits without an API key or separate API billing.
+See the [CLI adapter setup](packages/dialogue/README.md#codex-cli-with-chatgpt-login).
+The separately billed API path remains an explicit option in
+`packages/dialogue/examples/openai-turn.mjs`; only that example needs
+`OPENAI_API_KEY` and `OPENAI_MODEL` from a local `.env`.
+Offline tests require no account, key, or network.
+
 ## Repository files
 
 - `README.md`: project overview and setup instructions.
@@ -44,6 +68,7 @@ npm test
 - `.gitignore`: excludes local environment files, operating-system artifacts, and temporary files.
 - `docs/`: product requirements, architecture, and technology decisions.
 - `packages/contracts/`: shared runtime schemas, types, routes, adapter interfaces, fixtures, and contract checks.
+- `packages/dialogue/`: dialogue planning, booking policy, Spanish templates, English results, and the Codex CLI/API adapters.
 
 ## Development workflow
 

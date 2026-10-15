@@ -1,0 +1,81 @@
+{
+  "attemptId": "10000000-0000-4000-8000-000000000002",
+  "turnId": "30000000-0000-4000-8000-000000005502",
+  "turnVersion": 1,
+  "plan": {
+    "id": "10000000-0000-4000-8000-000000000001",
+    "version": 1,
+    "createdAt": "2026-10-15T10:00:00Z",
+    "request": {
+      "business": {
+        "name": "Example barbershop",
+        "phone": "+12025550123"
+      },
+      "service": "Haircut",
+      "bookingName": "Alex Example",
+      "availability": [
+        {
+          "start": {
+            "localDate": "2026-10-20",
+            "localTime": "17:00",
+            "timeZone": "Europe/Madrid",
+            "instant": "2026-10-20T15:00:00Z"
+          },
+          "end": {
+            "localDate": "2026-10-20",
+            "localTime": "19:00",
+            "timeZone": "Europe/Madrid",
+            "instant": "2026-10-20T17:00:00Z"
+          }
+        }
+      ],
+      "pricePolicy": {
+        "maximum": {
+          "amountMinor": 3000,
+          "currency": "EUR"
+        },
+        "allowUnknownPrice": false
+      },
+      "bookingAuthority": "within_constraints",
+      "shareableContact": {
+        "phone": null,
+        "email": null
+      },
+      "callLimits": {
+        "maxDurationSeconds": 300,
+        "maxEstimatedCost": {
+          "amountMinor": 200,
+          "currency": "USD"
+        }
+      }
+    },
+    "approvedAt": "2026-10-15T10:00:30Z"
+  },
+  "bookingState": "pending",
+  "offer": null,
+  "triggerMessageId": "30000000-0000-4000-8000-000000000502",
+  "messages": [
+    {
+      "id": "30000000-0000-4000-8000-000000000501",
+      "turnId": "30000000-0000-4000-8000-000000005501",
+      "speaker": "assistant",
+      "originalText": "Hola, soy un asistente de inteligencia artificial. Llamo en nombre de Alex Example para pedir una cita para un corte de pelo.",
+      "language": "es-ES",
+      "translationEn": null,
+      "final": true,
+      "playback": "played",
+      "createdAt": "2026-10-15T10:01:00Z"
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000502",
+      "turnId": "30000000-0000-4000-8000-000000005502",
+      "speaker": "business",
+      "originalText": "El 20 de octubre tenemos una cita a las seis.",
+      "language": "es-ES",
+      "translationEn": null,
+      "final": true,
+      "playback": "not_applicable",
+      "createdAt": "2026-10-15T10:01:05Z"
+    }
+  ]
+}

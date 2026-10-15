@@ -24,7 +24,7 @@ export interface DialoguePort {
 
 export type PolicyDecision =
   | { decision: "allow"; approvedSpanishText: string }
-  | { decision: "ask_user"; reason: "outside_availability" | "above_price_limit" | "unknown_price" | "user_confirmation_required" }
+  | { decision: "ask_user"; reason: "outside_availability" | "above_price_limit" | "unknown_price" | "user_confirmation_required" | "add_on" | "share_contact" }
   | { decision: "clarify"; field: string }
   | { decision: "deny"; reason: string };
 export interface BookingPolicyPort {

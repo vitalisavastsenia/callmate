@@ -75,3 +75,24 @@ export const uncertainCallFixture = CallSnapshotSchema.parse({
   outcome: { status: "uncertain", reason: "disconnected_near_confirmation",
     summaryEn: "The call disconnected near acceptance. Check with the business before trying again." },
 });
+
+// A confirmed appointment may still have a connected conversation and separate contact consent.
+export const contactConsentCallFixture = CallSnapshotSchema.parse({
+  ...confirmedCallFixture, callState: "connected", updatedAt: "2026-10-15T10:02:05Z",
+  messages: [...confirmedCallFixture.messages, {
+    id: "10000000-0000-4000-8000-000000000010", turnId: "10000000-0000-4000-8000-000000000011",
+    speaker: "business", originalText: "¿Me puede dar un teléfono de contacto?", language: "es-ES",
+    translationEn: "Can you give me a contact number?", final: true, playback: "not_applicable", createdAt: "2026-10-15T10:02:05Z",
+  }],
+  conversation: {
+    pending: { id: "10000000-0000-4000-8000-000000000009", kind: "contact", field: "phone",
+      attemptId: ids.attempt, plan: { planId: ids.plan, planVersion: 1 },
+      offer: { offerId: ids.offer, offerVersion: 1 }, createdAt: "2026-10-15T10:02:05Z",
+      expiresAt: "2026-10-15T10:02:35Z", evidenceMessageIds: ["10000000-0000-4000-8000-000000000010"] },
+    decisions: [], notes: [], tasks: [],
+  },
+});
+export const conversationEventFixture = DomainEventSchema.parse({
+  contractVersion: 1, id: ids.event, attemptId: ids.attempt, sequence: 4, snapshotRevision: 4,
+  occurredAt: "2026-10-15T10:02:05Z", type: "conversation.updated", payload: contactConsentCallFixture.conversation,
+});
