@@ -21,3 +21,9 @@ Desktop.ini
 
 # Local logs
 *.log
+
+# Dependencies, generated output, and private runtime data
+node_modules/
+dist/
+coverage/
+.data/

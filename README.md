@@ -1,6 +1,22 @@
 # CallMate
 
-This repository is the starting point for CallMate. Application code, the technology stack, and setup commands have not been added yet.
+CallMate is a personal call assistant for handling conversations in a language you do not speak. You describe what you need in English, and the assistant calls a business in Spanish, negotiates within your instructions, and reports the result in English.
+
+The first use case is booking a barbershop appointment in Spain. The proposed app runs on your computer, with Twilio providing phone calls and speech services. It does not require AWS or Azure accounts or infrastructure.
+
+## Product and engineering documents
+
+Read the documents in this order:
+
+1. [Requirements](docs/requirements.md): personal-use scope, UI, booking rules, and acceptance criteria.
+2. [Architecture](docs/architecture.md): local components, Twilio integration, conversation flow, data model, and failure handling.
+3. [Technology stack](docs/tech-stack.md): recommended tools, Twilio service choices, estimated costs, and implementation milestones.
+4. [Three-engineer delivery plan](docs/mvp-delivery-plan.md): workstreams, task ownership, shared interfaces, dependencies, and PoC/MVP completion criteria.
+5. [Three-engineer integration agreement](docs/engineering-contract.md): scope boundaries, deliverables, independent development, handoffs, merge order, and joint acceptance of one app.
+6. [Shared interfaces v1](docs/interfaces.md): technical reference for executable schemas, API routes, event/reconnect protocol, and dialogue/voice boundaries.
+7. [Backend to UI message contract](docs/ui-message-contract.md): case-by-case HTTP/SSE rules, payload formats, JSON examples, and expected UI behavior.
+
+The application remains a proposed implementation. The shared TypeScript contracts package is implemented; the UI, backend, and calling adapters are not yet built.
 
 ## Getting started
 
@@ -11,11 +27,23 @@ cd callmate
 
 Read [AGENTS.md](AGENTS.md) before making changes. It contains the working instructions for Codex and the project's Git conventions.
 
+Use Node.js 24 or newer to validate the shared contracts:
+
+```sh
+npm ci
+npm run typecheck
+npm test
+```
+
+`npm test` builds the contracts and runs offline checks. It does not make calls. Use `npm run build` to generate the package's JavaScript and declarations. No application start command exists yet.
+
 ## Repository files
 
 - `README.md`: project overview and setup instructions.
 - `AGENTS.md`: Codex workflow, branch naming, commit conventions, and verification expectations.
 - `.gitignore`: excludes local environment files, operating-system artifacts, and temporary files.
+- `docs/`: product requirements, architecture, and technology decisions.
+- `packages/contracts/`: shared runtime schemas, types, routes, adapter interfaces, fixtures, and contract checks.
 
 ## Development workflow
 
