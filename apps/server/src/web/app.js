@@ -45,6 +45,8 @@ export function initializeConsole(win, doc) {
     try {
       const data = await request("/api/dev/conversations");
       if (disposed || current !== generation) return;
+      if (data.conversation?.conversationData === "deleted" && conversation?.id === data.conversation.id
+        && el("initial-message").value === conversation.initialMessage) el("initial-message").value = "";
       conversation = data.conversation; loaded = true; notice(conversation?.error); render(restore);
       if (isActive(conversation) && cancelId === conversation.id && !pendingStop) await stopCall(conversation.id);
     } catch (error) {

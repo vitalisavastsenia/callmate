@@ -21,7 +21,7 @@ function setup(t, scenario = "within_plan", extra = {}) {
     CALLMATE_SIMULATOR_SCENARIO: scenario, CALLMATE_SIMULATOR_STEP_MS: "50",
     CALLMATE_SIMULATOR_APPROVAL_SECONDS: "1", ...extra.env });
   const options = { automatic: false, now: () => clock.ms, ...extra.options };
-  let runtime = createRuntime(config, undefined, options);
+  let runtime = createRuntime(config, undefined, options, undefined, { now: () => clock.ms });
   t.after(() => runtime.close());
   const http = async (method, url, payload, key) => {
     const response = await runtime.privateApi.inject({ method, url,
@@ -31,7 +31,7 @@ function setup(t, scenario = "within_plan", extra = {}) {
   return {
     dataDir, clock, config, http,
     get runtime() { return runtime; },
-    async restart() { await runtime.close(); runtime = createRuntime(config, undefined, options); },
+    async restart() { await runtime.close(); runtime = createRuntime(config, undefined, options, undefined, { now: () => clock.ms }); },
     async begin(request = structuredClone(reviewPlanFixture.request), key = randomUUID()) {
       const plan = await http("POST", "/api/v1/plans", request);
       assert.equal(plan.status, 201, JSON.stringify(plan.data));

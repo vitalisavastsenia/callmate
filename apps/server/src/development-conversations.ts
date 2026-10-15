@@ -223,7 +223,7 @@ export class DevelopmentConversations {
       .map((m) => ({ text: m.originalText, language: m.language, at: m.createdAt }));
     while (responses.reduce((sum, m) => sum + m.text.length, 0) > 32_000) responses.shift();
     return { id: a.call.id, initialMessage: a.call.messages.find((m) => m.speaker === "assistant")?.originalText ?? "",
-      language: a.call.language, status: a.internal.status, callSid: a.internal.callSid,
+      language: a.call.language, conversationData: a.call.conversationData, status: a.internal.status, callSid: a.internal.callSid,
       sessionId: a.internal.correlation?.sessionId ?? null, error: a.internal.error, responses,
       operatorUrl: a.internal.callSid ? `${new URL(this.config.mockOperatorOrigin).origin}/?callId=${encodeURIComponent(a.internal.callSid)}` : null };
   }

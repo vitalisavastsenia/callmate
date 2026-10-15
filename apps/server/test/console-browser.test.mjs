@@ -120,3 +120,14 @@ test('Stop retries after an in-transit Start that initially returned not found',
   await until(() => ui.el('status').textContent === 'Conversation ended');
   assert.equal(stops, 2); assert.equal(ui.el('start').disabled, false);
 });
+
+test('retention clears cached transcript and initial text while keeping a new draft intact', async (t) => {
+  let state = conversation({ status: 'completed', conversationData: 'retained', responses: [{ text: 'Private reply', language: 'es-ES' }] });
+  const ui = await browser(t, async () => ok({ conversation: state }));
+  assert.equal(ui.el('initial-message').value, state.initialMessage);
+  state = { ...state, conversationData: 'deleted', initialMessage: '', responses: [] };
+  await ui.ui.refresh();
+  assert.equal(ui.el('initial-message').value, ''); assert.equal(ui.el('response').value, '');
+  ui.el('initial-message').value = 'A new appointment request';
+  await ui.ui.refresh(); assert.equal(ui.el('initial-message').value, 'A new appointment request');
+});

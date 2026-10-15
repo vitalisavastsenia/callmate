@@ -15,6 +15,8 @@ import type { SimulatorOptions } from "./simulator.js";
 import { mockRelayEnabled, mountMockRelay } from "./mock-relay.js";
 import { DevelopmentConversations, mountDevelopmentConsole } from "./development-conversations.js";
 import type { DevelopmentOptions } from "./development-conversations.js";
+import { Retention } from "./retention.js";
+import type { RetentionOptions } from "./retention.js";
 import { mountMockStatus } from "./mock-status.js";
 
 type ErrorCode = z.infer<typeof ApiErrorSchema>["error"]["code"];
@@ -66,7 +68,7 @@ function createListener(config: Config, stream?: Writable) {
   return app;
 }
 
-function privateRoutes(app: FastifyInstance, config: Config, store: Store, controller: CallController) {
+function privateRoutes(app: FastifyInstance, config: Config, store: Store, controller: CallController, retention: Retention) {
   app.addHook("onRequest", async (request, reply) => {
     const address = app.server.address();
     const port = typeof address === "object" && address !== null ? address.port : config.apiPort;
@@ -104,31 +106,38 @@ function privateRoutes(app: FastifyInstance, config: Config, store: Store, contr
     });
   });
   app.get(api.getSettings.path, async () => SettingsSchema.parse(store.getSettings()));
-  app.put(api.updateSettings.path, async (request) => store.setSettings(SettingsSchema.parse(request.body)));
+  app.put(api.updateSettings.path, async (request) => {
+    const settings = store.setSettings(SettingsSchema.parse(request.body));
+    retention.sweep();
+    return settings;
+  });
   callRoutes(app, controller);
 }
 
-export function createRuntime(config: Config, logStream?: Writable, simulatorOptions?: SimulatorOptions, developmentOptions?: DevelopmentOptions) {
+export function createRuntime(config: Config, logStream?: Writable, simulatorOptions?: SimulatorOptions, developmentOptions?: DevelopmentOptions, retentionOptions?: RetentionOptions) {
   const store = openStore(config.dataDir);
   const privateApi = createListener(config, logStream);
   const callbacks = createListener(config, logStream);
   const simulator = new Simulator(config, store, simulatorOptions);
   const development = new DevelopmentConversations(config, store, developmentOptions);
   const controller = new CallController(store, simulator, development);
+  const retention = new Retention(store, controller,
+    () => privateApi.log.error({ code: "RETENTION_FAILED" }, "Automatic conversation retention failed; cleanup will retry"), retentionOptions);
   mountMockStatus(callbacks, config, development);
   mountMockRelay(callbacks, config, () => store.getSettings().defaultCallLimits.maxDurationSeconds,
     (setup, send, disconnect) => development.attach(setup, send, disconnect));
-  privateRoutes(privateApi, config, store, controller);
+  privateRoutes(privateApi, config, store, controller, retention);
   mountDevelopmentConsole(privateApi, development);
   let closing: Promise<void> | undefined;
   const close = () => closing ??= (async () => {
-    try { await development.close(); await simulator.close(); await Promise.all([privateApi.close(), callbacks.close()]); }
+    try { retention.close(); await development.close(); await simulator.close(); await Promise.all([privateApi.close(), callbacks.close()]); }
     finally { store.close(); }
   })();
   return {
-    privateApi, callbacks, simulator, development, controller, close,
+    privateApi, callbacks, simulator, development, controller, retention, close,
     async start() {
       try {
+        retention.start();
         await privateApi.listen({ host: "0.0.0.0", port: config.apiPort });
         await callbacks.listen({ host: "0.0.0.0", port: config.callbackPort });
         await development.recover();

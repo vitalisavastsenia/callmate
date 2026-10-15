@@ -68,7 +68,7 @@ async function fixture(t, options = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), "callmate-console-"));
   const config = { ...loadConfig({ CALLMATE_DATA_DIR: dataDir, NODE_ENV: "test", TELEPHONY_PROVIDER: "mock", CALLMATE_MOCK_API_BASE: origin, ...options.env }), apiPort: 0, callbackPort: 0 };
   const stream = new Writable({ write(chunk, _encoding, done) { logs += chunk; done(); } });
-  let runtime = createRuntime(config, stream, options.simulator, options.development);
+  let runtime = createRuntime(config, stream, options.simulator, options.development, options.retention);
   await runtime.start();
   config.mockRelayUrl = `ws://127.0.0.1:${runtime.callbacks.server.address().port}/ws/voice`;
   let apiOrigin = `http://127.0.0.1:${runtime.privateApi.server.address().port}`;
@@ -77,7 +77,7 @@ async function fixture(t, options = {}) {
     async restart(beforeStart) {
       await runtime.close();
       if (beforeStart) beforeStart();
-      runtime = createRuntime(config, stream, options.simulator, options.development); await runtime.start();
+      runtime = createRuntime(config, stream, options.simulator, options.development, options.retention); await runtime.start();
       config.mockRelayUrl = `ws://127.0.0.1:${runtime.callbacks.server.address().port}/ws/voice`;
       apiOrigin = `http://127.0.0.1:${runtime.privateApi.server.address().port}`;
     }, get creates() { return creates; }, get hungUp() { return hungUp; }, get logs() { return logs; },
@@ -789,4 +789,31 @@ test('a stalled provider poll does not delay the local deadline decision or allo
   await peer.closed;
   assert.equal(peer.messages.length, 0); assert.equal(app.creates, 1);
   assert.equal(app.runtime.controller.get(created.id).outcome.reason, 'technical_failure');
+});
+
+
+test('automatic retention removes real manual mock text without restoring it on Start or callback replay', async (t) => {
+  const clock = { ms: Date.now() };
+  const app = await fixture(t, { development: { now: () => clock.ms, automatic: false },
+    retention: { now: () => clock.ms, automatic: false } });
+  const request = { ...input('  Здравствуйте! Private initial text. 🧪 '), language: 'ru-RU' };
+  const created = (await app.api('/api/dev/conversations', 'POST', request)).body.conversation;
+  const peer = await app.answer(created.callSid); await until(() => peer.messages.length === 1);
+  peer.send(JSON.stringify({ type: 'prompt', voicePrompt: 'Private operator response. Спасибо.', lang: 'ru-RU', last: true }));
+  await until(() => app.runtime.controller.get(created.id).messages.length === 2);
+  await app.api(`/api/v1/calls/${created.id}/stop`, 'POST', {});
+  const completed = app.runtime.controller.get(created.id);
+  clock.ms += 30 * 86_400_000;
+  assert.equal(app.runtime.retention.sweep(), 1);
+  const deleted = app.runtime.controller.get(created.id);
+  assert.equal(deleted.conversationData, 'deleted'); assert.deepEqual(deleted.messages, []);
+  assert.deepEqual(deleted.outcome, completed.outcome);
+  for (const [status, sequence] of [['completed', 3], ['in-progress', 100]]) {
+    assert.equal((await app.callback(created.callSid, status, sequence)).statusCode, 204);
+  }
+  await app.restart();
+  const replay = (await app.api('/api/dev/conversations', 'POST', request)).body.conversation;
+  assert.equal(replay.initialMessage, ''); assert.deepEqual(replay.responses, []); assert.equal(replay.conversationData, 'deleted');
+  assert.deepEqual(app.runtime.controller.get(created.id), deleted);
+  assert.equal(app.creates, 1);
 });

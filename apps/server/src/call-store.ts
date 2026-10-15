@@ -78,10 +78,11 @@ export function callStore(db: Database.Database) {
     save(attempt: StoredAttempt, events: DomainEvent[] = []) {
       const call = StoredCallSnapshotSchema.parse(attempt.call);
       const active = !["ended", "busy", "no_answer", "failed"].includes(call.callState);
-      db.prepare(`INSERT INTO call_attempts (id, snapshot, internal, active, replay_floor) VALUES (?, ?, ?, ?, ?)
+      db.prepare(`INSERT INTO call_attempts (id, snapshot, internal, active, replay_floor, terminal_at) VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET snapshot=excluded.snapshot, internal=excluded.internal,
-        active=excluded.active, replay_floor=excluded.replay_floor`)
-        .run(call.id, JSON.stringify(call), JSON.stringify(isManualAttempt(attempt) ? manualInternal.parse(attempt.internal) : attempt.internal), Number(active), attempt.replayFloor);
+        active=excluded.active, replay_floor=excluded.replay_floor,
+        terminal_at=CASE WHEN excluded.active = 0 THEN COALESCE(call_attempts.terminal_at, excluded.terminal_at) ELSE NULL END`)
+        .run(call.id, JSON.stringify(call), JSON.stringify(isManualAttempt(attempt) ? manualInternal.parse(attempt.internal) : attempt.internal), Number(active), attempt.replayFloor, active ? null : new Date(call.updatedAt).toISOString());
       const insert = db.prepare("INSERT INTO call_events (attempt_id, sequence, value) VALUES (?, ?, ?)");
       for (const event of events) insert.run(call.id, event.sequence, JSON.stringify(DomainEventSchema.parse(event)));
     },
@@ -96,6 +97,12 @@ export function callStore(db: Database.Database) {
     events(id: string, after: number): DomainEvent[] {
       return (db.prepare("SELECT value FROM call_events WHERE attempt_id = ? AND sequence > ? ORDER BY sequence")
         .all(id, after) as { value: string }[]).map((row) => DomainEventSchema.parse(JSON.parse(row.value)));
+    },
+    expiredConversations(cutoff: string, limit: number): string[] {
+      return (db.prepare(`SELECT id FROM call_attempts
+        WHERE active = 0 AND json_extract(snapshot, '$.conversationData') = 'retained'
+          AND terminal_at <= ? ORDER BY terminal_at, id LIMIT ?`).all(cutoff, limit) as { id: string }[])
+        .map((row) => row.id);
     },
     purgeEvents(id: string) { db.prepare("DELETE FROM call_events WHERE attempt_id = ?").run(id); },
     list(limit: number, cursor?: string): StoredCallSnapshot[] {
