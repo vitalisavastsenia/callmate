@@ -1,12 +1,12 @@
 # CallMate technology stack and implementation plan
 
-Status: proposed application stack; the [shared contracts](interfaces.md) package is implemented and its development dependencies are installed. Application/provider integrations are not yet built. Updated and provider documentation checked: 2026-10-15.
+Status: shared contracts and the Docker-based TypeScript/Fastify/SQLite server scaffold are implemented. UI, simulator, and provider integrations are not yet built. Updated and provider documentation checked: 2026-10-15. See [Docker development](docker-development.md) for the implemented commands and routes.
 
 ## 1. Recommendation
 
 Use **React + TypeScript for a local browser UI, Node.js + Fastify for the local backend, SQLite for local storage, Twilio Programmable Voice + ConversationRelay for calls and speech, and a text LLM API for conversation planning**. A secure tunnel makes the callback listener reachable while the computer is running.
 
-This keeps application hosting and storage on the user's computer. Required external services are Twilio, an LLM provider, and a tunnel provider. No AWS/Azure account, separate speech-provider account, managed database, or container platform is required. Twilio still uses its selected downstream speech providers; it is not an offline system.
+This keeps application hosting and storage in local Docker, with persistent SQLite storage in a Docker volume. Required external services for real calling are Twilio, an LLM provider, and a tunnel provider. No AWS/Azure account, separate speech-provider account, managed database, or hosted container service is required. Twilio still uses its selected downstream speech providers; it is not an offline system.
 
 ## 2. Stack
 
@@ -22,10 +22,10 @@ This keeps application hosting and storage on the user's computer. Required exte
 | Conversation | OpenAI Responses API with strict structured output; Zod validation | Extract offers and propose actions. Application code owns permissions and booking state. Provider can later be replaced through a small adapter. |
 | Initial text model | Configurable `gpt-6-luna` candidate | A starting point for the integration spike, not a claim of proven Spanish telephone quality. Pin a supported model/version after evaluation and track usage. |
 | Public callbacks | ngrok HTTPS/WSS tunnel to the dedicated callback port | No application deployment required. Confirm the chosen plan supports the needed connection duration and URL behavior. |
-| Tests | Vitest, Fastify injection, mocked Twilio/LLM events, Playwright | Validate policy and lifecycle deterministically before spending money on calls. |
+| Tests | Node.js test runner and Fastify injection for contracts/server; planned browser tests with Playwright and mocked Twilio/LLM events | Validate policy and lifecycle deterministically before spending money on calls. |
 | Local diagnostics | Structured, redacted logs and a small status panel | Debug failures without uploading transcripts to an analytics service. |
 
-The shared contracts' package versions and checks are recorded in their manifest, lockfile, and the repository README. Application package versions and start commands will be documented when those components are implemented.
+Installed contracts/server versions are recorded in their manifests and lockfile. Docker builds and checks them without a host Node.js/npm installation. The callback listener is scaffolded, while its provider routes and WebSocket adapter remain future work.
 
 For the LLM integration, [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) supports schema-constrained responses; semantic and authorization checks still belong in the app. The [GPT-6 Luna model page](https://developers.openai.com/api/docs/models/gpt-6-luna) is the current model reference. Review [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data) for the actual account configuration and retention limits before real conversations.
 
@@ -53,8 +53,10 @@ ConversationRelay's protocol supports sending keypad digits. Keep IVR navigation
 
 Before implementation testing:
 
+Follow the detailed [Twilio account and configuration runbook](twilio-setup.md) for Console paths, setup order, configuration fields, callback mapping, and completion checks. Account setup can begin while the simulator is built; connecting callbacks requires the backend listener.
+
 1. Create/use the user's Twilio account and enable ConversationRelay under the applicable AI/ML terms. The [onboarding guide](https://www.twilio.com/docs/voice/conversationrelay/onboarding) describes its setup.
-2. Confirm the account can place real outbound calls to Spain; trial restrictions may limit destinations or add trial prompts. An arbitrary barbershop should not be assumed callable from a trial account.
+2. Use a paid account for the ConversationRelay integration. The current [Voice trial restrictions](https://www.twilio.com/docs/usage/trials/try-out-voice) block ConversationRelay and Media Streams, allow only verified recipients, and restrict calling to the account's country. A basic trial call is an optional preliminary check, not the CallMate connectivity proof.
 3. Select a permitted caller ID and confirm any number-verification or local-document requirements. [Spain voice guidelines](https://www.twilio.com/en-us/guidelines/es/voice) currently specify a Twilio number for domestic calling and list origin restrictions. Do not assume a verified personal mobile number is interchangeable with a compliant Spanish Twilio origin.
 4. Set a callback policy for inbound calls to the Twilio number. The MVP does not answer them as an assistant. Share the user's actual callback number only with prior approval.
 5. Configure the local environment, chosen Spanish voice, and public callback base URL. Keep keys out of the browser and repository.

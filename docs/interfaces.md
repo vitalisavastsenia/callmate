@@ -18,6 +18,8 @@ The executable source of truth is [`@callmate/contracts`](../packages/contracts/
 
 No backend, dialer, simulator engine, UI, or model integration is implemented by these contracts. The schemas can be consumed immediately by those implementations.
 
+The separate [server scaffold](docker-development.md) now implements readiness and settings routes using these schemas. Other routes below remain specifications for subsequent implementation.
+
 ## 2. Common conventions
 
 - All JSON object schemas reject unknown properties. Parse external data at boundaries; TypeScript annotations alone do not validate JSON or model output.
@@ -138,15 +140,13 @@ Current architecture/stack documents retain ConversationRelay as the documented 
 
 ## 7. Usage and validation
 
-At repository root, with Node.js 24 or newer:
+At repository root, run checks in Docker (no host Node.js required):
 
 ```sh
-npm ci
-npm run typecheck
-npm test
+docker compose --profile checks run --build --rm checks
 ```
 
-`npm test` builds the package and runs offline contract checks. It does not dial or contact model/voice providers. `npm run build` generates package JS/declarations; build output and dependencies are ignored by Git.
+The container runs root type checking and tests for contracts and the server scaffold. It does not dial or contact model/voice providers. Container builds generate package JS/declarations; host build output and dependencies are ignored by Git and excluded from the Docker context.
 
 ```ts
 import { api, CallSnapshotSchema, type CallSnapshot } from "@callmate/contracts";

@@ -1,0 +1,33 @@
+services:
+  server:
+    build:
+      context: .
+      target: runtime
+    ports:
+      - "127.0.0.1:${CALLMATE_API_PORT:-3000}:${CALLMATE_API_PORT:-3000}"
+      - "127.0.0.1:${CALLMATE_CALLBACK_PORT:-3001}:${CALLMATE_CALLBACK_PORT:-3001}"
+    environment:
+      CALLMATE_API_PORT: "${CALLMATE_API_PORT:-3000}"
+      CALLMATE_CALLBACK_PORT: "${CALLMATE_CALLBACK_PORT:-3001}"
+      CALLMATE_DATA_DIR: /data
+      CALLMATE_MODE: "${CALLMATE_MODE:-simulator}"
+      CALLMATE_LOG_LEVEL: "${CALLMATE_LOG_LEVEL:-info}"
+    volumes:
+      - callmate-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    stop_grace_period: 10s
+  checks:
+    profiles: [checks]
+    build:
+      context: .
+      target: build
+    command: ["sh", "-c", "npm run typecheck && npm test"]
+
+volumes:
+  callmate-data:

@@ -66,14 +66,19 @@ Engineer 1 can complete most visual work against fixtures while the backend and 
 
 ## 5. Engineer 2: backend, persistence, and telephony
 
+Begin the account/Console portion early using the [Twilio setup runbook](twilio-setup.md). The account owner handles identity, billing, purchases, and terms; Engineer 2 owns configuration and verification. BE-00 can proceed alongside backend/simulator work; real ConversationRelay testing requires paid-account eligibility and an implemented callback listener.
+
 | Task | Increment | Deliverable and acceptance | Dependency |
 | --- | --- | --- | --- |
+| BE-00: Twilio account and Console setup | PoC, start early | Account created/verified and upgraded for ConversationRelay; eligible Voice number/compliance; Spain geo permissions; AI/ML terms; private API credentials; inbound-call policy. Record readiness/blockers without secrets using the runbook. | Account owner, billing/identity information, and number availability. |
 | BE-01: Bootstrap and local persistence | PoC | Workspace/tooling, shared schemas, Fastify local API and separate callback listener, SQLite migrations, private data path, redacted logs, safe `.env.example`, and ignore rules for runtime data. Document actual start/test commands. | Joint kickoff decisions. |
 | BE-02: Simulator and event stream | PoC | Fake telephony adapter, call snapshots, ordered/replayable SSE, and deterministic test scenarios. Refreshing the UI restores state instead of starting a call. | Contracts and initial schema. |
-| BE-03: Twilio connectivity spike | PoC, earliest external risk | Secure tunnel; signed HTTP and WSS validation; outgoing call to an approved test number; Spanish ConversationRelay voice; safe end/fallback path; verified caller ID/account readiness. Do this before polishing the full UI. | User's provider configuration and consenting test endpoint. |
+| BE-03: Twilio connectivity spike | PoC, earliest external risk | Secure tunnel; signed HTTP and WSS validation; outgoing call to an approved test number; Spanish ConversationRelay voice; safe end/fallback path; verified caller ID/account readiness. Follow the runbook and do this before polishing the full UI. | BE-00, callback listener, and consenting test endpoint. |
 | BE-04: Controlled call lifecycle | PoC | Persist approved plan, reserve one active-call slot, prevent duplicate Start, set local/provider duration caps, wire dialogue adapter, execute Stop, and keep call outcome separate from booking outcome. An ambiguous dial timeout never triggers blind retry. | BE-01/03 and dialogue interface. |
 | BE-05: Approval/persistence APIs | MVP | Versioned approval decisions, deadlines, local history/deletion, retention, and cost/usage storage. Backend invokes booking policy before any acceptance text is sent. | Dialogue approval rules and booking schema. |
 | BE-06: Failure recovery and usage | MVP | Duplicate/out-of-order callback handling, late events, network/relay failures, restart reconciliation, orphaned-call handling, and estimated versus available settled usage. Tests prove terminal states do not regress. | Real Twilio adapter and persisted attempts. |
+
+BE-01 now has a runnable Docker server scaffold, settings migration/persistence, validated runtime configuration, redacted logs, private API origin checks, and separate listeners. See [Docker development](docker-development.md). Call-state tables, simulator/SSE, and Twilio/dialogue adapters remain work for subsequent tasks.
 
 Engineer 2 owns retries and provider reconciliation. Neither another engineer's module nor an LLM may independently initiate a second call. Public tunnel routes must never expose the personal UI, call-start API, settings, or history.
 

@@ -4,7 +4,7 @@ Status: proposed personal-use architecture. Updated: 2026-10-15. Implements [req
 
 ## 1. Design decision
 
-Run the UI, application logic, and SQLite database on the user's computer. Use Twilio Programmable Voice for outbound calls and Twilio ConversationRelay for the speech layer. A text LLM interprets the conversation and proposes the next action; application code validates actions before anything consequential is spoken.
+Run the browser UI locally and the Node.js application logic and SQLite database in a local Docker container, with SQLite in a persistent Docker volume. Use Twilio Programmable Voice for outbound calls and Twilio ConversationRelay for the speech layer. A text LLM interprets the conversation and proposes the next action; application code validates actions before anything consequential is spoken. The [Docker guide](docker-development.md) describes the implemented server scaffold and its current limits.
 
 ConversationRelay handles recognition and speech synthesis, so the application exchanges text and control events rather than implementing a raw audio bridge. This is a good fit for a personal tool with occasional calls. It still needs an application backend and an LLM: Twilio does not automatically know the user's appointment request. See the [ConversationRelay overview](https://www.twilio.com/docs/voice/conversationrelay).
 
@@ -39,9 +39,9 @@ One Node.js process can own two HTTP listeners and the call controller. Use a pe
 
 ### Network boundary
 
-- UI and personal API: `127.0.0.1:3000` in the proposed packaged runtime. Apply origin/CSRF protections to mutating browser requests; reject unexpected Host/Origin values.
-- Twilio callback listener: `127.0.0.1:3001`, exposed through a secure tunnel. It contains no personal UI, history, settings, or call-start endpoints.
-- Public callback routes: `POST /twilio/voice`, `POST /twilio/status`, `POST /twilio/relay-ended`, and WebSocket `/twilio/relay`. Unknown routes fail closed.
+- Private API: default host `127.0.0.1:3000`, published by Docker Compose. The future UI can use the same origin. Apply origin/CSRF protections to mutating browser requests; reject unexpected Host/Origin values.
+- Twilio callback listener: default host `127.0.0.1:3001`, published separately and intended for a callback-only tunnel. Both listeners bind `0.0.0.0` inside the container; host publications remain loopback-only. The callback listener contains no personal UI, history, settings, or call-start endpoints.
+- Planned public callback routes: `POST /twilio/voice`, `POST /twilio/status`, `POST /twilio/relay-ended`, and WebSocket `/twilio/relay`. The scaffold currently rejects all callback routes until signature/session validation is implemented. Unknown routes fail closed.
 - Twilio callback and WebSocket handshake signatures must be checked using the SDK, configured public URL, and correct request representation. Do not trust arbitrary forwarded host headers. Validate account and call/session ownership as well.
 - ConversationRelay sends a signature on its initial WebSocket handshake; this is documented in [Twilio onboarding](https://www.twilio.com/docs/voice/conversationrelay/onboarding). A random URL alone is not authentication.
 
@@ -141,7 +141,7 @@ Store provider statuses alongside this simplified domain state; do not assume ca
 
 Use UTC instants plus IANA business timezone and original local date/time. Store money in integer minor units with currency. Reject impossible/ambiguous DST times rather than silently shifting an appointment. Business hours and availability are different concepts and should not be conflated.
 
-Keep the database under a private local application-data directory, with owner-only permissions and disk encryption supplied by the computer. This does not make SQLite encrypted by itself. Use migrations and a local retention task, not an external scheduler.
+Keep the database in the private `/data` directory of the persistent Docker volume, with owner-only permissions. Host/Docker disk encryption is an operational choice; SQLite is not encrypted by itself. Use migrations and a future local retention task, not an external scheduler.
 
 ## 6. Reliability and limits
 
