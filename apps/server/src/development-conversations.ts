@@ -17,6 +17,8 @@ import type { RelayInbound } from "./twilio/protocol.js";
 import { normalizeStatus, statusCallback, terminal as providerTerminal } from "./twilio/protocol.js";
 import type { CallStatus } from "./twilio/protocol.js";
 
+import { initialUsage, measureUsage, budgetExpired, usageSampleDue } from "./usage.js";
+
 const startInput = z.strictObject({ requestId: z.uuid(), initialMessage: z.string().min(1).max(8000).refine((text) => text.trim().length > 0),
   language: z.enum(["es-ES", "ru-RU", "pl-PL", "en-US"]) });
 const terminal = (call: ManualCallSnapshot) => ["ended", "busy", "no_answer", "failed"].includes(call.callState);
@@ -64,14 +66,14 @@ export class DevelopmentConversations {
     await this.refresh(active.call.id);
   }
   private timestamp() { return new Date(this.now()).toISOString(); }
-  private requestStop(id: string, reason: "user_stopped" | "duration_limit" | "silence_timeout") {
+  private requestStop(id: string, reason: "user_stopped" | "duration_limit" | "silence_timeout" | "budget_limit") {
     this.change(id, (a, emit) => {
       if (terminal(a.call) || a.internal.stopRequested) return false;
       a.internal.stopRequested = true;
       if (a.internal.controls) a.internal.controls.stopReason = reason;
       if (reason !== "user_stopped") {
-        a.internal.error = reason === "duration_limit" ? "The call reached its duration limit." : "The call reached its silence deadline.";
-        emit("call.error", { code: "PROVIDER_UNAVAILABLE", message: a.internal.error, recoverable: false });
+        a.internal.error = reason === "budget_limit" ? "The call reached its test-rate budget." : reason === "duration_limit" ? "The call reached its duration limit." : "The call reached its silence deadline.";
+        emit("call.error", { code: reason === "budget_limit" ? "BUDGET_EXCEEDED" : "PROVIDER_UNAVAILABLE", message: a.internal.error, recoverable: false });
       }
       this.status(a, emit, "ending");
       // A preflight request cannot have created a provider call. It is safe to release this slot.
@@ -79,7 +81,10 @@ export class DevelopmentConversations {
     });
   }
   private enforceLimits(id: string) {
-    const a = this.require(id); const controls = a.internal.controls;
+    let a = this.require(id);
+    if (!terminal(a.call) && !a.internal.stopRequested && budgetExpired(a.call, this.now())) this.requestStop(id, "budget_limit");
+    else if (usageSampleDue(a.call, this.now())) this.change(id, () => {}, true);
+    a = this.require(id); const controls = a.internal.controls;
     if (!terminal(a.call) && !a.internal.stopRequested && controls) {
       if (this.now() >= Date.parse(controls.durationDeadlineAt)) this.requestStop(id, "duration_limit");
       else if (controls.silenceDeadlineAt && this.now() >= Date.parse(controls.silenceDeadlineAt)) this.requestStop(id, "silence_timeout");
@@ -129,15 +134,18 @@ export class DevelopmentConversations {
     const set = this.listeners.get(id) ?? new Set<() => void>(); set.add(listener); this.listeners.set(id, set);
     return () => { set.delete(listener); if (!set.size) this.listeners.delete(id); };
   }
-  private change(id: string, work: (a: ManualAttempt, emit: Emit) => void | boolean) {
+  private change(id: string, work: (a: ManualAttempt, emit: Emit) => void | boolean, sampleUsage = false) {
     const result = this.store.calls.transaction(() => {
       const a = this.require(id); const events: DomainEvent[] = [];
       const previousUpdatedAt = a.call.updatedAt;
+      const wasTerminal = terminal(a.call);
       a.call.revision++; a.call.updatedAt = this.timestamp();
-      const changed = work(a, (type, payload) => events.push(DomainEventSchema.parse({ contractVersion: 1, id: randomUUID(),
+      const emit: Emit = (type, payload) => events.push(DomainEventSchema.parse({ contractVersion: 1, id: randomUUID(),
         attemptId: id, sequence: ++a.call.lastEventSequence, snapshotRevision: a.call.revision,
-        occurredAt: a.call.updatedAt, type, payload })));
+        occurredAt: a.call.updatedAt, type, payload }));
+      const changed = work(a, emit);
       if (changed === false) return { call: this.require(id).call, publish: false };
+      if (!wasTerminal && (events.length || sampleUsage)) measureUsage(a.call, this.now(), emit);
       // Internal sequence/correlation updates do not fabricate a public revision or SSE event.
       if (!events.length) { a.call.revision--; a.call.updatedAt = previousUpdatedAt; }
       this.store.calls.save(a, events); return { call: a.call, publish: events.length > 0 };
@@ -152,9 +160,9 @@ export class DevelopmentConversations {
   private finish(a: ManualAttempt, emit: Emit, state: "ended" | "busy" | "no_answer" | "failed", error: string | null = null, interrupted = false) {
     if (terminal(a.call)) return;
     const stopReason = a.internal.controls?.stopReason ?? (a.internal.stopRequested ? "user_stopped" : null);
-    const limit = stopReason === "duration_limit" || stopReason === "silence_timeout";
+    const limit = stopReason === "duration_limit" || stopReason === "silence_timeout" || stopReason === "budget_limit";
     a.internal.status = state === "ended" ? "completed" : "failed";
-    a.internal.error = limit ? (stopReason === "duration_limit" ? "The call reached its duration limit." : "The call reached its silence deadline.") : error;
+    a.internal.error = limit ? (stopReason === "budget_limit" ? "The call reached its test-rate budget." : stopReason === "duration_limit" ? "The call reached its duration limit." : "The call reached its silence deadline.") : error;
     a.call.bookingState = "not_booked";
     a.call.outcome = { status: "not_booked", reason: stopReason === "user_stopped" ? "user_stopped"
       : limit || state === "failed" || interrupted ? "technical_failure"
@@ -201,6 +209,7 @@ export class DevelopmentConversations {
     const event = statusCallback.parse(fields);
     if (event.AccountSid !== correlation.accountSid || event.From !== "+48000000000" || event.To !== "+48111111111"
       || (stored.internal.callSid && event.CallSid !== stored.internal.callSid)) return deny();
+    if (terminal(stored.call) || event.SequenceNumber <= (correlation.callbackSequence ?? -1)) return;
     this.enforceLimits(id);
     let accepted = false;
     this.change(id, (a, emit) => {
@@ -223,7 +232,7 @@ export class DevelopmentConversations {
       .map((m) => ({ text: m.originalText, language: m.language, at: m.createdAt }));
     while (responses.reduce((sum, m) => sum + m.text.length, 0) > 32_000) responses.shift();
     return { id: a.call.id, initialMessage: a.call.messages.find((m) => m.speaker === "assistant")?.originalText ?? "",
-      language: a.call.language, conversationData: a.call.conversationData, status: a.internal.status, callSid: a.internal.callSid,
+      language: a.call.language, conversationData: a.call.conversationData, usage: a.call.usage, status: a.internal.status, callSid: a.internal.callSid,
       sessionId: a.internal.correlation?.sessionId ?? null, error: a.internal.error, responses,
       operatorUrl: a.internal.callSid ? `${new URL(this.config.mockOperatorOrigin).origin}/?callId=${encodeURIComponent(a.internal.callSid)}` : null };
   }
@@ -249,14 +258,15 @@ export class DevelopmentConversations {
       if (this.store.calls.get(input.requestId)) throw new CommandError(409, "IDEMPOTENCY_CONFLICT", "This ID already identifies another call");
       if (this.store.calls.active()) throw new CommandError(409, "CALL_ALREADY_ACTIVE", "Another call is still active");
       const now = this.timestamp();
-      const maxDurationSeconds = this.store.getSettings().defaultCallLimits.maxDurationSeconds;
+      const limits = this.store.getSettings().defaultCallLimits;
+      const maxDurationSeconds = limits.maxDurationSeconds;
       const message = { id: randomUUID(), turnId: randomUUID(), speaker: "assistant" as const,
         originalText: input.initialMessage, language: input.language, translationEn: null,
         final: true as const, playback: "withheld" as const, createdAt: now };
       const call = ManualCallSnapshotSchema.parse({ id: input.requestId, kind: "manual_mock", mode: "simulator", plan: null,
         language: input.language, revision: 1, lastEventSequence: 2, callState: "creating", bookingState: "pending", outcome: { status: "pending" },
         activeOffer: null, pendingApproval: null, conversationData: "retained", messages: [message],
-        usage: { estimate: null, settledTotal: null, status: "unavailable", measuredAt: now }, createdAt: now, updatedAt: now });
+        usage: initialUsage(now, this.config.testRateMinorPerMinute, limits.maxEstimatedCost), createdAt: now, updatedAt: now });
       const events = [{ type: "call.status", payload: { callState: "creating" } }, { type: "transcript.updated", payload: message }]
         .map((event, index) => DomainEventSchema.parse({ contractVersion: 1, id: randomUUID(), attemptId: call.id,
           sequence: index + 1, snapshotRevision: 1, occurredAt: now, ...event }));

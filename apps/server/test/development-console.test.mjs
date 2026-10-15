@@ -817,3 +817,101 @@ test('automatic retention removes real manual mock text without restoring it on 
   assert.deepEqual(app.runtime.controller.get(created.id), deleted);
   assert.equal(app.creates, 1);
 });
+
+test('manual test-rate budget blocks zero-budget Starts before contacting the mock', async (t) => {
+  const app = await fixture(t, { env: { CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE: '60' } });
+  const store = openStore(app.dataDir);
+  try { const settings = store.getSettings(); settings.defaultCallLimits.maxEstimatedCost.amountMinor = 0; store.setSettings(settings); }
+  finally { store.close(); }
+  const request = input(); const result = await app.api('/api/dev/conversations', 'POST', request);
+  assert.equal(result.status, 409); assert.equal(result.body.error.code, 'BUDGET_EXCEEDED');
+  assert.equal(app.creates, 0); assert.equal(app.runtime.controller.history(10).items.length, 0);
+});
+
+test('preflight time consumes the explicit test budget and prevents a provider create', async (t) => {
+  const clock = { ms: Date.now() };
+  const app = await fixture(t, { env: { CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE: '6000' },
+    development: { now: () => clock.ms, automatic: false },
+    beforeHealthReply() { clock.ms += 2000; } });
+  const result = await app.api('/api/dev/conversations', 'POST', input());
+  const call = app.runtime.controller.get(result.body.conversation.id);
+  assert.equal(app.creates, 0); assert.equal(call.callState, 'ended'); assert.equal(call.outcome.reason, 'technical_failure');
+  assert.equal(call.usage.estimate.amountMinor, 200); assert.equal(call.usage.testUsage.elapsedMs, 2000);
+  assert.equal(app.runtime.controller.replayEvents(call.id, 0).some((e) => e.type === 'call.error' && e.payload.code === 'BUDGET_EXCEEDED'), true);
+});
+
+test('budget cancellation during Calls creation hangs up once without redial', async (t) => {
+  const clock = { ms: Date.now() };
+  const app = await fixture(t, { env: { CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE: '6000' },
+    development: { now: () => clock.ms, automatic: false },
+    beforeCreateReply() { clock.ms += 2000; } });
+  const request = input(); const result = await app.api('/api/dev/conversations', 'POST', request);
+  const call = app.runtime.controller.get(result.body.conversation.id);
+  assert.equal(app.creates, 1); assert.equal(app.hungUp, 1); assert.equal(call.callState, 'ended');
+  assert.equal(call.outcome.reason, 'technical_failure'); assert.equal(call.usage.estimate.amountMinor, 200);
+  const replay = await app.api('/api/dev/conversations', 'POST', request);
+  assert.deepEqual(replay.body.conversation.usage, call.usage); assert.equal(app.creates, 1);
+});
+
+test('usage continues through failed hangup, excludes duplicate callbacks, and survives restart/deletion', async (t) => {
+  const clock = { ms: Date.now() }; const options = { rejectHangup: true,
+    env: { CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE: '6000' }, development: { now: () => clock.ms, automatic: false } };
+  const app = await fixture(t, options); const request = input();
+  const created = (await app.api('/api/dev/conversations', 'POST', request)).body.conversation;
+  const peer = await app.answer(created.callSid); await until(() => peer.messages.length === 1);
+  const settings = (await app.api('/api/v1/settings')).body; settings.defaultCallLimits.maxEstimatedCost.amountMinor = 1;
+  await app.api('/api/v1/settings', 'PUT', settings);
+  // Existing attempt keeps its original budget despite the new default.
+  clock.ms += 1000; await app.runtime.development.tick();
+  assert.equal(app.runtime.controller.get(created.id).callState, 'connected');
+  assert.equal(app.runtime.controller.get(created.id).usage.estimate.amountMinor, 100);
+  clock.ms += 1000; await app.runtime.development.tick();
+  assert.ok(['ending', 'reconciliation_required'].includes(app.runtime.controller.get(created.id).callState));
+  assert.equal(app.runtime.controller.get(created.id).usage.estimate.amountMinor, 200);
+  const activeConflict = await app.api('/api/dev/conversations', 'POST', input()); assert.equal(activeConflict.status, 409);
+  clock.ms += 1000; options.rejectHangup = false;
+  await app.runtime.development.tick(); const completed = app.runtime.controller.get(created.id);
+  assert.equal(completed.callState, 'ended'); assert.equal(completed.outcome.reason, 'technical_failure');
+  assert.equal(completed.usage.estimate.amountMinor, 300); // Honest overrun until confirmed termination.
+  assert.equal(completed.usage.testUsage.budget.amountMinor, 200); assert.equal(completed.usage.settledTotal, null);
+  const events = app.runtime.controller.replayEvents(created.id, 0); events.forEach((e) => DomainEventSchema.parse(e));
+  assert.equal(events.filter((e) => e.type === 'call.error' && e.payload.code === 'BUDGET_EXCEEDED').length, 1);
+  const snapshot = structuredClone(completed);
+  clock.ms += 1000;
+  await app.callback(created.callSid, 'completed', 10); await app.callback(created.callSid, 'in-progress', 20);
+  assert.deepEqual(app.runtime.controller.get(created.id), snapshot);
+  app.runtime.controller.deleteConversation(created.id); app.config.testRateMinorPerMinute = 600;
+  await app.restart();
+  const replay = (await app.api('/api/dev/conversations', 'POST', request)).body.conversation;
+  assert.deepEqual(replay.usage, snapshot.usage); assert.equal(app.creates, 1); assert.equal(replay.conversationData, 'deleted');
+  assert.deepEqual(app.runtime.controller.history(10).items[0].usage, snapshot.usage);
+});
+
+test('automatic usage enforcement runs without a browser and stops queued mock calls', async (t) => {
+  const clock = { ms: Date.now() };
+  const app = await fixture(t, { createStatus: 'queued', env: { CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE: '6000' },
+    development: { now: () => clock.ms } });
+  const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  clock.ms += 2000;
+  await until(() => app.runtime.controller.get(created.id).callState === 'ended');
+  assert.equal(app.hungUp, 1); assert.equal(app.runtime.controller.get(created.id).usage.estimate.amountMinor, 200);
+});
+
+test('failed usage event insertion rolls back meter and snapshot together before retry', async (t) => {
+  const clock = { ms: Date.now() };
+  const app = await fixture(t, { env: { CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE: '60' },
+    development: { now: () => clock.ms, automatic: false } });
+  const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  const before = app.runtime.controller.get(created.id); const events = app.runtime.controller.replayEvents(created.id, 0);
+  const db = new Database(join(app.dataDir, 'callmate.sqlite'));
+  try {
+    db.exec("CREATE TRIGGER fail_usage BEFORE INSERT ON call_events WHEN json_extract(NEW.value, '$.type') = 'usage.updated' BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END");
+    clock.ms += 1000;
+    await assert.rejects(app.runtime.development.tick());
+    assert.deepEqual(app.runtime.controller.get(created.id), before);
+    assert.deepEqual(app.runtime.controller.replayEvents(created.id, 0), events);
+    db.exec('DROP TRIGGER fail_usage'); await app.runtime.development.tick();
+    assert.equal(app.runtime.controller.get(created.id).usage.estimate.amountMinor, 1);
+    assert.equal(app.runtime.controller.replayEvents(created.id, 0).filter((e) => e.type === 'usage.updated').length, 1);
+  } finally { db.close(); }
+});

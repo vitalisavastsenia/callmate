@@ -448,3 +448,82 @@ test('Stop while dialing is idempotent even with overlapping timer ticks', async
   const events = app.runtime.controller.replayEvents(call.id, 0).filter((event) => event.type === 'call.status');
   assert.deepEqual(events.map((event) => event.payload.callState), ['creating', 'dialing', 'ending', 'ended']);
 });
+
+test('test-rate budget refuses a zero-budget Start without reserving a call or consuming its command', async (t) => {
+  const app = setup(t, 'within_plan', { env: { CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE: '60' } });
+  const request = structuredClone(reviewPlanFixture.request); request.callLimits.maxEstimatedCost.amountMinor = 0;
+  const plan = await app.http('POST', '/api/v1/plans', request); const key = randomUUID();
+  const response = await app.http('POST', '/api/v1/calls', { planId: plan.data.plan.id, planVersion: 1, mode: 'simulator' }, key);
+  assert.equal(response.status, 409); assert.equal(response.data.error.code, 'BUDGET_EXCEEDED');
+  const store = openStore(app.dataDir);
+  try { assert.equal(store.calls.active(), undefined); assert.equal(store.calls.command(key), undefined); }
+  finally { store.close(); }
+});
+
+test('test-rate usage is durable, replayable and stops at the exact budget boundary before dialing further', async (t) => {
+  const app = setup(t, 'within_plan', { env: { CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE: '60' } });
+  const request = structuredClone(reviewPlanFixture.request); request.callLimits.maxEstimatedCost.amountMinor = 2;
+  const call = await app.begin(request);
+  assert.equal(call.usage.testUsage.rateMinorPerMinute, 60); assert.equal(call.usage.estimate.amountMinor, 0);
+  app.clock.ms += 1999; await app.runtime.simulator.tick();
+  const before = await app.get(call.id); assert.equal(before.callState, 'dialing'); assert.equal(before.usage.estimate.amountMinor, 2);
+  app.clock.ms++; await app.runtime.simulator.tick();
+  const ended = await app.get(call.id); assert.equal(ended.callState, 'ended'); assert.equal(ended.outcome.reason, 'technical_failure');
+  assert.equal(ended.usage.testUsage.elapsedMs, 2000); assert.equal(ended.usage.estimate.amountMinor, 2);
+  assert.equal(ended.usage.settledTotal, null); assert.equal(ended.usage.status, 'estimated');
+  const events = app.runtime.controller.replayEvents(call.id, 0);
+  assert.equal(events.filter((e) => e.type === 'call.error' && e.payload.code === 'BUDGET_EXCEEDED').length, 1);
+  assert.equal(events.at(-1).type, 'usage.updated');
+  events.forEach((event, index) => { DomainEventSchema.parse(event); assert.equal(event.sequence, index + 1); });
+  await app.runtime.simulator.tick(); assert.deepEqual(await app.get(call.id), ended);
+  const replay = await app.http('POST', '/api/v1/calls', call.command.body, call.command.key);
+  assert.deepEqual(replay.data.call, ended); assert.deepEqual(app.runtime.controller.history(10).items[0].usage, ended.usage);
+});
+
+test('rates and budget freeze per attempt, survive restart and retention, and never become settled charges', async (t) => {
+  const app = setup(t, 'within_plan', { env: { CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE: '60' } });
+  const call = await app.begin(); app.clock.ms += 1500;
+  app.config.testRateMinorPerMinute = 600;
+  const store = openStore(app.dataDir);
+  try { const settings = store.getSettings(); settings.defaultCallLimits.maxEstimatedCost.amountMinor = 1; store.setSettings(settings); }
+  finally { store.close(); }
+  await app.restart(); const ended = await app.get(call.id);
+  assert.equal(ended.callState, 'ended'); assert.equal(ended.usage.estimate.amountMinor, 2);
+  assert.equal(ended.usage.testUsage.rateMinorPerMinute, 60); assert.equal(ended.usage.testUsage.budget.amountMinor, call.usage.testUsage.budget.amountMinor);
+  app.clock.ms += 31 * 86400000; assert.equal(app.runtime.retention.sweep(), 1);
+  assert.deepEqual((await app.get(call.id)).usage, ended.usage);
+  await app.restart(); assert.deepEqual((await app.get(call.id)).usage, ended.usage);
+});
+
+test('budget termination preserves confirmed bookings and uncertainty after acceptance', async (t) => {
+  for (const state of ['confirmed', 'awaiting_business_confirmation']) {
+    const app = setup(t, 'within_plan', { env: { CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE: '6000' } });
+    const call = await app.begin(); const prior = await app.until(call.id, (c) => c.bookingState === state);
+    app.clock.ms = Date.parse(call.createdAt) + 2000; await app.runtime.simulator.tick();
+    const ended = await app.get(call.id); assert.equal(ended.callState, 'ended');
+    if (state === 'confirmed') assert.deepEqual(ended.outcome, prior.outcome);
+    else assert.equal(ended.outcome.status, 'uncertain');
+    assert.equal(ended.usage.estimate.amountMinor, 200); assert.equal(ended.usage.settledTotal, null);
+  }
+});
+
+test('a slow dialogue response cannot send acceptance after the test budget expires', async (t) => {
+  let resolveProposal; let started;
+  const entered = new Promise((resolve) => { started = resolve; });
+  const app = setup(t, 'within_plan', { env: { CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE: '6000' }, options: {
+    dialogue: { propose() { started(); return new Promise((resolve) => { resolveProposal = resolve; }); } },
+  } });
+  const call = await app.begin(); await app.tick(3);
+  app.clock.ms += 50; const pending = app.runtime.simulator.tick(); await entered;
+  app.clock.ms = Date.parse(call.createdAt) + 2000;
+  resolveProposal({}); await pending;
+  const ended = await app.get(call.id); assert.equal(ended.callState, 'ended'); assert.equal(ended.messages.some((m) => m.speaker === 'assistant'), false);
+  assert.equal(app.runtime.controller.replayEvents(call.id, 0).some((e) => e.type === 'call.error' && e.payload.code === 'BUDGET_EXCEEDED'), true);
+});
+
+test('legacy attempts without a test meter stay unavailable when test rates are later enabled', async (t) => {
+  const app = setup(t); const call = await app.begin(); app.config.testRateMinorPerMinute = 6000;
+  app.clock.ms += 2000; await app.runtime.simulator.tick();
+  assert.equal((await app.get(call.id)).usage.status, 'unavailable');
+  await app.restart(); assert.equal((await app.get(call.id)).usage.testUsage, undefined);
+});

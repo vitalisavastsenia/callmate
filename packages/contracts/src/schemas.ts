@@ -129,13 +129,22 @@ export const TranscriptMessageSchema = z.strictObject({
   createdAt: InstantSchema,
 }).refine((value) => (value.speaker === "business") === (value.playback === "not_applicable"),
 "Business speech has no assistant playback state");
+// Optional development meter; never represents a provider quote or settled charge.
+export const TestUsageSchema = z.strictObject({
+  source: z.literal("test_rates"), rateVersion: z.literal("elapsed-minute-v1"),
+  rateMinorPerMinute: z.number().int().min(1).max(60000), currency: z.literal("USD"),
+  rateCapturedAt: InstantSchema, elapsedMs: z.number().int().nonnegative().safe(),
+  budget: CallMoneySchema,
+});
 export const UsageSchema = z.strictObject({
   estimate: CallMoneySchema.nullable(),
   settledTotal: CallMoneySchema.nullable(),
   status: z.enum(["unavailable", "estimated", "partial", "settled"]),
-  measuredAt: InstantSchema,
+  measuredAt: InstantSchema, testUsage: TestUsageSchema.optional(),
 }).refine((value) => value.status !== "settled" || value.settledTotal !== null,
-"Settled usage must include a total");
+"Settled usage must include a total").refine((value) => !value.testUsage || (value.status === "estimated"
+  && value.settledTotal === null && value.estimate?.currency === "USD"),
+"Test rates must remain estimates with unavailable provider charges");
 
 export const CallSnapshotSchema = z.strictObject({
   id: IdSchema, revision: VersionSchema, lastEventSequence: SequenceSchema,
@@ -224,7 +233,7 @@ export const PlaybackPermitSchema = z.strictObject({
 export const ErrorCodeSchema = z.enum([
   "INVALID_REQUEST", "NOT_FOUND", "PLAN_VERSION_MISMATCH", "CALL_ALREADY_ACTIVE", "IDEMPOTENCY_CONFLICT",
   "APPROVAL_STALE", "APPROVAL_EXPIRED", "CALL_NOT_ACTIVE", "PROVIDER_NOT_READY", "MODE_MISMATCH",
-  "EVENT_CURSOR_INVALID", "DATA_NOT_DELETABLE", "PROVIDER_UNAVAILABLE", "INTERNAL_ERROR",
+  "BUDGET_EXCEEDED", "EVENT_CURSOR_INVALID", "DATA_NOT_DELETABLE", "PROVIDER_UNAVAILABLE", "INTERNAL_ERROR",
 ]);
 export const ApiErrorSchema = z.strictObject({ error: z.strictObject({
   code: ErrorCodeSchema, message: TextSchema, requestId: IdSchema,

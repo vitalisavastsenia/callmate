@@ -25,7 +25,7 @@ const manualInternal = z.object({
     maxDurationSeconds: z.number().int().min(30).max(600),
     silenceTimeoutSeconds: z.number().int().min(5).max(600),
     durationDeadlineAt: z.iso.datetime(), silenceDeadlineAt: z.iso.datetime().nullable(),
-    stopReason: z.enum(["user_stopped", "duration_limit", "silence_timeout"]).nullable(),
+    stopReason: z.enum(["user_stopped", "duration_limit", "silence_timeout", "budget_limit"]).nullable(),
   }).optional(),
   // Optional only for records written before persistent recovery was introduced.
   correlation: z.object({

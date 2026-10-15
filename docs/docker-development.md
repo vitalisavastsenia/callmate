@@ -38,6 +38,7 @@ Defaults work without `.env`. For overrides, copy `.env.example` to ignored `.en
 | `CALLMATE_API_PORT` | `3000` | Integer 1–65535; same port inside the container and on host loopback. |
 | `CALLMATE_CALLBACK_PORT` | `3001` | Integer 1–65535; different from the API port. |
 | `CALLMATE_SILENCE_TIMEOUT_SECONDS` | `60` | Integer 5–600; caller inactivity after connection. Frozen per new call; see section 12. |
+| `CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE` | Unset | Optional integer 1–60000, USD cents per elapsed minute; empty disables pricing for new calls. Synthetic development rate only; see section 14. |
 | `CALLMATE_LOG_LEVEL` | `info` | `silent`, `error`, `warn`, `info`, or `debug`. |
 | `CALLMATE_SIMULATOR_SCENARIO` | `within_plan` | Shared scenario identifier from the table below; stored on each attempt. |
 | `CALLMATE_SIMULATOR_STEP_MS` | `750` | Integer 50–5000; delay between scripted transitions. |
@@ -194,7 +195,7 @@ Approvals use the existing [message contract](ui-message-contract.md): retrieve 
 
 History and terminal conversation deletion use the shared routes. Deletion clears Spanish/English transcript messages and old replay payloads, emits `conversation.deleted` to connected clients, and preserves booking metadata and idempotency tombstones. `transcriptRetentionDays` controls automatic cleanup at startup, every minute, and after settings changes; see section 13.
 
-The fake adapters implement the shared telephony/dialogue/text-voice ports. Their behavior is scripted, including offer extraction, Spanish replies, translations, and confirmation evidence; they do not validate arbitrary real conversations. Usage is marked unavailable, with no fabricated provider charges. No UI, audio generation, Twilio/LLM connectivity, real booking, or live recovery guarantee is delivered by this simulator.
+The fake adapters implement the shared telephony/dialogue/text-voice ports. Their behavior is scripted, including offer extraction, Spanish replies, translations, and confirmation evidence; they do not validate arbitrary real conversations. Usage is unavailable unless an explicit test rate is configured; section 14 describes synthetic estimates and budget enforcement. Provider charges remain unavailable. No UI, audio generation, Twilio/LLM connectivity, real booking, or live recovery guarantee is delivered by this simulator.
 
 ## 8. Manual ConversationRelay development transport
 
@@ -349,3 +350,42 @@ Migration 003 persists the first terminal timestamp independently of later snaps
 If a purge fails, that attempt's snapshot, events and replay floor roll back together. A startup failure prevents listeners from opening; a scheduled failure logs only a safe `RETENTION_FAILED` message and retries on the next minute. Previously committed purges remain deleted. Settings writes are saved before their cleanup pass; if that pass returns an error, the saved setting still applies and the periodic worker retries. Shutdown stops the worker before storage closes. Cleanup removes application data; it does not securely erase SQLite pages/WAL files, backups, provider records or copies already received by clients.
 
 Docker checks cover exact expiry boundaries, completion versus update time, confirmed/uncertain/manual outcomes, active-call exclusion, migration/backfill, startup and periodic cleanup, settings changes, transaction rollback/retry, SSE deletion/reset, command and callback replay, UI clearing, and multiple batches with stable history pagination.
+
+
+## 14. Test-rate usage and budgets
+
+Usage remains `unavailable` by default. To exercise metering and budget stops without any billable service, set `CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE=60` in ignored `.env` and recreate the backend with `docker compose up --build -d --wait server`. This explicit rate means **60 USD cents per elapsed minute**, not a Twilio or model price. An empty/unset value disables pricing for new attempts; zero, fractional, negative and out-of-range rates fail startup. No pricing endpoint or provider billing request is made.
+
+At Start, the backend captures the rate, its `elapsed-minute-v1` version, capture time and per-call USD budget. Scripted calls use the approved plan's `callLimits.maxEstimatedCost`; manual calls use the current settings' `defaultCallLimits.maxEstimatedCost`. Changing the rate or defaults cannot reprice an existing attempt. Existing attempts without a test meter stay unavailable even after rates are enabled. With a configured rate, a zero budget returns `409 BUDGET_EXCEEDED` before a call, idempotency record or provider request is created. With no rate, the backend cannot estimate spending and does not invent a zero cost or budget guarantee; duration and silence controls still apply.
+
+The development meter deliberately counts **elapsed time from local attempt creation through first confirmed terminal state**, including preflight, dialing, silence, ending, ambiguous creation, recovery and downtime. It does not claim to measure connected audio or provider billable seconds. Cost in USD cents is `ceil(elapsedMs × rateMinorPerMinute / 60000)`, calculated cumulatively with exact integer arithmetic. Frequent samples never round each increment separately or double-count callbacks. A backwards clock cannot reduce recorded usage. Normal ticks sample elapsed time at second boundaries and lifecycle changes also measure usage; simulator samples wait for in-flight dialogue work unless the budget expires. Terminal usage freezes, including across duplicate callbacks, Start/Stop retries, restart and transcript deletion/retention.
+
+The same snapshot/event transaction persists `usage`, its frozen `testUsage` meter and `usage.updated`. GET, history, Start retries and SSE replay expose this data; the development conversation projection now also includes `usage`. The existing JSON snapshot storage supports the optional meter, so no SQL migration is needed. If persistence fails, both meter and event roll back; the next successful sample computes the cumulative value from the original start.
+
+Example `usage.updated` payload after 2 seconds at 60 cents/minute with a 2-cent budget:
+
+```json
+{
+  "estimate": { "amountMinor": 2, "currency": "USD" },
+  "settledTotal": null,
+  "status": "estimated",
+  "measuredAt": "2026-10-15T10:00:02.000Z",
+  "testUsage": {
+    "source": "test_rates",
+    "rateVersion": "elapsed-minute-v1",
+    "rateMinorPerMinute": 60,
+    "currency": "USD",
+    "rateCapturedAt": "2026-10-15T10:00:00.000Z",
+    "elapsedMs": 2000,
+    "budget": { "amountMinor": 2, "currency": "USD" }
+  }
+}
+```
+
+Budget expiry uses the unrounded accumulated value: `elapsedMs × rate >= budgetMinor × 60000`, not the rounded displayed cents. For example, 1 ms at 60 cents/minute displays 1 cent but does not exhaust a 1-cent budget until 1000 ms. Enforcement runs through the existing timers without a browser, at manual call-control boundaries and before simulator continuation/playback. A pending dialogue result cannot send acceptance after expiry. Expiry emits `call.error` with `BUDGET_EXCEEDED`, invalidates scripted work/approvals, and stops the call. Existing confirmed bookings survive; acceptance without confirmation remains uncertain. Manual attempts end as `not_booked/technical_failure`, with a test-budget explanation. A Stop that already won the race retains its original reason.
+
+Before provider submission, manual expiry prevents Calls creation and safely releases the slot. During submission/queued/ringing/connected states, the existing cancellation/hangup/reconciliation logic applies. Unconfirmed hangup retains the active reservation and blocks output; recovery never redials. Metering continues until confirmed termination, and reports overruns honestly. Timer granularity (up to one second for the manual path), event-loop delays, elapsed downtime, integer-cent rounding and provider response/hangup delays can exceed the configured test budget. This is a local test spending control, not a hard provider billing ceiling or a daily/monthly spending policy.
+
+Always label `testUsage.source=test_rates` as **Test-rate estimate**. `settledTotal` stays `null` and `status` stays `estimated`, even after completion. Unknown real Twilio, ConversationRelay and model charges must appear as unavailable; zero provider cost must never be inferred. This step adds no live provider pricing/reconciliation or dialogue usage adapter.
+
+Docker checks cover opt-in validation, rounding/exact boundaries, zero-budget rejection, frozen rates/budgets, legacy records, preflight/submission cancellation, queued and connected stops, no-browser enforcement, failed hangup/overrun, delayed dialogue output, atomic persistence/retry, metadata preservation, duplicate callbacks, restart and deletion/retention.

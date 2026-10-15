@@ -15,6 +15,8 @@ import type { Store } from "./storage.js";
 import { CommandError } from "./errors.js";
 import { FakeDialogue, FakeTelephony, FakeVoice, scriptedOffer, simulatorPolicy } from "./simulator-adapters.js";
 
+import { initialUsage, measureUsage, budgetExpired, usageSampleDue, terminalUsage } from "./usage.js";
+
 type Emit = (type: DomainEvent["type"], payload: unknown) => void;
 export type SimulatorOptions = { now?: () => number; automatic?: boolean; dialogue?: DialoguePort };
 
@@ -36,7 +38,7 @@ export class Simulator {
       const minted = this.permits.get(permit.id);
       this.permits.delete(permit.id);
       const current = this.db.get(permit.attemptId);
-      return !this.closed && !!minted && JSON.stringify(minted.permit) === JSON.stringify(permit)
+      return !this.closed && !this.enforceBudget(permit.attemptId) && !!minted && JSON.stringify(minted.permit) === JSON.stringify(permit)
         && !!current && current.call.revision === minted.revision && current.call.callState === "connected"
         && this.now() < Date.parse(permit.expiresAt);
     });
@@ -71,9 +73,12 @@ export class Simulator {
     const events: DomainEvent[] = [];
     a.call.revision++;
     a.call.updatedAt = this.timestamp();
-    work(a, (type, payload) => events.push(DomainEventSchema.parse({ contractVersion: 1, id: randomUUID(),
+    const wasTerminal = terminalUsage(a.call);
+    const emit: Emit = (type, payload) => events.push(DomainEventSchema.parse({ contractVersion: 1, id: randomUUID(),
       attemptId: a.call.id, sequence: ++a.call.lastEventSequence, snapshotRevision: a.call.revision,
-      occurredAt: a.call.updatedAt, type, payload })));
+      occurredAt: a.call.updatedAt, type, payload }));
+    work(a, emit);
+    if (!wasTerminal) measureUsage(a.call, this.now(), emit);
     this.db.save(a, events);
     return a.call;
   }
@@ -169,7 +174,7 @@ export class Simulator {
         mode: "simulator", plan: ApprovedPlanSchema.parse({ ...plan, approvedAt: this.timestamp() }),
         callState: "creating", bookingState: "pending", outcome: { status: "pending" },
         activeOffer: null, pendingApproval: null, conversationData: "retained", messages: [],
-        usage: { estimate: null, settledTotal: null, status: "unavailable", measuredAt: this.timestamp() },
+        usage: initialUsage(this.timestamp(), this.config.testRateMinorPerMinute, plan.request.callLimits.maxEstimatedCost),
         createdAt: this.timestamp(), updatedAt: this.timestamp() });
       this.db.save({ call, replayFloor: 0, internal: { scenario: this.config.simulatorScenario, phase: "dial",
         nextAt: this.now() + this.config.simulatorStepMs, accepted: false, grant: null,
@@ -195,6 +200,7 @@ export class Simulator {
   }
 
   decide(id: string, decision: ApprovalDecision, key: string) {
+    this.enforceBudget(id);
     this.expire(id);
     const endpoint = `approval:${id}`, body = JSON.stringify(decision);
     const call = this.db.transaction(() => {
@@ -295,11 +301,27 @@ export class Simulator {
     a.internal.nextAt = this.now() + this.config.simulatorStepMs;
   }
 
+  private enforceBudget(id: string) {
+    const current = this.require(id);
+    if (terminalUsage(current.call) || current.call.callState === "ending" || !budgetExpired(current.call, this.now())) return false;
+    this.change(id, (a, emit) => {
+      emit("call.error", { code: "BUDGET_EXCEEDED", message: "Simulation reached its test-rate budget", recoverable: false });
+      this.finish(a, emit, a.internal.accepted ? this.uncertain("disconnected_near_confirmation")
+        : this.notBooked("technical_failure", "Simulation ended at its test-rate budget."));
+    });
+    return true;
+  }
+
   async tick() {
     if (this.closed) return;
-    const a = this.db.active();
+    let a = this.db.active();
     if (!a || isManualAttempt(a) || a.call.mode !== "simulator") return;
     const id = a.call.id;
+    if (this.enforceBudget(id)) return;
+    // Do not invalidate an in-flight dialogue result solely for a usage sample.
+    if (!this.jobs.has(id) && usageSampleDue(a.call, this.now())) {
+      this.change(id, () => {}); a = this.require(id);
+    }
     if (a.call.callState === "ending") {
       await this.telephony.requestHangup(`simulator:${id}`);
       if (this.closed || this.require(id).call.callState !== "ending") return;
@@ -380,8 +402,9 @@ export class Simulator {
           emit("transcript.updated", trigger);
         });
         const working = this.require(id);
-        const proposal = DialogueProposalSchema.parse(await (this.options.dialogue ?? new FakeDialogue(a.internal.scenario)).propose(input, job.signal));
+        const proposed = await (this.options.dialogue ?? new FakeDialogue(a.internal.scenario)).propose(input, job.signal);
         if (this.stale(working, job)) return;
+        const proposal = DialogueProposalSchema.parse(proposed);
         if (proposal.turnId !== input.turnId || proposal.turnVersion !== input.turnVersion
           || proposal.candidate.action !== "evaluate_offer" || JSON.stringify(proposal.candidate.offer) !== JSON.stringify(offer)) {
           throw new Error("Invalid scripted dialogue response");
@@ -459,7 +482,7 @@ export class Simulator {
   }
   private next(a: Attempt) { a.internal.nextAt = this.now() + this.config.simulatorStepMs; }
   private stale(a: Attempt, job: AbortController) {
-    return this.closed || job.signal.aborted || this.require(a.call.id).call.revision !== a.call.revision;
+    return this.closed || job.signal.aborted || this.enforceBudget(a.call.id) || this.require(a.call.id).call.revision !== a.call.revision;
   }
   async close() {
     this.closed = true;
