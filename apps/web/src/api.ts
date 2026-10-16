@@ -104,6 +104,10 @@ export const signIn = (username: string, password: string, setup = false) => {
   return request(route.method, route.path, route.response, { username, password });
 };
 export const signOut = () => request(api.authLogout.method, api.authLogout.path, api.authLogout.response, {});
+// LLM configuration and credentials always belong to the authenticated server.
+export const getLlmSettings = () => request(api.getLlmSettings.method, api.getLlmSettings.path, api.getLlmSettings.response);
+export const updateLlmSettings = (value: import('@callmate/contracts').UpdateLlmSettings) =>
+  request(api.updateLlmSettings.method, api.updateLlmSettings.path, api.updateLlmSettings.response, api.updateLlmSettings.request.parse(value));
 export async function getReadiness() {
   return isMockMode ? mock.mockReadiness() : request(api.readiness.method, api.readiness.path, api.readiness.response);
 }

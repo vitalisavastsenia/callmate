@@ -32,6 +32,7 @@ The [Docker backend](docker-development.md) implements these private HTTP/SSE ro
 - E.164 validation checks number syntax, not reachability or dialing permission. The backend separately enforces approved destination, Spain/country restrictions, permitted caller ID, blocked/special destinations, and spending limits.
 - Live and simulator mode are explicit on call requests, snapshots, and history. The simulator cannot dial, and an existing attempt's mode cannot change.
 - Settings contain no credentials. Provider keys and provider-specific configuration remain local to the backend.
+- The separate authenticated `/api/v1/settings/llm` endpoint exposes provider/model/effort and credential status only. PUT accepts write-only secret updates; GET and PUT responses never contain API keys. See [LLM settings](docker-development.md#18-llm-agent-settings-and-secret-storage) for request and storage semantics.
 
 ## 3. Core schemas
 

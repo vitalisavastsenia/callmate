@@ -2,7 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ApprovalDecision, CallSnapshot, DomainEvent, ReviewPlan, CandidateAction, PlaybackPermit } from "@callmate/contracts";
 import { PlaybackPermitSchema, templateForRequest, templateForService, RequestDraftSchema } from "@callmate/contracts";
-import { createDialogueServices, createOpenAIModelClient, createCodexModelClient, reduceBooking, renderReply, renderAction, dialogueLanguage } from "@callmate/dialogue";
+import { createDialogueServices, reduceBooking, renderReply, renderAction, dialogueLanguage } from "@callmate/dialogue";
+import { LlmAgent } from "./llm-agent.js";
 import type { ModelClient, BookingEvent, ExactOfferGrant, RenderedReply } from "@callmate/dialogue";
 import type { Config } from "./config.js";
 import type { Store } from "./storage.js";
@@ -23,23 +24,21 @@ type Change = (id: string, work: (a: Attempt, emit: Emit) => void) => unknown;
 
 /** Controller-owned dialogue. Only authenticated mock receipts simulate completed playback. */
 export class RelayDialogue {
-  private services: ReturnType<typeof createDialogueServices> | undefined;
+  private services: ReturnType<typeof createDialogueServices>;
   private jobs = new Map<string, AbortController>();
   private senders = new Map<string, RelaySend>();
   private closed = false;
   private playbackJobs = new Map<string, Promise<void>>();
   private speechPending = new Set<string>();
-  get enabled() { return !!this.services; }
+  get enabled() { return !!this.injectedModel || this.agent.enabled; }
+  private injectedModel: boolean;
   constructor(private config: Config, private store: Store, private change: Change,
-    private stopped: (id: string) => boolean, model?: ModelClient) {
-    if (model || config.dialogueProvider !== "disabled") {
-      const client = model ?? (config.dialogueProvider === "codex"
-        ? createCodexModelClient({ ...(config.dialogueModel ? { model: config.dialogueModel } : {}), timeoutMs: config.dialogueTimeoutMs })
-        : createOpenAIModelClient({ apiKey: config.openaiApiKey!, model: config.dialogueModel!, timeoutMs: config.dialogueTimeoutMs }));
-      this.services = createDialogueServices(client, { timeoutMs: config.dialogueTimeoutMs,
-        offerIdentitySource: () => { throw new Error("Turn-specific reservation required"); } });
-      this.model = client;
-    }
+    private stopped: (id: string) => boolean, model?: ModelClient, private agent = new LlmAgent(config, store)) {
+    this.injectedModel = !!model;
+    const client = model ?? this.agent;
+    this.services = createDialogueServices(client, { timeoutMs: config.dialogueTimeoutMs,
+      offerIdentitySource: () => { throw new Error("Turn-specific reservation required"); } });
+    this.model = client;
   }
   private model: ModelClient | undefined;
   private get(id: string): Attempt {

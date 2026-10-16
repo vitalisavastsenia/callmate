@@ -22,6 +22,7 @@ import { mountMockStatus } from "./mock-status.js";
 import { contactRoutes } from "./contacts.js";
 import { mountAuth } from "./auth.js";
 import { mountWebApp } from "./web-app.js";
+import type { LlmAgent } from "./llm-agent.js";
 
 type ErrorCode = z.infer<typeof ApiErrorSchema>["error"]["code"];
 function fail(reply: FastifyReply, request: FastifyRequest, status: number, code: ErrorCode, message: string,
@@ -40,7 +41,7 @@ function createListener(config: Config, stream?: Writable) {
     logger: {
       level: config.logLevel,
       ...(stream ? { stream } : {}),
-      redact: { paths: ["req.headers", "req.body", "req.query", "body", "headers", "config", "*.password", "*.token"], censor: "[REDACTED]" },
+      redact: { paths: ["req.headers", "req.body", "req.query", "body", "headers", "config", "*.password", "*.token", "*.apiKey", "*.apiKeys", "*.openaiApiKey", "*.anthropicApiKey"], censor: "[REDACTED]" },
       serializers: {
         req: (request) => ({ method: request.method }),
         res: (reply) => ({ statusCode: reply.statusCode }),
@@ -71,7 +72,7 @@ function createListener(config: Config, stream?: Writable) {
   return app;
 }
 
-function privateRoutes(app: FastifyInstance, config: Config, store: Store, controller: CallController, retention: Retention, dialogueEnabled: boolean) {
+function privateRoutes(app: FastifyInstance, config: Config, store: Store, controller: CallController, retention: Retention, dialogueEnabled: () => boolean, agent: LlmAgent) {
   app.addHook("onRequest", async (request, reply) => {
     const address = app.server.address();
     const port = typeof address === "object" && address !== null ? address.port : config.apiPort;
@@ -91,9 +92,12 @@ function privateRoutes(app: FastifyInstance, config: Config, store: Store, contr
 
   app.get("/health", async () => { store.check(); return { status: "ok" }; });
   mountAuth(app, store);
-  const readiness = new Readiness(config, store, dialogueEnabled);
+  const readiness = new Readiness(config, store, dialogueEnabled, agent);
   app.get(api.readiness.path, async () => readiness.report());
   app.get(api.getSettings.path, async () => SettingsSchema.parse(store.getSettings()));
+  app.get(api.getLlmSettings.path, async () => api.getLlmSettings.response.parse(agent.settings()));
+  app.put(api.updateLlmSettings.path, async request => api.updateLlmSettings.response.parse(
+    agent.update(parseRequest(api.updateLlmSettings.request, request.body))));
   app.put(api.updateSettings.path, async (request) => {
     const settings = store.setSettings(parseRequest(SettingsSchema, request.body));
     retention.sweep();
@@ -115,7 +119,7 @@ export function createRuntime(config: Config, logStream?: Writable, simulatorOpt
   mountMockStatus(callbacks, config, development);
   mountMockRelay(callbacks, config, () => store.getSettings().defaultCallLimits.maxDurationSeconds,
     (setup, send, disconnect) => development.attach(setup, send, disconnect));
-  privateRoutes(privateApi, config, store, controller, retention, development.dialogueEnabled);
+  privateRoutes(privateApi, config, store, controller, retention, () => development.dialogueEnabled, development.agent);
   mountDevelopmentConsole(privateApi, development);
   mountWebApp(privateApi);
   let closing: Promise<void> | undefined;

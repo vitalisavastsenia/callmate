@@ -1,4 +1,4 @@
-import { DialogueProposalSchema, type DialogueInput, type DialogueProposal } from "@callmate/contracts";
+import { DialogueProposalSchema, LlmEffortSchema, type LlmEffort, type DialogueInput, type DialogueProposal } from "@callmate/contracts";
 import { parseInput } from "../planner/validation.js";
 import type { ModelClient } from "./client.js";
 import { instructionsFor } from "./instructions.js";
@@ -8,6 +8,7 @@ export type OpenAIModelOptions = {
   apiKey: string;
   /** Explicit API model ID, e.g. a Codex model with Responses/Structured Outputs support. */
   model: string;
+  effort?: Exclude<LlmEffort, "default">;
   timeoutMs?: number;
   maxOutputTokens?: number;
   /** Server-owned transport injection for offline tests; must honor AbortSignal. */
@@ -110,6 +111,7 @@ export class OpenAIModelClient implements ModelClient {
   #fetch: typeof globalThis.fetch;
   #timeoutMs: number;
   #maxOutputTokens: number;
+  #effort: OpenAIModelOptions["effort"];
 
   constructor(options: OpenAIModelOptions) {
     if (typeof options?.apiKey !== "string" || !options.apiKey.trim() || /\s/u.test(options.apiKey.trim())) {
@@ -128,6 +130,8 @@ export class OpenAIModelClient implements ModelClient {
     }
     if (typeof (options.fetch ?? globalThis.fetch) !== "function") throw new TypeError("A fetch transport is required.");
     this.#apiKey = options.apiKey.trim();
+    if (options.effort !== undefined && (!LlmEffortSchema.safeParse(options.effort).success || options.effort as string === "default")) throw new TypeError("Invalid reasoning effort.");
+    this.#effort = options.effort;
     this.#model = options.model.trim();
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#timeoutMs = timeoutMs;
@@ -150,6 +154,7 @@ export class OpenAIModelClient implements ModelClient {
         headers: { Authorization: `Bearer ${this.#apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           model: this.#model, store: false, stream: false, max_output_tokens: this.#maxOutputTokens,
+          ...(this.#effort ? { reasoning: { effort: this.#effort } } : {}),
           instructions: instructionsFor(input),
           input: [{ role: "user", content: JSON.stringify(input) }],
           text: { format: { type: "json_schema", name: "callmate_dialogue_proposal",

@@ -26,16 +26,19 @@ const schema = z.object({
   mockAuthToken: z.string().min(1).max(200).default("mock-auth-token-local-only"),
   silenceTimeoutSeconds: z.coerce.number().int().min(5).max(600).default(60),
   testRateMinorPerMinute: z.coerce.number().int().min(1).max(60000).optional(),
-  dialogueProvider: z.enum(["disabled", "openai", "codex"]).default("disabled"),
+  dialogueProvider: z.enum(["disabled", "openai", "codex", "anthropic"]).default("disabled"),
   dialogueModel: z.string().trim().min(1).max(200).regex(/^\S+$/).optional(),
   openaiApiKey: z.string().trim().min(1).regex(/^\S+$/).optional(),
+  anthropicApiKey: z.string().trim().min(1).regex(/^\S+$/).optional(),
+  llmSecretsDir: z.string().refine(isAbsolute).optional(),
+  llmMasterKeyFile: z.string().refine(isAbsolute).optional(),
   dialogueTimeoutMs: z.coerce.number().int().min(1).max(60000).default(10000),
   logLevel: z.enum(["silent", "error", "warn", "info", "debug"]).default("info"),
   simulatorScenario: SimulatorScenarioSchema.default("within_plan"),
   simulatorStepMs: z.coerce.number().int().min(50).max(5000).default(750),
   simulatorApprovalSeconds: z.coerce.number().int().min(1).max(120).default(30),
 }).refine((config) => config.dialogueProvider === "disabled" || (
-  (config.dialogueProvider === "codex" || (!!config.dialogueModel && !!config.openaiApiKey))
+  (config.dialogueProvider === "codex" || (!!config.dialogueModel && !!(config.dialogueProvider === "anthropic" ? config.anthropicApiKey : config.openaiApiKey)))
   && config.mode === "simulator" && config.telephonyProvider === "mock" && config.nodeEnv !== "production"), {
   path: ["dialogueProvider"], message: "Dialogue needs a configured engine and development mock mode",
 }).refine((config) => config.apiPort !== config.callbackPort
@@ -72,6 +75,9 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     dialogueProvider: env.CALLMATE_DIALOGUE_PROVIDER,
     dialogueModel: env.CALLMATE_DIALOGUE_MODEL || undefined,
     openaiApiKey: env.OPENAI_API_KEY || undefined,
+    anthropicApiKey: env.ANTHROPIC_API_KEY || undefined,
+    llmSecretsDir: env.CALLMATE_LLM_SECRETS_DIR || undefined,
+    llmMasterKeyFile: env.CALLMATE_LLM_MASTER_KEY_FILE || undefined,
     dialogueTimeoutMs: env.CALLMATE_DIALOGUE_TIMEOUT_MS,
     logLevel: env.CALLMATE_LOG_LEVEL,
     simulatorScenario: env.CALLMATE_SIMULATOR_SCENARIO,

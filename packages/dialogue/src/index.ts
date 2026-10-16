@@ -3,6 +3,8 @@ export { CodexModelClient, CodexModelError, createCodexModelClient } from "./mod
 export type { CodexModelOptions, CodexModelErrorCode } from "./model/codex.js";
 export { OpenAIModelClient, OpenAIModelError, createOpenAIModelClient } from "./model/openai.js";
 export type { OpenAIModelOptions, OpenAIModelErrorCode, OpenAIProviderErrorCode } from "./model/openai.js";
+export { AnthropicModelClient, AnthropicModelError, createAnthropicModelClient } from "./model/anthropic.js";
+export type { AnthropicModelOptions } from "./model/anthropic.js";
 export { createDialogueServices } from "./services.js";
 export { Dialogue, createDialogue } from "./planner/dialogue.js";
 export type { DialogueOptions } from "./planner/dialogue.js";

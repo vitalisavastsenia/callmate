@@ -9,6 +9,7 @@ import { callStore } from "./call-store.js";
 import { contactStore } from "./contacts.js";
 import { dialoguePhraseStore } from "./dialogue-phrases.js";
 import { authStore } from "./auth-store.js";
+import { CommandError } from "./errors.js";
 
 type Settings = z.infer<typeof SettingsSchema>;
 const defaultMigrations = fileURLToPath(new URL("../migrations/", import.meta.url));
@@ -68,6 +69,28 @@ export function openStore(dataDir: string) {
       calls: callStore(db),
       contacts: contactStore(db),
       auth: authStore(db),
+      llm: {
+        selection() {
+          const row = db.prepare("SELECT value FROM llm_settings WHERE id = 1").get() as { value: string } | undefined;
+          return row ? JSON.parse(row.value) as unknown : null;
+        },
+        credential(provider: string) {
+          return (db.prepare("SELECT encrypted_value FROM llm_credentials WHERE provider = ?").get(provider) as
+            { encrypted_value: string } | undefined)?.encrypted_value;
+        },
+        hasCredentials() { return !!db.prepare("SELECT 1 FROM llm_credentials LIMIT 1").get(); },
+        save(selection: unknown, credentials: Partial<Record<"openai" | "anthropic", string | null>>) {
+          db.transaction(() => {
+            if (db.prepare("SELECT 1 FROM call_attempts WHERE active = 1 LIMIT 1").get())
+              throw new CommandError(409, "CALL_ALREADY_ACTIVE", "Finish the active call before changing the LLM agent or its keys");
+            db.prepare("INSERT INTO llm_settings (id, value) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET value = excluded.value").run(JSON.stringify(selection));
+            for (const [provider, value] of Object.entries(credentials)) {
+              if (value === null) db.prepare("DELETE FROM llm_credentials WHERE provider = ?").run(provider);
+              else db.prepare("INSERT INTO llm_credentials VALUES (?, ?) ON CONFLICT(provider) DO UPDATE SET encrypted_value = excluded.encrypted_value").run(provider, value);
+            }
+          }).immediate();
+        },
+      },
       getSettings,
       setSettings(input: unknown): Settings {
         const settings = SettingsSchema.parse(input);
@@ -80,6 +103,8 @@ export function openStore(dataDir: string) {
         db.prepare("SELECT id FROM app_settings WHERE id = 1").get();
         db.prepare("SELECT id FROM call_attempts LIMIT 1").get();
         db.prepare("SELECT id FROM contacts LIMIT 1").get();
+        db.prepare("SELECT id FROM llm_settings LIMIT 1").get();
+        db.prepare("SELECT provider FROM llm_credentials LIMIT 1").get();
       },
       close() { if (db.open) db.close(); },
     };

@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DialogueProposalSchema, type DialogueInput, type DialogueProposal } from "@callmate/contracts";
+import { DialogueProposalSchema, LlmEffortSchema, type LlmEffort, type DialogueInput, type DialogueProposal } from "@callmate/contracts";
 import { parseInput } from "../planner/validation.js";
 import type { ModelClient } from "./client.js";
 import { instructionsFor } from "./instructions.js";
@@ -13,6 +13,7 @@ export type CodexModelOptions = {
   executable?: string;
   /** Optional override; otherwise use the CLI's default model. */
   model?: string;
+  effort?: Exclude<LlmEffort, "default">;
   timeoutMs?: number;
 };
 export type CodexModelErrorCode = "cli_unavailable" | "cli_failed" | "invalid_response" | "cancelled" | "timeout";
@@ -37,7 +38,7 @@ function childEnvironment(): NodeJS.ProcessEnv {
   for (const key of Object.keys(env)) {
     // Saved ChatGPT credentials are found through HOME/CODEX_HOME. Never pass
     // API credentials or endpoint/provider overrides to the subscription path.
-    if (key.startsWith("OPENAI_") || (key.startsWith("CODEX_") && key !== "CODEX_HOME")
+    if (key.startsWith("OPENAI_") || key.startsWith("ANTHROPIC_") || (key.startsWith("CODEX_") && key !== "CODEX_HOME")
       || key === "NODE_OPTIONS") delete env[key];
   }
   return env;
@@ -48,6 +49,7 @@ export class CodexModelClient implements ModelClient {
   #executable: string;
   #model: string | undefined;
   #timeoutMs: number;
+  #effort: CodexModelOptions["effort"];
 
   constructor(options: CodexModelOptions = {}) {
     const executable = options.executable ?? "codex";
@@ -61,6 +63,8 @@ export class CodexModelClient implements ModelClient {
       throw new RangeError("Codex timeoutMs must be an integer from 1 to 60000.");
     }
     this.#executable = executable;
+    if (options.effort !== undefined && (!LlmEffortSchema.safeParse(options.effort).success || options.effort as string === "default")) throw new TypeError("Invalid reasoning effort.");
+    this.#effort = options.effort;
     this.#model = options.model;
     this.#timeoutMs = timeoutMs;
   }
@@ -91,7 +95,8 @@ export class CodexModelClient implements ModelClient {
         "-c", `model_instructions_file=${JSON.stringify(instructions)}`,
         ...disabledFeatures.flatMap(feature => ["--disable", feature]),
         "--cd", directory, "--output-schema", schema, "--output-last-message", output,
-        ...(this.#model ? ["--model", this.#model] : []), "-"];
+        ...(this.#model ? ["--model", this.#model] : []),
+        ...(this.#effort ? ["-c", `model_reasoning_effort=${JSON.stringify(this.#effort)}`] : []), "-"];
       await new Promise<void>((resolve, reject) => {
         const grouped = process.platform !== "win32";
         const child = spawn(this.#executable, args, {

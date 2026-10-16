@@ -4,3 +4,4 @@ export * from "./ports.js";
 export * from "./simulator.js";
 
 export * from "./templates.js";
+export * from "./llm.js";

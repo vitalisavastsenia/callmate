@@ -29,7 +29,7 @@ COPY --from=production /app/packages/contracts/ ./packages/contracts/
 COPY --from=production /app/packages/dialogue/ ./packages/dialogue/
 COPY --from=production /app/apps/server/ ./apps/server/
 COPY --from=build /app/apps/web/dist/ ./apps/web/dist/
-RUN mkdir /data && chown node:node /data && chmod 700 /data
+RUN mkdir /data /run/zeus-secrets && chown node:node /data /run/zeus-secrets && chmod 700 /data /run/zeus-secrets
 USER node
 EXPOSE 3000 3001
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 \

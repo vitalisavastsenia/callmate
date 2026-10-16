@@ -24,7 +24,7 @@ let source = ''; for await (const chunk of process.stdin) source += chunk;
 const proposal = ${JSON.stringify(turn().proposal)};
 const schema = JSON.parse(await readFile(option('--output-schema'), 'utf8'));
 const instructions = await readFile(JSON.parse(args.find(v => v.startsWith('model_instructions_file=')).split('=').slice(1).join('=')), 'utf8');
-await writeFile(${JSON.stringify(record)}, JSON.stringify({args, cwd:process.cwd(), input:JSON.parse(source), env:{OPENAI_API_KEY:process.env.OPENAI_API_KEY, CODEX_API_KEY:process.env.CODEX_API_KEY, OPENAI_BASE_URL:process.env.OPENAI_BASE_URL}, schema, instructions, pid:process.pid}));
+await writeFile(${JSON.stringify(record)}, JSON.stringify({args, cwd:process.cwd(), input:JSON.parse(source), env:{OPENAI_API_KEY:process.env.OPENAI_API_KEY, ANTHROPIC_API_KEY:process.env.ANTHROPIC_API_KEY, CODEX_API_KEY:process.env.CODEX_API_KEY, OPENAI_BASE_URL:process.env.OPENAI_BASE_URL}, schema, instructions, pid:process.pid}));
 ${body}\n`, { mode: 0o700 });
   return { executable, record, read: async () => JSON.parse(await readFile(record, "utf8")) };
 }
@@ -38,15 +38,16 @@ async function waitForRecord(path) {
 test("CLI sends validated context privately, forces ChatGPT and cleans its isolated files", async t => {
   const child = await mock(t);
   const old = { OPENAI_API_KEY: process.env.OPENAI_API_KEY, CODEX_API_KEY: process.env.CODEX_API_KEY,
-    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL };
-  Object.assign(process.env, { OPENAI_API_KEY: "private-api-placeholder", CODEX_API_KEY: "private-codex-placeholder", OPENAI_BASE_URL: "https://invalid.test" });
+    OPENAI_BASE_URL: process.env.OPENAI_BASE_URL, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY };
+  Object.assign(process.env, { OPENAI_API_KEY: "private-api-placeholder", ANTHROPIC_API_KEY: "private-claude-placeholder", CODEX_API_KEY: "private-codex-placeholder", OPENAI_BASE_URL: "https://invalid.test" });
   try {
     const { input, proposal } = turn();
-    const client = createCodexModelClient({ executable: child.executable, model: "test-model" });
+    const client = createCodexModelClient({ executable: child.executable, model: "test-model", effort: "high" });
     assert.deepEqual(await createDialogue(client).propose(input, signal()), proposal);
     const record = await child.read();
     assert.deepEqual(record.input, input);
     assert.equal(record.env.OPENAI_API_KEY, undefined);
+    assert.equal(record.env.ANTHROPIC_API_KEY, undefined);
     assert.equal(record.env.CODEX_API_KEY, undefined);
     assert.equal(record.env.OPENAI_BASE_URL, undefined);
     for (const flag of ["--ignore-user-config", "--ignore-rules", "--ephemeral", 'forced_login_method="chatgpt"',
@@ -55,6 +56,7 @@ test("CLI sends validated context privately, forces ChatGPT and cleans its isola
     }
     assert.equal(record.args[record.args.indexOf("--sandbox") + 1], "read-only");
     assert.equal(record.args[record.args.indexOf("--model") + 1], "test-model");
+    assert.ok(record.args.includes('model_reasoning_effort="high"'));
     assert.equal(record.schema.type, "object");
     assert.match(record.instructions, /Translate|translation/i);
     assert.ok(!record.args.includes(JSON.stringify(input)));

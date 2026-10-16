@@ -1,5 +1,5 @@
 import { DialogueLanguageSchema } from "@callmate/contracts";
-import { codexLoginReady } from "./codex-ready.js";
+import { LlmAgent } from "./llm-agent.js";
 import { dialogueLanguage } from "@callmate/dialogue";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -40,6 +40,7 @@ export class DevelopmentConversations {
   get dialogueEnabled() { return this.dialogue.enabled; }
   get mockTransportEnabled() { return this.config.telephonyProvider === "mock"; }
   private readonly now: () => number;
+  private readonly injectedModel: boolean;
   private closed = false;
   private pending = new Set<Promise<unknown>>();
   private refreshing = new Map<string, Promise<void>>();
@@ -48,13 +49,14 @@ export class DevelopmentConversations {
   private listeners = new Map<string, Set<() => void>>();
   private client: MockCallsClient;
   private timer: ReturnType<typeof setInterval> | undefined;
-  constructor(private config: Config, private store: Store, options: DevelopmentOptions = {}) {
+  constructor(private config: Config, private store: Store, options: DevelopmentOptions = {}, readonly agent = new LlmAgent(config, store)) {
     this.now = options.now ?? Date.now;
+    this.injectedModel = !!options.model;
     this.client = new MockCallsClient(config);
     this.dialogue = new RelayDialogue(config, store, (id, work) => this.change(id, (a, emit) => {
       if (!a.call.plan) return false;
       work(a as MockAttempt & { call: CallSnapshot }, emit);
-    }), (id) => this.enforceLimits(id), options.model);
+    }), (id) => this.enforceLimits(id), options.model, agent);
     const active = store.calls.active();
     if (active && isMockAttempt(active)) this.change(active.call.id, (a, emit) => {
       if (a.internal.correlation?.creation === "prepared" && !a.internal.callSid) {
@@ -276,12 +278,13 @@ export class DevelopmentConversations {
     if (replay) return replay;
     this.enabled();
     if (!this.dialogueEnabled) throw new CommandError(503, "PROVIDER_NOT_READY", "Configure a dialogue engine before starting reviewed mock calls");
-    const loginReady = this.config.dialogueProvider !== "codex" || await codexLoginReady();
+    const selection = this.agent.version();
+    const loginReady = (this.injectedModel && this.agent.selection().provider !== "codex") || await this.agent.ready();
     // Another Start may reserve the same command while the external probe awaits.
     // Its durable result wins even if this probe failed or the configuration changed.
     const afterProbe = this.replayDialogueStart(request, key);
     if (afterProbe) return afterProbe;
-    if (!loginReady) throw new CommandError(503, "PROVIDER_NOT_READY", "Codex CLI login is unavailable; run the Docker login setup");
+    if (!loginReady || selection !== this.agent.version()) throw new CommandError(503, "PROVIDER_NOT_READY", "LLM agent is not ready or changed during preflight. Check Settings and retry with the original command key");
     const plan = this.store.calls.plan(request.planId);
     if (!plan) throw new CommandError(404, "NOT_FOUND", "Review plan not found");
     if (request.mode !== "simulator") throw new CommandError(409, "MODE_MISMATCH", "Dialogue supports local mock calls only");

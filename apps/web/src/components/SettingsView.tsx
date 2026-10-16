@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { SettingsSchema, TimeZoneSchema, scenarios, type Readiness, type Scenario, type Settings } from '../types';
 import type { RequestDefaults } from '../preferences';
+import LlmAgentSettings from './LlmAgentSettings';
 
 interface Props {
   readiness: Readiness | null; settings: Settings; defaults: RequestDefaults; busy: boolean;
@@ -38,12 +39,13 @@ export default function SettingsView({ readiness, settings, defaults, busy, simu
         <label>Conversation retention (days)<input name="retention" type="number" min="1" max="365" defaultValue={settings.transcriptRetentionDays} required /></label>
       </div></fieldset><button className="primary" type="submit">{busy ? 'Saving…' : 'Save settings'}</button>
     </fieldset></form>
+    <LlmAgentSettings locked={modeLocked || busy} onSaved={onRefresh} />
     <details className="mt-6"><summary className="section-title cursor-pointer">Provider readiness</summary>
       <p>{readiness ? (readiness.mode === 'simulator' ? 'Simulator' : 'Real-call backend') + ' · ' + (readiness.ready ? 'Ready' : 'Not ready') : 'Backend readiness unavailable'}</p>
       <p className="my-3 text-base">Voice engine: {readiness?.voiceEngine?.replaceAll('_', ' ') ?? 'Not active'}</p>
       <ul className="space-y-2">{readiness?.checks.map(check => <li key={check.name}><strong className="capitalize">{check.name}</strong>: {check.status.replaceAll('_', ' ')} · {check.message}</li>)}</ul>
       <button type="button" className="secondary mt-4" disabled={busy} onClick={onRefresh}>Check readiness again</button>
-      <p className="mt-4 text-base text-stone-300">The backend enforces real-call limits and retention. Credentials stay in the backend environment. Structured request details remain after conversation text expires.</p>
+      <p className="mt-4 text-base text-stone-300">The backend enforces real-call limits and retention. Credentials stay on the server. Structured request details remain after conversation text expires.</p>
     </details>
   </section>;
 }
