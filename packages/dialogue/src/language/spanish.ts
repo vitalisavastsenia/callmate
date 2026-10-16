@@ -30,10 +30,10 @@ export function offerDetails(plan: ApprovedPlan, offer: Offer): string {
 }
 
 export function renderReadback(plan: ApprovedPlan, offer: Offer): string {
-  return `Para comprobar los datos, la propuesta es ${offerDetails(plan, offer)}. Todavía no estoy aceptando la reserva. ¿Son correctos estos datos?`;
+  return `Entonces, ${offerDetails(plan, offer)}. ¿Es correcto?`;
 }
 export function renderAcceptance(plan: ApprovedPlan, offer: Offer): string {
-  return `Acepto la cita para ${offerDetails(plan, offer)}. ¿${friendly(plan.request.tone ?? "formal") ? "Puedes" : "Puede"} confirmar que queda reservada con esos datos?`;
+  return `Perfecto, reserve la cita para ${offerDetails(plan, offer)}, por favor.`;
 }
 export function renderAvailability(plan: ApprovedPlan): string {
   const windows = plan.request.availability.map(({ start, end }) => {

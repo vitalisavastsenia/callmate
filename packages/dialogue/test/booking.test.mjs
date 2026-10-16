@@ -19,7 +19,7 @@ const merge = (snapshot, update) => {
   return CallSnapshotSchema.parse({ ...snapshot, ...fields });
 };
 const receiptFor = (snapshot = waiting()) => {
-  const message = snapshot.messages.find((item) => item.speaker === "assistant" && item.originalText.startsWith("Acepto"));
+  const message = snapshot.messages.find((item) => item.speaker === "assistant" && item.originalText.startsWith("Perfecto, reserve"));
   return {
     permit: {
       id: id(1), attemptId: snapshot.id, planId: snapshot.plan.id, planVersion: snapshot.plan.version,

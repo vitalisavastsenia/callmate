@@ -36,15 +36,15 @@ test("policy implements the shared port and authorizes separate neutral evaluati
   assert.deepEqual(result, { decision: "allow", approvedSpanishText: "Gracias. Voy a comprobar la propuesta antes de aceptar nada." });
   const readback = evaluate(snapshot, ref(snapshot, "read_back"));
   assert.equal(readback.decision, "allow");
-  assert.ok(readback.approvedSpanishText.includes("Todavía no estoy aceptando la reserva."));
+  assert.ok(readback.approvedSpanishText.startsWith("Entonces, un corte de pelo"));
   assert.deepEqual(evaluate(snapshot), { decision: "deny", reason: "acceptance_not_expected" });
   const accepted = evaluate(ready());
   assert.equal(accepted.decision, "allow");
-  assert.ok(accepted.approvedSpanishText.startsWith("Acepto la cita para un corte de pelo"));
+  assert.ok(accepted.approvedSpanishText.startsWith("Perfecto, reserve la cita para un corte de pelo"));
   for (const fact of ["20 de octubre de 2026", "18:00", "Alex Example", "25 euros"]) {
     assert.ok(accepted.approvedSpanishText.includes(fact), fact);
   }
-  assert.ok(accepted.approvedSpanishText.endsWith("¿Puede confirmar que queda reservada con esos datos?"));
+  assert.ok(accepted.approvedSpanishText.endsWith(", por favor."));
 });
 
 test("above-limit acceptance requires a valid grant for the exact current offer", () => {

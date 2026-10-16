@@ -13,7 +13,7 @@ import type { RelaySend } from "./mock-relay.js";
 import { CommandError } from "./errors.js";
 import { mockRelayEnabled } from "./mock-relay.js";
 import { MockCallsClient } from "./mock-calls-client.js";
-import { verifyMockConfirmation } from "./mock-confirmation.js";
+import { verifyMockConfirmation, verifyMockReadback } from "./mock-confirmation.js";
 
 type Attempt = MockAttempt & { call: CallSnapshot };
 type Emit = (type: DomainEvent["type"], payload: unknown) => void;
@@ -221,7 +221,7 @@ export class RelayDialogue {
       return;
     }
     if (decision.decision === "allow" && (candidate.action !== "accept_offer" || mockRelayEnabled(this.config))) {
-      if (candidate.action === "accept_offer" && verifyMockConfirmation({ offer: a.call.activeOffer!,
+      if (candidate.action === "accept_offer" && verifyMockReadback({ offer: a.call.activeOffer!,
         evidence: a.call.messages.filter(m => m.id === a.call.messages.findLast(m => m.speaker === "business")?.id),
         businessMessagesAfterAcceptance: [] }) !== "affirmed") {
         this.speak(a, emit, renderReply("confirm_details", a.call.plan, {}, this.store.phrases.lookup), send); return;
@@ -337,9 +337,17 @@ export class RelayDialogue {
     this.change(id, (a, emit) => {
       this.update(a, emit, { type: "approval_resolved", approvalId: approval.id, status: decision.decision === "approve" ? "approved" : "rejected" });
       a.internal.grant = decision.decision === "approve" ? { approvalId: approval.id, attemptId: id, planId: a.call.plan.id, planVersion: a.call.plan.version,
-        offerId: approval.offer.id, offerVersion: approval.offer.version, expiresAt: approval.expiresAt } satisfies ExactOfferGrant : null;
+        // The prompt deadline limits when the user may decide. Once approved, the exact
+        // offer remains authorized for this call, bounded by its existing duration limit.
+        offerId: approval.offer.id, offerVersion: approval.offer.version,
+        expiresAt: a.internal.controls?.durationDeadlineAt ?? approval.expiresAt } satisfies ExactOfferGrant : null;
       this.store.calls.recordCommand(key, endpoint, body, id);
       if (send && decision.decision === "approve") this.respond(a, emit, { action: "read_back", offerId: approval.offer.id, offerVersion: approval.offer.version }, (frame, permit) => output.push({ frame, permit }));
+      if (send && decision.decision === "reject") {
+        this.speak(a, emit, renderReply("closing_declined", a.call.plan, {}, this.store.phrases.lookup),
+          (frame, permit) => output.push({ frame, permit }));
+        output.push({ frame: { type: "end", handoffData: JSON.stringify({ reasonCode: "dialogue_complete", bookingStatus: "not_booked", simulation: true }) }, permit: null });
+      }
     });
     if (send) this.deliver(id, a.call.messages.findLast(m => m.speaker === "business")!.id, output, send);
     return this.get(id).call;

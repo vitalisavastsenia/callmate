@@ -75,7 +75,7 @@ async function propose(snapshot, candidate, english, trace) {
 function readback(snapshot, trace, grant = null, playback = "played") {
   const result = decide(snapshot, ref(snapshot, "read_back"), trace, grant, at(10));
   assert.equal(result.decision, "allow");
-  assert.match(result.approvedSpanishText, /Todavía no estoy aceptando la reserva/);
+  assert.match(result.approvedSpanishText, /^Entonces,.*¿Es correcto\?$/);
   const started = apply(snapshot, { type: "readback_started", ...refFields(snapshot) }, at(10)).snapshot;
   return buildSnapshot({ ...started, messages: [...started.messages, buildMessage({
     id: id(20), turnId: id(21), speaker: "assistant", playback, final: true,
@@ -97,12 +97,12 @@ async function accepted(trace, playback = "played") {
   snapshot = apply(pending, { type: "offer_received", offer: extracted.offer }, at(5)).snapshot;
   const neutral = decide(snapshot, extracted, trace, null, at(5));
   assert.equal(neutral.decision, "allow");
-  assert.doesNotMatch(neutral.approvedSpanishText, /^Acepto/);
+  assert.doesNotMatch(neutral.approvedSpanishText, /^Perfecto, reserve/);
   snapshot = readback(snapshot, trace);
   const candidate = await propose(snapshot, ref(snapshot, "accept_offer"), offerEnglish, trace);
   const acceptance = decide(snapshot, candidate, trace, null, at(20));
   assert.equal(acceptance.decision, "allow");
-  assert.match(acceptance.approvedSpanishText, /^Acepto la cita/);
+  assert.match(acceptance.approvedSpanishText, /^Perfecto, reserve la cita/);
   for (const fact of ["20 de octubre de 2026", "18:00", "Alex Example", "25 euros"]) {
     assert.ok(acceptance.approvedSpanishText.includes(fact), fact);
   }
@@ -186,7 +186,7 @@ for (const scenario of scenarios) test(`${scenario.id} [${scenario.category}]`, 
       const result = decide(snapshot, candidate, trace);
       assert.equal(result.decision, "allow");
       assert.match(result.approvedSpanishText, scenario.variant === "name" ? /reserve.*Alex Example/ : /¿/);
-      assert.doesNotMatch(result.approvedSpanishText, /^Acepto/);
+      assert.doesNotMatch(result.approvedSpanishText, /^Perfecto, reserve/);
       assert.equal(snapshot.outcome.status, "pending");
       break;
     }
@@ -211,7 +211,7 @@ for (const scenario of scenarios) test(`${scenario.id} [${scenario.category}]`, 
       assert.equal(result.decision, scenario.expected.decision);
       if (scenario.expected.reason) assert.equal(result.reason, scenario.expected.reason);
       if (scenario.expected.decision === "allow") {
-        assert.match(result.approvedSpanishText, /^Acepto/);
+        assert.match(result.approvedSpanishText, /^Perfecto, reserve/);
         assert.match(result.approvedSpanishText, /35 euros/);
       }
       // Even authorized generated acceptance has not been heard or confirmed.
@@ -354,7 +354,7 @@ for (const scenario of scenarios) test(`${scenario.id} [${scenario.category}]`, 
   }
   if (scenario.expected.decision && scenario.expected.decision !== "allow") {
     for (const decision of trace.decisions) {
-      assert.doesNotMatch(decision.approvedSpanishText ?? "", /^Acepto/, "Blocked scenarios must never render acceptance");
+      assert.doesNotMatch(decision.approvedSpanishText ?? "", /^Perfecto, reserve/, "Blocked scenarios must never render acceptance");
     }
   }
   const total = trace.latencies.reduce((sum, latency) => sum + latency, 0);

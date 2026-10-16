@@ -85,7 +85,7 @@ test("confirmation fixture contains actual played acceptance before final busine
   const confirmation = fixture.messages.findIndex((message) =>
     fixture.expectedOutcome.confirmationMessageIds.includes(message.id));
   const acceptance = fixture.messages.findIndex((message) => message.speaker === "assistant"
-    && message.playback === "played" && message.originalText.startsWith("Acepto"));
+    && message.playback === "played" && message.originalText.startsWith("Perfecto, reserve"));
   assert.ok(acceptance > 0 && confirmation > acceptance);
   assert.equal(fixture.messages[acceptance].originalText, renderAcceptance(fixture.plan, fixture.expectedOutcome.offer));
   assert.equal(fixture.turns[0].input.messages.some((message) =>

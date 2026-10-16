@@ -66,6 +66,11 @@ const templates: Record<string, [string, string, string, string]> = {
     "One moment, please. I cannot accept or confirm a booking yet.",
     "Chwileczkę, proszę. Nie mogę jeszcze zaakceptować ani potwierdzić rezerwacji."],
   closing: ["Entendido. Muchas gracias por su tiempo. Hasta luego.", "Понятно. Большое спасибо за ваше время. До свидания.", "Understood. Thank you for your time. Goodbye.", "Rozumiem. Dziękuję za poświęcony czas. Do widzenia."],
+  closing_declined: [
+    "Gracias por esperar. No vamos a aceptar esta propuesta. Muchas gracias por su tiempo. Hasta luego.",
+    "Спасибо за ожидание. Мы не будем принимать это предложение. Большое спасибо за ваше время. До свидания.",
+    "Thank you for waiting. We will not be accepting this offer. Thank you very much for your time. Goodbye.",
+    "Dziękuję za cierpliwość. Nie skorzystamy z tej propozycji. Bardzo dziękuję za poświęcony czas. Do widzenia."],
   closing_unresolved: ["Lo siento, no he podido aclarar los detalles y no puedo aceptar la propuesta. Gracias por su tiempo. Hasta luego.", "К сожалению, мне не удалось уточнить детали, и я не могу принять предложение. Спасибо за ваше время. До свидания.", "Sorry, I could not clarify the details and cannot accept the proposal. Thank you for your time. Goodbye.", "Niestety nie udało się wyjaśnić szczegółów i nie mogę zaakceptować propozycji. Dziękuję za poświęcony czas. Do widzenia."],
   closing_confirmed: ["Perfecto, muchas gracias. Hasta luego.", "Отлично, большое спасибо. До свидания.", "Perfect, thank you very much. Goodbye.", "Świetnie, bardzo dziękuję. Do widzenia."],
   acknowledge: ["Gracias por la información.", "Спасибо за информацию.", "Thank you for the information.", "Dziękuję za informację."],
@@ -143,7 +148,27 @@ const haircutDetailsV3 = ["{details}",
   "strzyżenie dnia {date} o {time}, na nazwisko {name}{staff}{duration}, {price}"];
 const clarifyTimeV2 = ["¿{can} confirmar la hora exacta de la cita?", "Уточните, пожалуйста, точное время записи?",
   "Could you confirm the exact time of the appointment?", "Czy można potwierdzić dokładną godzinę wizyty?"];
-const phraseVersion = (key: string, namespace?: string) => key === "greeting" || key === "availability" || key === "details" && namespace === "haircut" ? 3 : key === "window" || key === "details" || key === "clarify_time" ? 2 : 1;
+const bookingPhrasesV2: Record<string, readonly string[]> = {
+  readback: [
+    "Entonces, {details}. ¿Es correcto?",
+    "Правильно понимаю: {details}?",
+    "Just to check: {details}. Is that correct?",
+    "Dla pewności: {details}. Czy wszystko się zgadza?",
+  ],
+  acceptance: [
+    "Perfecto, reserve la cita para {details}, por favor.",
+    "Отлично, запишите, пожалуйста: {details}.",
+    "Great, please book the appointment for {details}.",
+    "Świetnie, proszę zarezerwować termin: {details}.",
+  ],
+  confirm_details: [
+    "¿Son correctos los datos que acabo de leer?",
+    "Я правильно перечислил детали записи?",
+    "Did I get those appointment details right?",
+    "Czy podane przeze mnie szczegóły wizyty są poprawne?",
+  ],
+};
+const phraseVersion = (key: string, namespace?: string) => key === "greeting" || key === "availability" || key === "details" && namespace === "haircut" ? 3 : key === "window" || key === "details" || key === "clarify_time" || Object.hasOwn(bookingPhrasesV2, key) ? 2 : 1;
 export const dialoguePhraseCatalog: readonly PhraseEntry[] = conversationTemplates.flatMap(profile => {
   const entries: Record<string, readonly string[]> = { ...templates, ...(profile.id === "haircut" ? haircutBooking : generic), requirements: [...profile.requirements], clarify_details: clarifyDetails };
   for (const field of profile.fields) entries[`field_${field.key.toLowerCase()}`] = fieldLabels[field.key]!;
@@ -160,7 +185,10 @@ export const dialoguePhraseCatalog: readonly PhraseEntry[] = conversationTemplat
     id: "haircut.details", version: 3, language, template: haircutDetailsV3[i]!,
   })) : [];
   const greetings = profile.id === "haircut" ? greetingV2 : genericGreetingV2;
-  return [...legacy, ...localTimes, ...haircutDetails, ...languages.flatMap((language, i) => {
+  const bookingPhrases = Object.entries(bookingPhrasesV2).flatMap(([key, texts]) => languages.map((language, i) => ({
+    id: `${profile.id}.${key}`, version: 2, language, template: texts[i]!,
+  })));
+  return [...legacy, ...localTimes, ...haircutDetails, ...bookingPhrases, ...languages.flatMap((language, i) => {
     const greeting = greetings[i]!.replaceAll("{service}", profile.service[i]!);
     const availability = entries.availability![i]!.replaceAll("{service}", profile.service[i]!);
     return [

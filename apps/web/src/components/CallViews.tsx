@@ -62,7 +62,10 @@ export function ApprovalCard({ call, now, disabled, onDecision, compact = false,
   const r = call.plan.request;
   const outside = !r.availability.some(w => Date.parse(a.offer.appointment.instant) >= Date.parse(w.start.instant) && Date.parse(a.offer.appointment.instant) <= Date.parse(w.end.instant));
   const above = a.offer.price && r.pricePolicy.maximum && a.offer.price.amountMinor > r.pricePolicy.maximum.amountMinor;
-  const forbidden = Object.values(a.offer.conditions).some(value => value !== 'none');
+  const prohibited = Object.values(a.offer.conditions).some(value => value === 'required');
+  // Match the dialogue policy: unstated conditions do not block a base haircut.
+  const unresolved = templateForRequest(r)?.id !== 'haircut' && Object.values(a.offer.conditions).some(value => value === 'unknown');
+  const forbidden = prohibited || unresolved;
   return <section className={'approval' + (compact ? ' approval-compact' : ' mb-6')} aria-labelledby={titleId} key={a.id}>
     <p className="eyebrow">Approval required · Offer version {a.offer.version}</p><h3 id={titleId} className="section-title">Approve this exact alternative?</h3>
     <p className="mb-3">{approvalReasons[a.reason]}</p>
@@ -73,11 +76,19 @@ export function ApprovalCard({ call, now, disabled, onDecision, compact = false,
       {!a.offer.price && <li>The price is unknown.</li>}
       {!outside && !above && a.offer.price && <li>The time and price fit your plan; you requested explicit approval.</li>}
     </ul></div>}
-    {compact ? <p className="text-base">{describeTime(a.offer.appointment)} · {a.offer.price ? money(a.offer.price) : 'Price unknown'}</p> : <OfferDetails offer={a.offer} />}
+    {compact ? <>
+      <p className="text-base">
+        {describeTime(a.offer.appointment)} · {a.offer.price ? money(a.offer.price) : 'Price unknown'}
+      </p>
+      <p className="text-base">
+        Deposit: {a.offer.conditions.deposit}; cancellation fee: {a.offer.conditions.cancellationFee}; paid add-on: {a.offer.conditions.paidAddOn}
+      </p>
+    </> : <OfferDetails offer={a.offer} />}
     <p className="my-4 font-semibold" role="timer" aria-label="Approval time remaining">{seconds > 0 ? seconds + ' seconds left to decide' : 'Approval expired — waiting for the server to close it'}</p>
     {!compact && <p className="mb-4 text-base">Choose whether to approve this exact offer or reject it before the deadline. If you do not answer, it will not be accepted and the call will close or continue without this offer.</p>}
     {!compact && <p className="mb-4 text-base">This decision applies only to this offer and version. A changed offer needs fresh approval. Approval does not mean the business has confirmed.</p>}
-    {forbidden && <p role="alert" className="notice error">This offer includes unknown or prohibited conditions. It cannot be approved in this MVP.</p>}
+    {prohibited && <p role="alert" className="notice error">This offer requires a deposit, cancellation fee, or paid add-on. It cannot be approved.</p>}
+    {!prohibited && unresolved && <p role="alert" className="notice error">The business must confirm the deposit, cancellation fee, and paid add-on terms before this offer can be approved.</p>}
     <div ref={ref} className="approval-actions flex flex-wrap gap-3"><button className="primary" disabled={disabled || seconds === 0 || forbidden} onClick={() => onDecision('approve')}>Approve this offer</button><button className="secondary" disabled={disabled || seconds === 0} onClick={() => onDecision('reject')}>Reject offer</button></div>
     {disabled && <p className="mt-3 text-base">Decisions are unavailable while a command is pending or call updates are disconnected.</p>}
   </section>;
