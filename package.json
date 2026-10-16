@@ -4,6 +4,7 @@
   "type": "module",
   "workspaces": [
     "packages/contracts",
+    "packages/dialogue",
     "apps/server",
     "apps/web"
   ],
@@ -15,5 +16,8 @@
     "build": "npm run build --workspaces",
     "typecheck": "npm run build --workspace @callmate/contracts && npm run typecheck --workspaces",
     "test": "npm run test --workspaces"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.3"
   }
 }

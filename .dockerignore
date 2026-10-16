@@ -9,6 +9,8 @@
 !packages/contracts/src/**
 !packages/contracts/test/
 !packages/contracts/test/**
+!packages/dialogue/
+!packages/dialogue/**
 !apps/
 !apps/server/
 !apps/server/package.json
@@ -22,6 +24,8 @@
 !apps/web/
 !apps/web/**
 !tests/
+!tests/dialogue-fixtures/
+!tests/dialogue-fixtures/**
 !tests/e2e/
 !tests/e2e/**
 **/.env

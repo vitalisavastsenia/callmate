@@ -5,13 +5,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
     && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
 COPY packages/contracts/package.json ./packages/contracts/package.json
+COPY packages/dialogue/package.json ./packages/dialogue/package.json
 COPY apps/server/package.json ./apps/server/package.json
 COPY apps/web/package.json ./apps/web/package.json
 RUN npm ci
 COPY packages/contracts/ ./packages/contracts/
+COPY packages/dialogue/ ./packages/dialogue/
 COPY apps/server/ ./apps/server/
 COPY apps/web/ ./apps/web/
 COPY tests/e2e/ ./tests/e2e/
+COPY tests/dialogue-fixtures/ ./tests/dialogue-fixtures/
 RUN npm run build
 
 FROM build AS production
@@ -22,6 +25,7 @@ ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=production /app/node_modules/ ./node_modules/
 COPY --from=production /app/packages/contracts/ ./packages/contracts/
+COPY --from=production /app/packages/dialogue/ ./packages/dialogue/
 COPY --from=production /app/apps/server/ ./apps/server/
 RUN mkdir /data && chown node:node /data && chmod 700 /data
 USER node

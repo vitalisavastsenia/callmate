@@ -20,7 +20,9 @@ Read the documents in this order:
 10. [Offline Twilio protocol mock](docs/twilio-mock.md): official-format REST/webhook/TwiML/WebSocket adapter tests and a Docker walkthrough.
 11. [Mock ConversationRelay development service](mock-conversation-relay/README.md): standalone Docker emulator with an operator browser UI, SDK-compatible Calls subset, signed callbacks/relay handshakes, optional queued dialing, and Connect action continuation checks.
 
-The shared contracts, TypeScript/Fastify backend, and scripted simulator are implemented. Simulator mode supports plan review, Start/Stop, approval decisions, persistent snapshots, replayable SSE, history, and conversation deletion without provider credentials or provider requests. A simple development UI can start manual conversations through the local mock service and display operator replies. These calls share SQLite attempts, transcripts, history, Stop, the active-call reservation, and replayable SSE with the scripted simulator; they carry no booking authority. The Zeus Llama booking/request UI is also present, with a standalone browser simulator and shared HTTP/SSE client. End-to-end integration between that UI and this backend remains to be verified; real calling/dialogue adapters remain to be built. Completed conversation text and replay events expire automatically after 30 days by default; booking metadata remains in history. Optional explicit test rates provide persisted usage estimates and enforce per-call budgets; real provider charges remain unavailable. Readiness reports database/configuration health, local mock connectivity and enabled capabilities. Simulator mode is required; when the manual mock transport is enabled, its health probe must pass for overall readiness. No real phone calls can start.
+The shared contracts, TypeScript/Fastify backend, and scripted simulator are implemented. Simulator mode supports plan review, Start/Stop, approval decisions, persistent snapshots, replayable SSE, history, and conversation deletion without provider credentials or provider requests. A simple development UI can start manual conversations through the local mock service and display operator replies. These calls share SQLite attempts, transcripts, history, Stop, the active-call reservation, and replayable SSE with the scripted simulator; they carry no booking authority. The Zeus Llama booking/request UI is also present, with a standalone browser simulator and shared HTTP/SSE client. End-to-end integration between that UI and this backend remains to be verified; real calling adapters and dialogue/controller integration remain to be built. Completed conversation text and replay events expire automatically after 30 days by default; booking metadata remains in history. Optional explicit test rates provide persisted usage estimates and enforce per-call budgets; real provider charges remain unavailable. Readiness reports database/configuration health, local mock connectivity and enabled capabilities. Simulator mode is required; when the manual mock transport is enabled, its health probe must pass for overall readiness. No real phone calls can start.
+
+The [dialogue library](packages/dialogue/README.md) now provides booking policy, Spanish dialogue, and Codex CLI/optional OpenAI API model adapters. It is included in Docker builds and offline checks; the backend does not invoke it yet.
 
 See [the web UI guide](apps/web/README.md) for its workflow and current integration limits.
 
@@ -78,12 +80,21 @@ Open [Zeus Llama](http://localhost:5173/) and create the single owner account on
 
 Calls default to the browser simulator; contacts require the backend in both call modes. The backend development console remains at port 3000. The UI's backend call mode still requires integration validation for request policy, currencies, manual-call history, and readiness.
 
+To run the dialogue library's offline evaluation in Docker:
+
+```sh
+docker compose --profile checks run --build --rm checks npm run evaluate --workspace @callmate/dialogue
+```
+
+The [dialogue guide](packages/dialogue/README.md) describes standalone model examples. Normal app startup and offline checks do not run Codex, use API credentials, or enable real calls.
+
 ## Repository files
 
 - `README.md`: project overview and setup instructions.
 - `AGENTS.md`: Codex workflow, branch naming, commit conventions, and verification expectations.
 - `.gitignore`: excludes local environment files, operating-system artifacts, and temporary files.
 - `docs/`: product requirements, architecture, and technology decisions.
+- `packages/dialogue/`: booking policy, dialogue planning, Spanish templates, model adapters, and offline evaluations.
 - `packages/contracts/`: shared runtime schemas, types, routes, adapter interfaces, fixtures, and contract checks.
 - `apps/web/`: React/Vite/Tailwind UI, browser simulator, shared HTTP/SSE client, unit and browser tests.
 - `apps/server/`: Fastify API/SSE, SQLite migrations/storage, simulator/controller, fake adapters, and server tests.

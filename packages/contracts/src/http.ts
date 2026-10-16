@@ -1,6 +1,6 @@
 import { z } from "zod";
 import {
-  ApprovalDecisionSchema, CallSnapshotSchema, StoredCallSnapshotSchema, HistoryEntrySchema, IdSchema,
+  ApprovalDecisionSchema, ConversationDecisionSchema, CallSnapshotSchema, StoredCallSnapshotSchema, HistoryEntrySchema, IdSchema,
   ReadinessSchema, RequestDraftSchema, ReviewPlanSchema, SettingsSchema, StartCallRequestSchema,
   ContactDetailsSchema, ContactSchema,
   AuthCredentialsSchema, AuthSetupSchema, AuthSessionSchema,
@@ -31,6 +31,8 @@ export const api = {
   stopCall: { method: "POST", path: "/api/v1/calls/:attemptId/stop", request: z.strictObject({}),
     response: z.strictObject({ call: StoredCallSnapshotSchema }) },
   decideApproval: { method: "POST", path: "/api/v1/calls/:attemptId/approvals", request: ApprovalDecisionSchema,
+    response: z.strictObject({ call: CallSnapshotSchema }) },
+  decideConversation: { method: "POST", path: "/api/v1/calls/:attemptId/conversation-decisions", request: ConversationDecisionSchema,
     response: z.strictObject({ call: CallSnapshotSchema }) },
   history: { method: "GET", path: "/api/v1/history",
     query: z.strictObject({ limit: z.coerce.number().int().min(1).max(100).default(20), cursor: IdSchema.optional() }),

@@ -78,7 +78,13 @@ export const RequestDraftSchema = z.strictObject({
   requestType: RequestTypeSchema.optional(),
   goal: TextSchema.optional(),
   timeZone: TimeZoneSchema.optional(),
-  tone: z.array(z.string().trim().min(1).max(100)).max(10).optional(),
+  // Legacy dialogue tones normalize to the UI's existing list format.
+  tone: z.union([
+    z.array(z.string().trim().min(1).max(100)).max(10),
+    z.enum(["formal", "very_polite", "friendly"]).transform(tone => [{
+      formal: 'Formal "usted"', very_polite: "Very polite", friendly: "Friendly",
+    }[tone]]),
+  ]).optional(),
   tone_notes: z.string().trim().max(2000).optional(),
   contact_id: IdSchema.optional(),
   boundaries: z.strictObject({ canDecideAlone: EditableListSchema, mustAskMe: EditableListSchema }).optional(),
@@ -117,6 +123,9 @@ export const OfferSchema = z.strictObject({
   id: IdSchema,
   version: VersionSchema,
   service: TextSchema,
+  staffName: z.string().trim().min(1).max(200)
+    .regex(/^[^\p{Cc}\p{Cf}<>]+$/u, "Unsafe staff name")
+    .nullable().optional(),
   bookingName: z.string().trim().min(1).max(200),
   appointment: ZonedTimeSchema,
   durationMinutes: z.number().int().min(1).max(480).nullable(),
@@ -129,6 +138,36 @@ export const OfferSchema = z.strictObject({
   evidenceMessageIds: z.array(IdSchema).min(1).max(50),
 });
 export const OfferRefSchema = z.strictObject({ offerId: IdSchema, offerVersion: VersionSchema });
+export const SupplementSchema = z.strictObject({
+  serviceEs: z.literal("el tratamiento de hidratación"),
+  serviceEn: z.literal("the hydrating treatment"),
+  additionalPrice: ServiceMoneySchema,
+  conditions: OfferSchema.shape.conditions,
+});
+const conversationRequest = {
+  id: IdSchema, attemptId: IdSchema, plan: PlanRefSchema, offer: OfferRefSchema,
+  createdAt: InstantSchema, expiresAt: InstantSchema,
+  evidenceMessageIds: z.array(IdSchema).min(1).max(50),
+};
+export const ConversationRequestSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ ...conversationRequest, kind: z.literal("add_on"), supplement: SupplementSchema,
+    totalPrice: ServiceMoneySchema }),
+  z.strictObject({ ...conversationRequest, kind: z.literal("contact"), field: z.literal("phone") }),
+]).refine(value => Date.parse(value.createdAt) < Date.parse(value.expiresAt), "Decision must have a future deadline");
+export const ConversationDecisionSchema = z.strictObject({
+  decisionId: IdSchema, plan: PlanRefSchema, offer: OfferRefSchema,
+  choice: z.enum(["approve", "reject", "custom"]), answer: TextSchema.nullable(),
+}).refine(value => (value.choice === "custom") === (value.answer !== null), "Only custom choices carry free text");
+export const ConversationStateSchema = z.strictObject({
+  pending: ConversationRequestSchema.nullable(),
+  decisions: z.array(z.strictObject({ request: ConversationRequestSchema,
+    status: z.enum(["approved", "rejected", "custom", "expired", "invalidated"]),
+    answer: TextSchema.nullable(), resolvedAt: InstantSchema })).max(100),
+  notes: z.array(z.strictObject({ code: z.literal("clean_dry_hair"), textEn: TextSchema,
+    evidenceMessageIds: z.array(IdSchema).min(1).max(50) })).max(100),
+  tasks: z.array(z.strictObject({ decisionId: IdSchema, kind: z.literal("provide_phone_later"),
+    textEn: TextSchema })).max(100),
+});
 export const ApprovalRequestSchema = z.strictObject({
   id: IdSchema, attemptId: IdSchema, plan: PlanRefSchema, offer: OfferSchema,
   reason: z.enum(["outside_availability", "above_price_limit", "unknown_price", "user_confirmation_required"]),
@@ -174,6 +213,16 @@ export const CandidateActionSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("record_business_confirmation"), offerId: IdSchema,
     offerVersion: VersionSchema, evidenceMessageIds: z.array(IdSchema).min(1).max(50) }),
   z.strictObject({ action: z.literal("end_call"), reason: z.enum(["business_declined", "unresolved", "no_availability"]) }),
+  z.strictObject({ action: z.literal("request_add_on"), supplement: SupplementSchema,
+    evidenceMessageIds: z.array(IdSchema).min(1).max(50) }),
+  z.strictObject({ action: z.literal("request_contact"), field: z.literal("phone"),
+    evidenceMessageIds: z.array(IdSchema).min(1).max(50) }),
+  z.strictObject({ action: z.literal("record_note"), code: z.literal("clean_dry_hair"),
+    evidenceMessageIds: z.array(IdSchema).min(1).max(50) }),
+  z.strictObject({ action: z.literal("repeat"), reason: z.enum(["not_heard", "not_understood", "slower"]) }),
+  z.strictObject({ action: z.literal("echo_detail"), field: z.enum(["date", "time", "price", "name", "staff"]),
+    mode: z.enum(["confirm", "clarify"]).nullable().optional(),
+    offerId: IdSchema, offerVersion: VersionSchema }),
 ]);
 export const TranscriptMessageSchema = z.strictObject({
   id: IdSchema, turnId: IdSchema, speaker: z.enum(["business", "assistant"]),
@@ -205,6 +254,7 @@ export const CallSnapshotSchema = z.strictObject({
   mode: z.enum(["simulator", "live"]), plan: ApprovedPlanSchema,
   callState: CallStateSchema, bookingState: BookingStateSchema, outcome: OutcomeSchema,
   activeOffer: OfferSchema.nullable(), pendingApproval: ApprovalRequestSchema.nullable(),
+  conversation: ConversationStateSchema.optional(),
   conversationData: z.enum(["retained", "deleted"]),
   messages: z.array(TranscriptMessageSchema).max(2000), usage: UsageSchema,
   createdAt: InstantSchema, updatedAt: InstantSchema,
@@ -213,8 +263,19 @@ export const CallSnapshotSchema = z.strictObject({
   const terminalCall = ["ended", "busy", "no_answer", "failed"].includes(value.callState);
   if (value.conversationData === "deleted" && (!terminalCall || value.messages.length > 0))
     issue("Deleted conversation data requires a terminal call and an empty transcript");
+  if (value.conversationData === "deleted" && value.conversation?.decisions.some(item => item.answer !== null))
+    issue("Deleted conversation data cannot retain free-text decision answers");
   if (terminalCall && (value.outcome.status === "pending" || value.pendingApproval))
     issue("Terminal calls require an outcome and cannot have a pending approval");
+  const decision = value.conversation?.pending;
+  if (decision && value.outcome.status !== "pending" && value.outcome.status !== "confirmed")
+    issue("A failed or uncertain booking cannot have pending conversation consent");
+  if (decision && (terminalCall || decision.attemptId !== value.id || decision.plan.planId !== value.plan.id
+    || decision.plan.planVersion !== value.plan.version || decision.offer.offerId !== value.activeOffer?.id
+    || decision.offer.offerVersion !== value.activeOffer?.version)) issue("Conversation decision must match an active call, plan and offer");
+  if (decision?.kind === "add_on" && (!value.activeOffer?.price
+    || decision.totalPrice.amountMinor !== value.activeOffer.price.amountMinor + decision.supplement.additionalPrice.amountMinor))
+    issue("Supplement total must equal the base price plus its surcharge");
   const terminalBooking = ["confirmed", "not_booked", "uncertain", "completed"].includes(value.bookingState);
   if ((terminalBooking && value.bookingState !== value.outcome.status)
     || (!terminalBooking && value.outcome.status !== "pending")) issue("Booking state and outcome disagree");
@@ -276,6 +337,7 @@ export type StoredCallSnapshot = z.infer<typeof StoredCallSnapshotSchema>;
 export const DialogueInputSchema = z.strictObject({
   attemptId: IdSchema, turnId: IdSchema, turnVersion: VersionSchema, plan: ApprovedPlanSchema,
   bookingState: BookingStateSchema, offer: OfferSchema.nullable(),
+  callState: CallStateSchema.optional(), conversation: ConversationStateSchema.optional(),
   triggerMessageId: IdSchema, messages: z.array(TranscriptMessageSchema).min(1).max(2000),
 }).refine((value) => value.messages.some((message) => message.id === value.triggerMessageId
   && message.final && message.speaker === "business"), "Dialogue trigger must be finalized business speech");
@@ -318,6 +380,7 @@ export const DomainEventSchema = z.discriminatedUnion("type", [
   event("approval.requested", ApprovalRequestSchema),
   event("approval.resolved", ApprovalResolutionSchema),
   event("booking.updated", z.strictObject({ bookingState: BookingStateSchema, outcome: OutcomeSchema })),
+  event("conversation.updated", ConversationStateSchema),
   event("usage.updated", UsageSchema),
   event("conversation.deleted", z.strictObject({ conversationData: z.literal("deleted") })),
   event("call.error", z.strictObject({ code: ErrorCodeSchema, message: TextSchema, recoverable: z.boolean() })),
@@ -356,3 +419,6 @@ export type CandidateAction = z.infer<typeof CandidateActionSchema>;
 export type DialogueInput = z.infer<typeof DialogueInputSchema>;
 export type DialogueProposal = z.infer<typeof DialogueProposalSchema>;
 export type PlaybackPermit = z.infer<typeof PlaybackPermitSchema>;
+export type ConversationState = z.infer<typeof ConversationStateSchema>;
+export type ConversationRequest = z.infer<typeof ConversationRequestSchema>;
+export type ConversationDecision = z.infer<typeof ConversationDecisionSchema>;

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { DialogueProposalSchema, OfferSchema, PlaybackPermitSchema } from "@callmate/contracts";
 import type {
   AttemptContext, BookingPolicyPort, CallSnapshot, DialogueInput, DialoguePort, Offer,
-  PlaybackPermit, ProviderCallStatus, SimulatorScenario, TelephonyPort, TextVoicePort,
+  PlaybackPermit, PolicyDecision, ProviderCallStatus, SimulatorScenario, TelephonyPort, TextVoicePort,
 } from "@callmate/contracts";
 
 /** Wire-level development feedback only; never extracts offers or accepts a booking. */
@@ -71,8 +71,12 @@ export class FakeDialogue implements DialoguePort {
 }
 
 /** Limited deterministic simulator policy. Never used for live calls. */
-export const simulatorPolicy: BookingPolicyPort = {
-  evaluate({ snapshot, candidate, now, grant }) {
+// This scripted policy requests booking approval only; dialogue consent uses a separate contract.
+type SimulatorPolicyDecision = Exclude<PolicyDecision, { decision: "ask_user" }> | {
+  decision: "ask_user"; reason: NonNullable<CallSnapshot["pendingApproval"]>["reason"];
+};
+export const simulatorPolicy = {
+  evaluate({ snapshot, candidate, now, grant }): SimulatorPolicyDecision {
     const offer = snapshot.activeOffer;
     if (candidate.action !== "accept_offer" || !offer || candidate.offerId !== offer.id
       || candidate.offerVersion !== offer.version || snapshot.callState !== "connected") {
@@ -99,7 +103,7 @@ export const simulatorPolicy: BookingPolicyPort = {
     return { decision: "allow", approvedSpanishText:
       `De acuerdo, reserve la cita el ${offer.appointment.localDate} a las ${offer.appointment.localTime}, a nombre de ${offer.bookingName}.` };
   },
-};
+} satisfies BookingPolicyPort;
 
 export class FakeVoice implements TextVoicePort {
   readonly engine = "conversation_relay" as const;

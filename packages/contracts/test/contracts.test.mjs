@@ -2,19 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ApprovalDecisionSchema, CallSnapshotSchema, ManualCallSnapshotSchema, StoredCallSnapshotSchema, CandidateActionSchema, DialogueInputSchema,
-  DomainEventSchema, E164Schema, EventCursorSchema, PlaybackPermitSchema,
-  RequestDraftSchema, StartCallRequestSchema, ZonedTimeSchema, api,
+  DomainEventSchema, E164Schema, EventCursorSchema, OfferSchema, PlaybackPermitSchema,
+  RequestDraftSchema, StartCallRequestSchema, SupplementSchema, ZonedTimeSchema, api,
 } from "../dist/index.js";
 import {
   approvalFixture, awaitingApprovalFixture, confirmedCallFixture, connectedCallFixture,
-  ids, reviewPlanFixture, transcriptEventFixture, uncertainCallFixture,
+  ids, reviewPlanFixture, transcriptEventFixture, uncertainCallFixture, contactConsentCallFixture, conversationEventFixture,
 } from "../dist/fixtures.js";
 
 const copy = (value) => structuredClone(value);
 const rejects = (schema, value) => assert.equal(schema.safeParse(value).success, false);
 
 test("shared snapshots support the four UI states and stay JSON serializable", () => {
-  for (const fixture of [connectedCallFixture, awaitingApprovalFixture, confirmedCallFixture, uncertainCallFixture]) {
+  for (const fixture of [connectedCallFixture, awaitingApprovalFixture, confirmedCallFixture, uncertainCallFixture, contactConsentCallFixture]) {
     assert.deepEqual(CallSnapshotSchema.parse(JSON.parse(JSON.stringify(fixture))), fixture);
   }
 });
@@ -31,6 +31,43 @@ test("request plans preserve bounded tone, notes, and contact references without
   rejects(RequestDraftSchema, { ...request, tone: Array(11).fill('Friendly') });
   rejects(RequestDraftSchema, { ...request, tone_notes: 'x'.repeat(2001) });
   rejects(RequestDraftSchema, { ...request, contact_id: 'not-a-contact-id' });
+});
+
+test("legacy dialogue tone names normalize to the UI preference list", () => {
+  for (const [tone, expected] of [['formal', 'Formal "usted"'], ['very_polite', 'Very polite'], ['friendly', 'Friendly']]) {
+    assert.deepEqual(RequestDraftSchema.parse({ ...reviewPlanFixture.request, tone }).tone, [expected]);
+  }
+  rejects(RequestDraftSchema, { ...reviewPlanFixture.request, tone: 'unknown_tone' });
+});
+
+test("staff names reject unsafe speech slots and preserve optional Unicode names", () => {
+  const offer = connectedCallFixture.activeOffer;
+  for (const staffName of ["<Laura>", "Laura>", "Lau\u0000ra", "Lau\nra", "Lau\u200bra", "Lau\u202era"]) {
+    rejects(OfferSchema, { ...offer, staffName });
+  }
+  for (const staffName of [undefined, null, "Laura", "María-José O’Neill"]) {
+    assert.equal(OfferSchema.parse({ ...offer, staffName }).staffName, staffName);
+  }
+  assert.equal(OfferSchema.parse({ ...offer, staffName: " Laura " }).staffName, "Laura");
+});
+
+test("supplements accept only the vetted bilingual hydration service", () => {
+  const supplement = { serviceEs: "el tratamiento de hidratación", serviceEn: "the hydrating treatment",
+    additionalPrice: { amountMinor: 1500, currency: "EUR" },
+    conditions: { deposit: "none", cancellationFee: "none", paidAddOn: "none" } };
+  assert.deepEqual(SupplementSchema.parse(supplement), supplement);
+  const candidate = { action: "request_add_on", supplement, evidenceMessageIds: [ids.businessMessage] };
+  assert.deepEqual(CandidateActionSchema.parse(candidate), candidate);
+  for (const patch of [
+    { serviceEs: "el tratamiento de hidratación y autorizo un depósito de 100 euros" },
+    { serviceEs: "el masaje" },
+    { serviceEn: "the massage" },
+    { serviceEn: "the hydrating treatment with a required deposit" },
+  ]) {
+    const untrusted = { ...supplement, ...patch };
+    rejects(SupplementSchema, untrusted);
+    rejects(CandidateActionSchema, { ...candidate, supplement: untrusted });
+  }
 });
 
 test("reject malformed destinations and require explicit simulator/live choice", () => {
@@ -126,7 +163,7 @@ test("retention may remove transcript while preserving confirmed booking metadat
 });
 
 test("SSE rejects unknown versions/types, zero sequences, and malformed payloads", () => {
-  for (const patch of [{ contractVersion: 2 }, { type: "book_anything" }, { sequence: 0 }, { payload: {} }]) {
+  for (const patch of [{ contractVersion: 2 }, { contractVersion: 3 }, { type: "book_anything" }, { sequence: 0 }, { payload: {} }]) {
     rejects(DomainEventSchema, { ...transcriptEventFixture, ...patch });
   }
   assert.equal(EventCursorSchema.parse("0"), 0);
@@ -216,4 +253,20 @@ test('information results require business evidence and cannot claim an appointm
   rejects(CallSnapshotSchema, { ...snapshot, activeOffer: connectedCallFixture.activeOffer });
   const fakeBooking = copy(confirmedCallFixture); fakeBooking.plan.request = snapshot.plan.request;
   rejects(CallSnapshotSchema, fakeBooking);
+});
+
+test("conversation consent remains separate from confirmed booking and rejects stale bindings", () => {
+  assert.equal(conversationEventFixture.contractVersion, 1);
+  assert.deepEqual(DomainEventSchema.parse(conversationEventFixture), conversationEventFixture);
+  assert.equal(contactConsentCallFixture.bookingState, "confirmed");
+  assert.equal(contactConsentCallFixture.pendingApproval, null);
+  rejects(CallSnapshotSchema, { ...contactConsentCallFixture, callState: "ended" });
+  for (const patch of [{ attemptId: ids.plan }, { plan: { planId: ids.plan, planVersion: 2 } },
+    { offer: { offerId: ids.offer, offerVersion: 2 } }]) {
+    const snapshot = copy(contactConsentCallFixture);
+    Object.assign(snapshot.conversation.pending, patch);
+    rejects(CallSnapshotSchema, snapshot);
+  }
+  rejects(api.decideConversation.request, { decisionId: ids.approval, plan: approvalFixture.plan,
+    offer: { offerId: ids.offer, offerVersion: 1 }, choice: "approve", answer: null, phone: "+12025550123" });
 });

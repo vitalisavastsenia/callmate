@@ -1,0 +1,19 @@
+{
+  "name": "@callmate/dialogue",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs evaluation/*.test.mjs",
+    "evaluate": "npm run build && node --test evaluation/*.test.mjs"
+  },
+  "dependencies": { "@callmate/contracts": "0.1.0" },
+  "devDependencies": { "@types/node": "26.6.3", "typescript": "7.0.2" }
+}
