@@ -706,7 +706,7 @@ test('switching to a different budget currency clears an edited amount and requi
 });
 
 test('another tab cannot switch away from a saved call and reload restores its transport', async ({ page, context }) => {
-  await page.clock.install(); await prepare(page, 'above_price'); await start(page, true);
+  await prepare(page, 'above_price'); await start(page, true);
   await page.getByRole('dialog').getByRole('button', { name: 'Stop call', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Close call window', exact: true }).click();
   await page.evaluate(() => localStorage.setItem('zeus-llama.active-attempt.v1', JSON.parse(localStorage.getItem('zeus-llama.simulator.v1')!).sessions[0].call.id));
@@ -715,6 +715,7 @@ test('another tab cannot switch away from a saved call and reload restores its t
   await expect(other.getByRole('button', { name: 'View call · Finished', exact: true })).toBeVisible();
   await other.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(other.getByRole('button', { name: 'Backend', exact: true })).toBeEnabled();
+  await page.bringToFront();
   await page.getByRole('button', { name: 'View call · Finished', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Call again', exact: true }).click();
   await expect(page.getByRole('dialog').getByRole('button', { name: 'Stop call', exact: true })).toBeVisible();

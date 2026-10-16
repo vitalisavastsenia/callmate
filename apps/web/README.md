@@ -115,3 +115,5 @@ If browser storage is blocked or full, the app shows a recovery notice and disab
 The contact picker keeps the active keyboard option visible in long lists, including **Import contacts**, while retaining focus in the name field. Arrow navigation does not change the selected destination until Enter.
 
 Calendar exports from simulator calls use `[Simulation]` in the event title, explain that no real business appointment was confirmed, and carry `STATUS:TENTATIVE`. Live confirmed appointments keep `STATUS:CONFIRMED`. Both preserve the appointment instant/timezone and omit an end time when duration is unknown.
+
+The same definitive-rejection recovery applies to **Call again**: the rejected request returns to editable review with its original details, while the earlier result stays in history.

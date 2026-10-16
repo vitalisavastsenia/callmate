@@ -278,3 +278,33 @@ test('conversation deletion confirms, blocks duplicate submission, and retries e
   await expect(dialog).toHaveCount(0); expect(deletes).toBe(2);
   await expect(page.getByText('Conversation text was deleted. Booking details remain.', { exact: true })).toBeVisible();
 });
+
+test('a rejected Call again returns the original request to editable review', async ({ page }) => {
+  let starts = 0;
+  await page.route('**/api/v1/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.startsWith('/api/v1/contacts')) return route.continue();
+    if (path.endsWith('/readiness')) return route.fulfill({ json: { mode: 'simulator', ready: true, voiceEngine: null, capabilities: [], checks: [] } });
+    if (path.endsWith('/settings')) return route.fulfill({ json: { defaultCallLimits: reviewPlanFixture.request.callLimits, transcriptRetentionDays: 30 } });
+    if (path.endsWith('/history')) return route.fulfill({ json: { items: [], nextCursor: null } });
+    if (path.endsWith('/plans')) return route.fulfill({ json: { plan: { ...reviewPlanFixture, request: route.request().postDataJSON() } } });
+    if (path === '/api/v1/calls') {
+      if (++starts === 1) return route.fulfill({ json: { call: confirmedCallFixture } });
+      return route.fulfill({ status: 503, json: { error: { code: 'PROVIDER_NOT_READY', message: 'Dialogue is unavailable.', requestId: crypto.randomUUID(), details: [] } } });
+    }
+    return route.fulfill({ json: { call: confirmedCallFixture } });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Book a haircut', exact: true }).click();
+  await page.getByRole('button', { name: 'Prepare the plan', exact: true }).click();
+  await page.getByRole('button', { name: 'Review call plan', exact: true }).click();
+  await page.getByRole('button', { name: 'Call', exact: true }).click();
+  await page.getByRole('button', { name: 'View call · Finished', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Call again', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Dialogue is unavailable');
+  await expect(page.getByLabel('Approved name', { exact: true })).toBeEnabled();
+  await expect(page.getByLabel('Approved name', { exact: true })).toHaveValue(confirmedCallFixture.plan.request.bookingName ?? '');
+  await expect(page.getByLabel('Requested service', { exact: true })).toHaveValue(confirmedCallFixture.plan.request.service);
+  expect(starts).toBe(2);
+  expect(await page.evaluate(() => localStorage.getItem('zeus-llama.pending-start.v1'))).toBeNull();
+});

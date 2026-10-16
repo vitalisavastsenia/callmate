@@ -98,6 +98,7 @@ export default function App() {
       setCallWindowOpen(false);
       if (api.isDefinitiveStartRejection(error)) {
         browserStorage.removeItem(pendingKey); startCommand.current = null; setPending(null);
+        setShowCall(false); setRequestInitial(command.plan.request); setInitialPrepared(false); setRequestKey(old => old + 1);
         setPage('request'); setNotice('The server rejected Start before creating an attempt. Review your request or settings before trying again.');
       } else {
         setPage('home'); setNotice('The Start response is unknown. Check the original request below; do not start another attempt.');
