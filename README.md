@@ -105,7 +105,7 @@ The [dialogue guide](packages/dialogue/README.md) describes standalone model exa
 
 ## Development workflow
 
-Use `main` as the primary branch. Create focused working branches such as `feat/add-call-history`, `fix/handle-empty-contact`, or `docs/update-setup`. If a task has an issue key, include it after the branch type, for example `feat/odyssey-2026-add-call-history`.
+Use `main` as the primary branch. During the current integration phase, work directly on `feat/app-integration` without creating separate feature or fix branches unless explicitly requested. This temporary workflow remains in effect until the user changes it. If a separate branch is requested and a task has an issue key, include it after the branch type, for example `feat/odyssey-2026-add-call-history`.
 
 Use Conventional Commits by default, for example `feat(calls): add call history`. Explicitly requested commit messages take precedence.
 
