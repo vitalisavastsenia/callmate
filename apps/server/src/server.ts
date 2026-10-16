@@ -3,11 +3,11 @@ import type { Writable } from "node:stream";
 import Fastify, { LogController } from "fastify";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { ApiErrorSchema, SettingsSchema, api } from "@callmate/contracts";
-import { z } from "zod";
+import type { z } from "zod";
 import type { Config } from "./config.js";
 import { openStore } from "./storage.js";
 import type { Store } from "./storage.js";
-import { CommandError } from "./errors.js";
+import { CommandError, parseRequest, RequestValidationError } from "./errors.js";
 import { CallController } from "./call-controller.js";
 import { callRoutes } from "./call-routes.js";
 import { Simulator } from "./simulator.js";
@@ -58,9 +58,8 @@ function createListener(config: Config, stream?: Writable) {
   app.setNotFoundHandler((request, reply) => fail(reply, request, 404, "NOT_FOUND", "Route not found"));
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof CommandError) return fail(reply, request, error.status, error.code, error.message);
-    if (error instanceof z.ZodError) {
-      return fail(reply, request, 400, "INVALID_REQUEST", "Request validation failed",
-        error.issues.map((issue) => ({ path: issue.path.join("."), message: "Invalid value" })));
+    if (error instanceof RequestValidationError) {
+      return fail(reply, request, 400, "INVALID_REQUEST", error.message, error.details);
     }
     if (typeof error === "object" && error !== null && "statusCode" in error
       && typeof error.statusCode === "number" && error.statusCode >= 400 && error.statusCode < 500) {
@@ -96,7 +95,7 @@ function privateRoutes(app: FastifyInstance, config: Config, store: Store, contr
   app.get(api.readiness.path, async () => readiness.report());
   app.get(api.getSettings.path, async () => SettingsSchema.parse(store.getSettings()));
   app.put(api.updateSettings.path, async (request) => {
-    const settings = store.setSettings(SettingsSchema.parse(request.body));
+    const settings = store.setSettings(parseRequest(SettingsSchema, request.body));
     retention.sweep();
     return settings;
   });

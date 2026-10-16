@@ -12,7 +12,7 @@ import type { Config } from "./config.js";
 import type { Store } from "./storage.js";
 import { isMockAttempt } from "./call-store.js";
 import type { MockAttempt } from "./call-store.js";
-import { CommandError } from "./errors.js";
+import { CommandError, parseRequest } from "./errors.js";
 import { assertDeletableAgreement } from "./agreements.js";
 import { MockCallsClient, MockCallsError } from "./mock-calls-client.js";
 import { mockRelayEnabled } from "./mock-relay.js";
@@ -229,7 +229,7 @@ export class DevelopmentConversations {
     const url = new URL(correlation.statusCallbackUrl);
     if (target.path !== url.pathname || target.host !== url.host
       || !twilio.validateRequest(this.config.mockAuthToken, signature, url.href, fields)) return deny();
-    const event = statusCallback.parse(fields);
+    const event = parseRequest(statusCallback, fields);
     if (event.AccountSid !== correlation.accountSid || event.From !== "+48000000000" || event.To !== "+48111111111"
       || (stored.internal.callSid && event.CallSid !== stored.internal.callSid)) return deny();
     if (terminal(stored.call) || event.SequenceNumber <= (correlation.callbackSequence ?? -1)) return;
@@ -585,12 +585,12 @@ export function mountDevelopmentConsole(app: FastifyInstance, conversations: Dev
     return readFile(new URL(`../src/web/${file}`, import.meta.url), "utf8");
   });
   app.get("/console", async (_request, reply) => reply.redirect("/console/"));
-  const id = (params: unknown) => z.object({ id: z.uuid() }).parse(params).id;
+  const id = (params: unknown) => parseRequest(z.object({ id: z.uuid() }), params).id;
   app.get("/api/dev/conversations", async () => conversations.latest());
-  app.post("/api/dev/conversations", async (request, reply) => reply.code(202).send({ conversation: await conversations.start(request.body) }));
+  app.post("/api/dev/conversations", async (request, reply) => reply.code(202).send({ conversation: await conversations.start(parseRequest(startInput, request.body)) }));
   app.get("/api/dev/conversations/:id", async (request) => ({ conversation: await conversations.get(id(request.params)) }));
   app.post("/api/dev/conversations/:id/stop", async (request) => {
-    z.strictObject({}).parse(request.body);
+    parseRequest(z.strictObject({}), request.body);
     return { conversation: await conversations.stop(id(request.params)) };
   });
 }

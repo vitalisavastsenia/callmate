@@ -1,5 +1,7 @@
 import { authHeaders } from './fixtures/auth.mjs';
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { reviewPlanFixture } from "@callmate/contracts/fixtures";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -239,4 +241,63 @@ test('versioned dialogue phrases persist across restarts and corruption fails cl
     store.close();
     assert.throws(() => openStore(dataDir), /incompatible/);
   } finally { db.close(); store.close(); }
+});
+
+test('only explicit HTTP input validation produces sanitized 400 errors', async t => {
+  const app = setup(t);
+  const cases = [
+    { method: 'GET', url: '/api/v1/calls/not-a-uuid' },
+    { method: 'GET', url: '/api/v1/history?limit=invalid' },
+    { method: 'POST', url: '/api/v1/calls', payload: { planId: randomUUID(), planVersion: 1, mode: 'simulator' } },
+    { method: 'PUT', url: '/api/v1/settings', payload: { private: 'private-invalid-input' } },
+    { method: 'POST', url: '/api/v1/contacts', payload: { name: '', phone: 'private-invalid-input', timeZone: 'invalid' } },
+    { method: 'POST', url: '/api/auth/login', payload: { username: [], password: 'private-invalid-input' } },
+    { method: 'POST', url: '/api/auth/logout', payload: { private: 'private-invalid-input' } },
+    { method: 'POST', url: '/api/dev/conversations', payload: { requestId: 'invalid', initialMessage: 'private-invalid-input', language: 'invalid' } },
+  ];
+  for (const request of cases) {
+    const response = await app.privateApi.inject({ ...request, headers: app.local });
+    assert.equal(response.statusCode, 400, `${request.method} ${request.url}`);
+    const error = ApiErrorSchema.parse(response.json()).error;
+    assert.equal(error.code, 'INVALID_REQUEST'); assert.ok(error.details.length > 0);
+    assert.ok(error.details.every(detail => detail.message === 'Invalid value'));
+    assert.ok(!response.body.includes('private-invalid-input'));
+  }
+});
+
+test('invalid stored contacts are server errors and recover without blaming a valid GET', async t => {
+  const app = setup(t);
+  const created = await app.privateApi.inject({ method: 'POST', url: '/api/v1/contacts', headers: app.local,
+    payload: { name: 'Review contact', phone: '+34612345678', timeZone: 'Europe/Madrid', tone: [], notes: '' } });
+  assert.equal(created.statusCode, 201);
+  const id = created.json().contact.id; const db = new Database(join(app.config.dataDir, 'callmate.sqlite'));
+  try {
+    db.prepare('UPDATE contacts SET phone = ? WHERE id = ?').run('private-corrupt-record', id);
+    const response = await app.privateApi.inject({ url: '/api/v1/contacts', headers: app.local });
+    assert.equal(response.statusCode, 500);
+    assert.equal(ApiErrorSchema.parse(response.json()).error.code, 'INTERNAL_ERROR');
+    assert.deepEqual(response.json().error.details, []); assert.ok(!response.body.includes('private-corrupt-record'));
+    db.prepare('UPDATE contacts SET phone = ? WHERE id = ?').run('+34612345678', id);
+    assert.equal((await app.privateApi.inject({ url: '/api/v1/contacts', headers: app.local })).statusCode, 200);
+  } finally { db.close(); }
+});
+
+test('invalid Start output returns 500 after reservation and the original key still restores its attempt', async t => {
+  const app = setup(t);
+  const request = structuredClone(reviewPlanFixture.request); const year = new Date().getUTCFullYear() + 1;
+  for (const window of request.availability) for (const endpoint of [window.start, window.end]) {
+    endpoint.localDate = `${year}-10-20`; endpoint.instant = endpoint.instant.replace(/^\d{4}/, String(year));
+  }
+  const plan = app.controller.createPlan(request); const key = randomUUID();
+  const start = app.controller.start.bind(app.controller);
+  app.controller.start = async (...args) => ({ ...await start(...args), revision: 0 });
+  const command = { method: 'POST', url: '/api/v1/calls', headers: { ...app.local, 'idempotency-key': key },
+    payload: { planId: plan.id, planVersion: plan.version, mode: 'simulator' } };
+  const invalid = await app.privateApi.inject(command);
+  assert.equal(invalid.statusCode, 500); assert.equal(invalid.json().error.code, 'INTERNAL_ERROR');
+  const history = app.controller.history(10).items; assert.equal(history.length, 1);
+  app.controller.start = start;
+  const replay = await app.privateApi.inject(command);
+  assert.equal(replay.statusCode, 202); assert.equal(replay.json().call.id, history[0].id);
+  assert.equal(app.controller.history(10).items.length, 1);
 });

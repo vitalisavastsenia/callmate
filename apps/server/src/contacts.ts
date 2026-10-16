@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { ContactDetailsSchema, ContactSchema, IdSchema, api, type ContactDetails } from "@callmate/contracts";
 import type { FastifyInstance } from "fastify";
-import { CommandError } from "./errors.js";
+import { CommandError, parseRequest } from "./errors.js";
 import type { Store } from "./storage.js";
 
 type Row = { id: string; name: string; phone: string; time_zone: string; tone: string; notes: string };
@@ -49,18 +49,18 @@ export function contactStore(db: Database.Database) {
 }
 
 export function contactRoutes(app: FastifyInstance, store: Store) {
-  const id = (params: unknown) => IdSchema.parse((params as { contactId: string }).contactId);
+  const id = (params: unknown) => parseRequest(IdSchema, (params as { contactId: string }).contactId);
   app.get(api.listContacts.path, async () => api.listContacts.response.parse({ items: store.contacts.list() }));
   app.post(api.createContact.path, async (request, reply) => reply.code(201).send(api.createContact.response.parse({
-    contact: store.contacts.save(api.createContact.request.parse(request.body)),
+    contact: store.contacts.save(parseRequest(api.createContact.request, request.body)),
   })));
   app.put(api.updateContact.path, async request => api.updateContact.response.parse({
-    contact: store.contacts.save(api.updateContact.request.parse(request.body), id(request.params)),
+    contact: store.contacts.save(parseRequest(api.updateContact.request, request.body), id(request.params)),
   }));
   app.delete(api.deleteContact.path, async request => {
     const contactId = id(request.params); store.contacts.remove(contactId);
     return api.deleteContact.response.parse({ contactId, deleted: true });
   });
   app.post(api.importContacts.path, async request => api.importContacts.response.parse(
-    store.contacts.import(api.importContacts.request.parse(request.body).contacts)));
+    store.contacts.import(parseRequest(api.importContacts.request, request.body).contacts)));
 }

@@ -1,7 +1,7 @@
 import { PassThrough } from "node:stream";
 import type { FastifyInstance } from "fastify";
 import { AttemptParamsSchema, EventCursorSchema, IdSchema, api } from "@callmate/contracts";
-import { CommandError } from "./errors.js";
+import { CommandError, parseRequest } from "./errors.js";
 import type { CallController } from "./call-controller.js";
 
 export function callRoutes(app: FastifyInstance, controller: CallController) {
@@ -15,24 +15,24 @@ export function callRoutes(app: FastifyInstance, controller: CallController) {
       stream.once("close", () => clearTimeout(forceClose));
     }
   });
-  const attemptId = (params: unknown) => AttemptParamsSchema.parse(params).attemptId;
-  const key = (headers: Record<string, unknown>) => IdSchema.parse(headers["idempotency-key"]);
+  const attemptId = (params: unknown) => parseRequest(AttemptParamsSchema, params).attemptId;
+  const key = (headers: Record<string, unknown>) => parseRequest(IdSchema, headers["idempotency-key"]);
   app.post(api.createPlan.path, async (request, reply) => reply.code(201).send(api.createPlan.response.parse({
-    plan: controller.createPlan(api.createPlan.request.parse(request.body)),
+    plan: controller.createPlan(parseRequest(api.createPlan.request, request.body)),
   })));
   app.post(api.startCall.path, async (request, reply) => reply.code(202).send(api.startCall.response.parse({
-    call: await controller.start(api.startCall.request.parse(request.body), key(request.headers)),
+    call: await controller.start(parseRequest(api.startCall.request, request.body), key(request.headers)),
   })));
   app.get(api.getCall.path, async (request) => api.getCall.response.parse({ call: controller.get(attemptId(request.params)) }));
   app.post(api.stopCall.path, async (request, reply) => {
-    api.stopCall.request.parse(request.body);
+    parseRequest(api.stopCall.request, request.body);
     return reply.code(202).send(api.stopCall.response.parse({ call: await controller.stop(attemptId(request.params)) }));
   });
   app.post(api.decideApproval.path, async (request) => api.decideApproval.response.parse({
-    call: controller.decide(attemptId(request.params), api.decideApproval.request.parse(request.body), key(request.headers)),
+    call: controller.decide(attemptId(request.params), parseRequest(api.decideApproval.request, request.body), key(request.headers)),
   }));
   app.get(api.history.path, async (request) => {
-    const query = api.history.query.parse(request.query);
+    const query = parseRequest(api.history.query, request.query);
     return api.history.response.parse(controller.history(query.limit, query.cursor));
   });
   app.delete(api.deleteConversation.path, async (request) =>

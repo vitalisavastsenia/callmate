@@ -2,7 +2,7 @@ import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { api } from "@callmate/contracts";
-import { CommandError } from "./errors.js";
+import { CommandError, parseRequest } from "./errors.js";
 import type { Store } from "./storage.js";
 
 const derive = promisify(scrypt);
@@ -50,7 +50,7 @@ export function mountAuth(app: FastifyInstance, store: Store) {
         reply.header("Retry-After", "300");
         throw new CommandError(429, "AUTH_RATE_LIMITED", "Too many sign-in attempts. Try again in five minutes.");
       }
-      const body = route.request.parse(request.body);
+      const body = parseRequest(route.request, request.body);
       let owner = store.auth.owner();
       if (setup && owner) throw new CommandError(409, "AUTH_ALREADY_CONFIGURED", "An owner account already exists. Sign in instead.");
       const salt = setup ? randomBytes(16).toString("hex") : owner?.salt ?? "0".repeat(32);
@@ -72,7 +72,7 @@ export function mountAuth(app: FastifyInstance, store: Store) {
     });
   }
   app.post(api.authLogout.path, async (request, reply) => {
-    api.authLogout.request.parse(request.body);
+    parseRequest(api.authLogout.request, request.body);
     const hash = sessionHash(request); store.auth.removeSession(hash);
     for (const close of streams.get(hash) ?? []) close();
     reply.header("Set-Cookie", cookie("", 0));

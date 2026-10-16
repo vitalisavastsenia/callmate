@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Config } from "./config.js";
 import type { DevelopmentConversations } from "./development-conversations.js";
-import { CommandError } from "./errors.js";
+import { CommandError, parseRequest } from "./errors.js";
 import { mockRelayEnabled } from "./mock-relay.js";
 
 /** Official form-encoded progress events, restricted to the signed local mock path. */
@@ -27,7 +27,7 @@ export function mountMockStatus(app: FastifyInstance, config: Config, conversati
       if (request.headers["content-type"]?.split(";")[0]?.trim().toLowerCase() !== "application/x-www-form-urlencoded") {
         throw new CommandError(400, "INVALID_REQUEST", "Mock callbacks require form encoding");
       }
-      const { id } = z.object({ id: z.uuid() }).parse(request.params);
+      const { id } = parseRequest(z.object({ id: z.uuid() }), request.params);
       const signature = request.headers["x-twilio-signature"];
       conversations.receiveStatus(id, request.body as Record<string, string>, typeof signature === "string" ? signature : "",
         { path: request.raw.url ?? "", host: request.headers.host ?? "" });
