@@ -12,7 +12,7 @@ export function mockRelayEnabled(config: Config) {
     && ["development", "test"].includes(config.nodeEnv);
 }
 export type RelaySend = (message: RelayOutbound) => void;
-export type RelayConsumer = { activity?(): boolean; speech?(): void; interrupt?(): void; prompt(text: string, language: string): void; close(): void };
+export type RelayConsumer = { maxPromptLength?: number; activity?(): boolean; speech?(): void; interrupt?(): void; prompt(text: string, language: string): void; close(): void };
 type AttachRelay = (setup: Extract<RelayInbound, { type: "setup" }>, send: RelaySend, disconnect: () => void) => RelayConsumer | undefined;
 
 /** Development transport in the existing backend. It cannot invoke booking or live providers. */
@@ -80,8 +80,10 @@ export function mountMockRelay(app: FastifyInstance, config: Config, maxDuration
         }
         if (!setup) { stop(1008, "Expected setup first"); return; }
         if (message.type === "prompt") {
-          if (!/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(message.lang) || message.lang.length > 35
-            || partial.length + message.voicePrompt.length > 8000) { stop(1007, "Invalid prompt or language"); return; }
+          if (!/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(message.lang) || message.lang.length > 35) { stop(1007, "Invalid prompt or language"); return; }
+          if (partial.length + message.voicePrompt.length > (consumer?.maxPromptLength ?? 8000)) {
+            stop(1007, "Prompt exceeds conversation text limit"); return;
+          }
           if (partial && message.lang !== language) { stop(1007, "Partial prompt language changed"); return; }
           if (message.voicePrompt.trim()) consumer?.speech?.();
           if (message.voicePrompt.trim() && consumer?.activity?.() === false) { partial = ""; return; }

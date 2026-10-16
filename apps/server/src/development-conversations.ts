@@ -4,7 +4,7 @@ import { dialogueLanguage } from "@callmate/dialogue";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { FastifyInstance } from "fastify";
-import { ManualCallSnapshotSchema, CallSnapshotSchema, ApprovedPlanSchema, DomainEventSchema, TranscriptMessageSchema } from "@callmate/contracts";
+import { ManualCallSnapshotSchema, CallSnapshotSchema, ApprovedPlanSchema, DomainEventSchema, TranscriptMessageSchema, ManualTranscriptMessageSchema } from "@callmate/contracts";
 import type { DomainEvent, ManualCallSnapshot, CallSnapshot, ApprovalDecision, ReviewPlan } from "@callmate/contracts";
 import { z } from "zod";
 import twilio from "twilio";
@@ -506,6 +506,7 @@ export class DevelopmentConversations {
     });
     send({ type: "text", token: a.call.messages[0]!.originalText, lang: "language" in a.call ? a.call.language : dialogueLanguage(a.call.plan), last: true, interruptible: true, preemptible: true });
     return {
+      maxPromptLength: a.call.plan ? TranscriptMessageSchema.shape.originalText.maxLength! : ManualTranscriptMessageSchema.shape.originalText.maxLength!,
       activity: () => this.activity(id),
       speech: () => this.dialogue.speech(id),
       interrupt: () => this.dialogue.interrupt(id),

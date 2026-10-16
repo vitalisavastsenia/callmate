@@ -1668,3 +1668,36 @@ test('rejected offer retains its reservation on failed hangup and retries withou
   assert.equal((await f.snapshot()).outcome.reason, 'policy_declined');
   assert.equal((await f.snapshot()).messages.filter(m => m.phrase?.id.endsWith('.closing')).length, 1);
 });
+
+for (const [language, fragments] of [['en-US', [4000]], ['ru-RU', [2000, 2000]]]) {
+  test(`reviewed prompt limit/${language}: accepts exactly 4000 characters across final or partial frames`, async t => {
+    const f = await dialogueCall(t, { async generate(input) { return dialogueProposal(input, { action: 'repeat', reason: 'not_understood' }); } }, { language });
+    fragments.forEach((size, index) => f.prompt('x'.repeat(size), index === fragments.length - 1));
+    await until(() => f.peer.messages.length === 2);
+    const call = await f.snapshot();
+    assert.equal(call.callState, 'connected');
+    assert.equal(call.messages.find(m => m.speaker === 'business').originalText.length, 4000);
+    assert.equal(f.peer.messages[1].lang, language);
+  });
+}
+for (const [language, fragments] of [['es-ES', [4001]], ['pl-PL', [4000, 1]]]) {
+  test(`reviewed prompt limit/${language}: rejects oversize input at ingress without persisting a partial transcript`, async t => {
+    let turns = 0;
+    const f = await dialogueCall(t, { async generate(input) { turns++; return dialogueProposal(input, { action: 'ask_availability' }); } }, { language });
+    fragments.forEach((size, index) => f.prompt('x'.repeat(size), index === fragments.length - 1));
+    assert.equal(await f.peer.closed, 1007);
+    assert.equal(turns, 0); assert.equal((await f.snapshot()).messages.length, 1);
+    await f.app.runtime.development.tick();
+    assert.equal((await f.snapshot()).callState, 'ended'); assert.equal(f.app.hungUp, 1);
+  });
+}
+
+test('manual relay retains its 8000 character transcript limit', async t => {
+  const app = await fixture(t, { development: { automatic: false } });
+  const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  const peer = await app.answer(created.callSid); await until(() => peer.messages.length === 1);
+  peer.send(JSON.stringify({ type: 'prompt', voicePrompt: 'x'.repeat(8000), lang: 'es-ES', last: true }));
+  await until(() => app.runtime.controller.get(created.id).messages.length === 2);
+  const call = app.runtime.controller.get(created.id);
+  assert.equal(call.messages[1].originalText.length, 8000); assert.equal(call.callState, 'connected');
+});
