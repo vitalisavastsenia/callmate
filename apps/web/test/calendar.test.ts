@@ -35,3 +35,21 @@ describe('business timezone dates', () => {
     expect(resolveTime('2026-10-20', '17:00', 'Atlantic/Canary').instant).toBe('2026-10-20T16:00:00.000Z');
   });
 });
+
+// The mode is the authority for simulation labelling, not text in the outcome.
+it.each(['simulator', 'live'] as const)('exports %s with an honest event title and status', mode => {
+  const call = structuredClone(confirmedCallFixture); call.mode = mode;
+  const text = calendarText(call).replace(/\r\n /g, '');
+  if (mode === 'simulator') {
+    expect(text).toContain('SUMMARY:[Simulation] ');
+    expect(text).toContain('DESCRIPTION:Simulation only. No real business appointment was confirmed. ');
+    expect(text).toContain('STATUS:TENTATIVE');
+    expect(text).not.toContain('STATUS:CONFIRMED');
+  } else {
+    expect(text).not.toContain('[Simulation]'); expect(text).not.toContain('Simulation only');
+    if (call.outcome.status !== 'confirmed') throw new Error();
+    expect(text).toContain('SUMMARY:' + call.outcome.offer.service + ' · ' + call.plan.request.business.name);
+    expect(text).toContain('STATUS:CONFIRMED');
+  }
+  expect(text).toContain('DTSTART:20261020T160000Z'); expect(text).not.toContain('DTEND');
+});

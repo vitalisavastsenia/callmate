@@ -113,3 +113,5 @@ If browser storage is blocked or full, the app shows a recovery notice and disab
 **Delete conversation text** opens a confirmation naming the business and explaining permanent removal. Cancel is focused first. The dialog stays open on failure for retry and blocks repeated submission or dismissal while deletion is pending.
 
 The contact picker keeps the active keyboard option visible in long lists, including **Import contacts**, while retaining focus in the name field. Arrow navigation does not change the selected destination until Enter.
+
+Calendar exports from simulator calls use `[Simulation]` in the event title, explain that no real business appointment was confirmed, and carry `STATUS:TENTATIVE`. Live confirmed appointments keep `STATUS:CONFIRMED`. Both preserve the appointment instant/timezone and omit an end time when duration is unknown.

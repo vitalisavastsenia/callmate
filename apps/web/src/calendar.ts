@@ -22,13 +22,14 @@ export function calendarText(value: CallSnapshot): string {
   if (call.outcome.status !== 'confirmed') throw new Error('Only confirmed bookings can be exported.');
   const offer = call.outcome.offer;
   const time = offer.appointment;
-  const details = 'Booked under ' + offer.bookingName + '. Business local time: ' + time.localDate + ' ' + time.localTime + ' (' + time.timeZone + '). ' + (offer.durationMinutes === null ? 'Duration unknown; confirm with the business.' : 'Duration: ' + offer.durationMinutes + ' minutes.');
+  const simulation = call.mode === 'simulator';
+  const details = (simulation ? 'Simulation only. No real business appointment was confirmed. ' : '') + 'Booked under ' + offer.bookingName + '. Business local time: ' + time.localDate + ' ' + time.localTime + ' (' + time.timeZone + '). ' + (offer.durationMinutes === null ? 'Duration unknown; confirm with the business.' : 'Duration: ' + offer.durationMinutes + ' minutes.');
   const rows = [
     'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Zeus Llama//Confirmed appointments//EN', 'CALSCALE:GREGORIAN',
     'X-WR-TIMEZONE:' + time.timeZone, 'BEGIN:VEVENT', 'UID:' + call.id + '@zeus-llama.local',
     'DTSTAMP:' + stamp(call.outcome.confirmedAt), 'DTSTART:' + stamp(time.instant),
-    'SUMMARY:' + escapeText(offer.service + ' · ' + call.plan.request.business.name),
-    'LOCATION:' + escapeText(call.plan.request.business.name), 'DESCRIPTION:' + escapeText(details), 'STATUS:CONFIRMED',
+    'SUMMARY:' + escapeText((simulation ? '[Simulation] ' : '') + offer.service + ' · ' + call.plan.request.business.name),
+    'LOCATION:' + escapeText(call.plan.request.business.name), 'DESCRIPTION:' + escapeText(details), simulation ? 'STATUS:TENTATIVE' : 'STATUS:CONFIRMED',
   ];
   if (offer.durationMinutes !== null) rows.push('DTEND:' + stamp(new Date(Date.parse(time.instant) + offer.durationMinutes * 60_000).toISOString()));
   rows.push('END:VEVENT', 'END:VCALENDAR');

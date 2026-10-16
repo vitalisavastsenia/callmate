@@ -120,7 +120,14 @@ test('inline request → exact approval → result → history, calendar, deleti
   await expect(details.getByRole('log', { name: 'Call transcript' })).toBeVisible();
   const download = page.waitForEvent('download');
   await details.getByRole('button', { name: 'Download calendar (.ics)', exact: true }).click();
-  expect((await download).suggestedFilename()).toMatch(/zeus-llama-.*\.ics/);
+  const artifact = await download;
+  expect(artifact.suggestedFilename()).toMatch(/zeus-llama-.*\.ics/);
+  const chunks: Buffer[] = [];
+  for await (const chunk of (await artifact.createReadStream())!) chunks.push(chunk);
+  const calendar = Buffer.concat(chunks).toString('utf8').replace(/\r\n /g, '');
+  expect(calendar).toContain('SUMMARY:[Simulation] ');
+  expect(calendar).toContain('No real business appointment was confirmed.');
+  expect(calendar).toContain('STATUS:TENTATIVE');
   await expect(details.getByText('Duration is unknown.', { exact: false })).toBeVisible();
   await details.getByRole('button', { name: 'Delete conversation text', exact: true }).click();
   const confirmation = page.getByRole('dialog', { name: 'Delete conversation text?', exact: true });
