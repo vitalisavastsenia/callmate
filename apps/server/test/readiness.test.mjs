@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { reviewPlanFixture } from '@callmate/contracts/fixtures';
 import { authHeaders } from './fixtures/auth.mjs';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -80,7 +82,7 @@ test('disabled, production and live mock gates never probe the provider', async 
   for (const env of [{ TELEPHONY_PROVIDER: 'fake' }, { NODE_ENV: 'production' }, { CALLMATE_MODE: 'live' }]) {
     const app = await fixture(t, env, { status: 503 });
     const report = await app.report(); const caps = capabilities(report);
-    assert.equal(report.ready, env.CALLMATE_MODE !== 'live'); assert.equal(check(report, 'mock').status, 'not_required');
+    assert.equal(report.ready, env.CALLMATE_MODE !== 'live' && env.NODE_ENV !== 'production'); assert.equal(check(report, 'mock').status, 'not_required');
     assert.equal(caps.manual_mock_calls.enabled, false); assert.equal(caps.mock_relay.ready, false);
     assert.equal(caps.live_calls.enabled, false); assert.equal(app.requests.length, 0);
     if (env.CALLMATE_MODE === 'live') {
@@ -172,5 +174,32 @@ test('readiness is private and origin-checked before any probe runs', async (t) 
   for (const headers of [{ host: 'external.example' }, { host: 'localhost:3000', origin: 'https://external.example' }]) {
     const response = await app.runtime.privateApi.inject({ url: '/api/v1/readiness', headers }); assert.equal(response.statusCode, 400);
   }
+  assert.equal(app.requests.length, 0);
+});
+
+for (const provider of ['mock', 'fake']) test(`production ${provider}: readiness agrees with Start and never silently switches transports`, async t => {
+  const app = await fixture(t, { NODE_ENV: 'production', TELEPHONY_PROVIDER: provider });
+  const report = await app.report();
+  assert.equal(report.ready, provider === 'fake');
+  assert.equal(check(report, 'telephony').status, provider === 'fake' ? 'ready' : 'failed');
+  const caps = capabilities(report);
+  assert.equal(caps.scripted_calls.ready, provider === 'fake');
+  assert.equal(caps.manual_mock_calls.ready, false); assert.equal(caps.dialogue_integration.ready, false);
+  assert.equal(caps.approvals.ready, provider === 'fake');
+  const request = structuredClone(reviewPlanFixture.request);
+  const year = new Date().getUTCFullYear() + 1;
+  for (const window of request.availability) for (const endpoint of [window.start, window.end]) {
+    endpoint.localDate = `${year}-10-20`; endpoint.instant = endpoint.instant.replace(/^\d{4}/, String(year));
+  }
+  const plan = app.runtime.controller.createPlan(request);
+  const headers = { host: 'localhost:3000', ...authHeaders(app.dataDir) };
+  const response = await app.runtime.privateApi.inject({ method: 'POST', url: '/api/v1/calls', headers: {
+    ...headers, 'content-type': 'application/json', 'idempotency-key': randomUUID() }, payload: { planId: plan.id, planVersion: plan.version, mode: 'simulator' } });
+  assert.equal(response.statusCode, provider === 'fake' ? 202 : 503);
+  if (provider === 'mock') {
+    assert.equal(response.json().error.code, 'PROVIDER_NOT_READY');
+    assert.equal(app.runtime.controller.history(10).items.length, 0);
+  }
+  assert.equal((await app.runtime.privateApi.inject({ url: '/health', headers })).statusCode, 200);
   assert.equal(app.requests.length, 0);
 });

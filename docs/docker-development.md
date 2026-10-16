@@ -644,3 +644,5 @@ Relay consumer failures, including SQLite errors during partial speech, DTMF or 
 Reviewed Start rechecks its durable idempotency record after the asynchronous Codex login probe. A concurrently created attempt is replayed with its existing ID even when the later probe fails; a different command body still returns `409 IDEMPOTENCY_CONFLICT`.
 
 Rejecting an exact reviewed offer persists `policy_declined`, sends a controlled closing in the reviewed language and a relay end frame, then requests REST hangup. The reservation remains active until provider completion is confirmed. Failed hangups retry through the existing recovery path; idempotent rejection replay does not repeat closing speech.
+
+With `NODE_ENV=production` and `TELEPHONY_PROVIDER=mock`, readiness is false and telephony reports the disabled mock transport; Start remains rejected without scripted fallback. Readable history and health remain available. Use the explicitly selected `fake` provider for scripted production simulation, or development/test mode for local mock calls.

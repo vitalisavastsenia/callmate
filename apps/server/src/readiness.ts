@@ -35,14 +35,17 @@ export class Readiness {
     const base = configuration && storage;
     const simulator = this.config.mode === "simulator";
     const mockEnabled = mockRelayEnabled(this.config);
+    const callTransport = simulator && (mockEnabled || this.config.telephonyProvider === "fake");
     const mock = mockEnabled && base ? await this.mockAvailable() : false;
     checks.push({ name: "mock", status: !mockEnabled ? "not_required" : mock ? "ready" : "failed",
       message: !mockEnabled ? "Manual mock transport is disabled; no connectivity probe sent"
         : !base ? "Mock connectivity was not checked because local prerequisites failed"
         : mock ? "Local mock health endpoint responded with the expected service identity"
         : "Local mock health check failed or timed out" });
-    checks.push({ name: "telephony", status: simulator ? "ready" : "missing",
-      message: simulator ? (mockEnabled ? "Local mock telephony is enabled; real calling is disabled" : "Scripted fake telephony is installed; real calling is disabled") : "Live telephony is not implemented" });
+    checks.push({ name: "telephony", status: !simulator ? "missing" : callTransport ? "ready" : "failed",
+      message: !simulator ? "Live telephony is not implemented" : !callTransport
+        ? "The configured mock transport is disabled outside development/test; select fake telephony for scripted production simulation"
+        : mockEnabled ? "Local mock telephony is enabled; real calling is disabled" : "Scripted fake telephony is installed; real calling is disabled" });
     checks.push({ name: "voice", status: !simulator ? "missing" : !mockEnabled ? "not_required" : mock && base ? "ready" : "failed",
       message: !simulator ? "Live voice is not implemented" : !mockEnabled ? "Scripted text playback needs no voice provider"
         : "Local mock relay handler is enabled; callback and WebSocket round trips have not been probed" });
@@ -57,12 +60,12 @@ export class Readiness {
     checks.push({ name: "tunnel", status: simulator ? "not_required" : "missing",
       message: simulator ? "Local development needs no public tunnel" : "Public tunnel connectivity has not been verified" });
     const capability = (name: Capability["name"], enabled: boolean, available = base): Capability => ({ name, enabled, ready: enabled && available });
-    return ReadinessSchema.parse({ mode: this.config.mode, ready: base && simulator && (!mockEnabled || mock), voiceEngine: this.dialogueEnabled ? "conversation_relay" : null,
+    return ReadinessSchema.parse({ mode: this.config.mode, ready: base && callTransport && (!mockEnabled || mock), voiceEngine: this.dialogueEnabled ? "conversation_relay" : null,
       checks, capabilities: [
         capability("scripted_calls", simulator && this.config.telephonyProvider === "fake" && !this.dialogueEnabled), capability("manual_mock_calls", mockEnabled, base && mock),
         capability("mock_relay", mockEnabled, base && mock), capability("mock_status_callbacks", mockEnabled, base && mock),
-        capability("history", true), capability("approvals", simulator), capability("automatic_retention", true),
-        capability("test_rate_budgets", simulator && this.config.testRateMinorPerMinute !== undefined),
+        capability("history", true), capability("approvals", callTransport), capability("automatic_retention", true),
+        capability("test_rate_budgets", callTransport && this.config.testRateMinorPerMinute !== undefined),
         capability("live_calls", false), capability("dialogue_integration", this.dialogueEnabled, dialogueReady && mock), capability("provider_billing", false),
       ] });
   }
