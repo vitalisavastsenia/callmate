@@ -51,6 +51,8 @@ Destination contacts use the shared `/api/v1/contacts` backend routes through `s
 
 Scenarios: within-plan confirmation, alternative time, price above limit, changed offer, disconnect near confirmation, no answer, and interrupted assistant speech. Approve/reject/expiry and Stop create additional outcome branches. Script updates are 1.8 seconds apart; the offer normally appears in about 9 seconds. Non-booking calls use a separate information script and never enter appointment acceptance. The clinic template supplies an example identification/medical-records answer, while referral requirements remain open. Arbitrary questions are explicitly unanswered; custom tasks and change/cancel requests finish with follow-up needed. The simulator does not execute arbitrary goals or actually change/cancel existing bookings. Booking-only price/time scenarios use the information script for other request types; no-answer, interruption, and uncertainty remain available.
 
+For haircut offers, unstated deposit, cancellation-fee, and paid-add-on terms stay visibly unknown and do not disable exact-offer approval, including when the price exceeds your limit. Explicitly required payment conditions still block approval. Other templates require those terms to be confirmed before approval, matching the dialogue policy.
+
 The fake backend enforces its 30-second approval deadline, one-active-attempt check, duration cap, and synthetic estimated-spend cap. Do not interpret these as provider guarantees.
 
 Refreshing restores the same attempt, never starts another one. While no tab is running the fake backend cannot execute code; on return it checks saved state/deadlines and resumes. Real calls must continue independently in the actual backend.

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { verifyMockConfirmation } from '../dist/mock-confirmation.js';
+import { verifyMockConfirmation, verifyMockReadback } from '../dist/mock-confirmation.js';
 const verdict = (language, originalText) => verifyMockConfirmation({ evidence: [{ language, originalText }] });
 for (const [language, positive, negative] of [
   ['ru-RU', [
@@ -45,4 +45,43 @@ for (const [language, positive, negative] of [
 ]) test(`bounded mock confirmation: ${language} preserves negation, changed facts and uncertainty`, () => {
   for (const text of positive) assert.equal(verdict(language, text), 'affirmed', text);
   for (const text of negative) assert.equal(verdict(language, text), 'ambiguous', text);
+});
+
+test('bounded mock verifiers clarify questions that otherwise match affirmations', () => {
+  for (const [language, originalText] of [
+    ['es-ES', '¿Confirmado?'],
+    ['es-ES', '¿La reserva está confirmada?'],
+    ['es-ES', '¿Confirmado'],
+    ['es-ES', 'Confirmado?'],
+    ['ru-RU', 'Запись подтверждена?'],
+    ['en-US', 'The appointment is booked?'],
+    ['pl-PL', 'Rezerwacja jest potwierdzona?'],
+  ]) {
+    const context = { evidence: [{ language, originalText }] };
+    assert.equal(verifyMockConfirmation(context), 'ambiguous', originalText);
+    assert.equal(verifyMockReadback(context), 'ambiguous', originalText);
+  }
+});
+
+for (const [language, invitation, corrections] of [
+  ['ru-RU', 'Да всё так вас записать в это время', [
+    'Вас записать в это время?', 'Да всё так, но цена другая, вас записать в это время?',
+    'Наверное всё так вас записать в это время',
+  ]],
+  ['es-ES', 'Sí, todo correcto. ¿Le reservo la cita a esa hora?', [
+    '¿Le reservo la cita a esa hora?', 'Sí, todo correcto, pero son 60 euros. ¿Le reservo la cita a esa hora?',
+  ]],
+  ['en-US', "Yes, that's all correct. Shall I book you for that time?", [
+    'Shall I book you for that time?', "Yes, that's all correct, but the price changed. Shall I book you for that time?",
+  ]],
+  ['pl-PL', 'Tak, wszystko się zgadza. Czy zapisać panią na tę godzinę?', [
+    'Czy zapisać panią na tę godzinę?', 'Tak, wszystko się zgadza, ale cena jest inna. Czy zapisać panią na tę godzinę?',
+  ]],
+]) test(`bounded mock readback: ${language} distinguishes agreement with an invitation from a completed booking`, () => {
+  const context = originalText => ({ evidence: [{ language, originalText }] });
+  assert.equal(verifyMockReadback(context(invitation)), 'affirmed');
+  assert.equal(verifyMockConfirmation(context(invitation)), 'ambiguous');
+  for (const text of corrections) assert.equal(verifyMockReadback(context(text)), 'ambiguous', text);
+  assert.equal(verifyMockReadback({ evidence: [] }), 'ambiguous');
+  assert.equal(verifyMockReadback({ evidence: [...context(invitation).evidence, ...context(invitation).evidence] }), 'ambiguous');
 });

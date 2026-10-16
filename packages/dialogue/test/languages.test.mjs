@@ -45,10 +45,19 @@ for (const language of Object.keys(texts)) test(`haircut controlled dialogue: ${
   message.playback = 'played';
   const allowed = policy.evaluate({ snapshot, candidate, now, grant: null });
   assert.equal(allowed.decision, 'allow');
-  assert.equal(allowed.approvedSpanishText, renderAction(candidate, snapshot.plan, snapshot.activeOffer).text);
+  const acceptance = renderAction(candidate, snapshot.plan, snapshot.activeOffer);
+  assert.equal(allowed.approvedSpanishText, acceptance.text);
+  assert.equal(readback.phrase.version, 2);
+  assert.equal(acceptance.phrase.version, 2);
+  assert.doesNotMatch(acceptance.text + acceptance.translationEn, /\?/);
+  for (const fact of ['Alex Example', '18:00']) assert.ok(acceptance.text.includes(fact));
+  assert.doesNotMatch(readback.text + readback.translationEn, /not accepting|пока не принимаю|no estoy aceptando|nie akceptuję/);
+  const confirmDetails = renderReply('confirm_details', snapshot.plan);
+  assert.equal(confirmDetails.phrase.version, 2);
+  assert.doesNotMatch(confirmDetails.text + confirmDetails.translationEn, /not accepted|пока не принимаю|no he aceptado|nie akceptuję/);
   assert.match(readback.text, /Alex Example/); assert.match(readback.text, /18:00/);
   assert.doesNotMatch(allowed.approvedSpanishText, /Europe\/Madrid|UTC[+-]/);
-  assert.match(readback.translationEn, /not accepting/); assert.match(readback.translationEn, /25.00 EUR/);
+  assert.match(readback.translationEn, /Just to check:/); assert.match(readback.translationEn, /25.00 EUR/);
 });
 
 test('phrase catalog is complete, versioned and rejects missing entries; interpolation is literal', () => {
@@ -63,12 +72,17 @@ test('phrase catalog is complete, versioned and rejects missing entries; interpo
   assert.match(defaultPhraseLookup('haircut.availability', 2, 'en-US'), /I am an AI assistant/);
   assert.doesNotMatch(defaultPhraseLookup('haircut.availability', 3, 'en-US'), /I am an AI assistant/);
   for (const language of Object.keys(texts)) {
+    for (const key of ['readback', 'acceptance', 'confirm_details']) {
+      assert.notEqual(defaultPhraseLookup(`haircut.${key}`, 1, language), defaultPhraseLookup(`haircut.${key}`, 2, language));
+    }
     assert.match(defaultPhraseLookup('haircut.window', 1, language), /\{startZone\}.*\{endZone\}/);
     assert.doesNotMatch(defaultPhraseLookup('haircut.window', 2, language), /Zone\}/);
     assert.match(defaultPhraseLookup('restaurant.details', 1, language), /\{zone\}/);
     assert.doesNotMatch(defaultPhraseLookup('restaurant.details', 2, language), /\{zone\}/);
     assert.notEqual(defaultPhraseLookup('haircut.clarify_time', 1, language), defaultPhraseLookup('haircut.clarify_time', 2, language));
   }
+  assert.match(defaultPhraseLookup('haircut.readback', 1, 'ru-RU'), /Я пока не принимаю предложение о записи/);
+  assert.match(defaultPhraseLookup('haircut.acceptance', 1, 'ru-RU'), /Я принимаю запись на следующих условиях/);
   assert.ok(renderReply('greeting', snapshot.plan).text.includes('{windows} $&'));
   assert.equal(defaultPhraseLookup('haircut.greeting', 1, 'en-US'), 'Hello, I am an AI assistant. I am calling to ask about a haircut appointment. Could you help me?');
   snapshot.plan.request.bookingName = '';

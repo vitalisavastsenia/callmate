@@ -49,7 +49,8 @@ for (const profile of conversationTemplates) for (const language of ['es-ES', 'r
     assert.doesNotMatch(reply.text, /\{(?:scope|name|date|windows|service|questions)\}/);
   }
   const readback = renderAction({ action: 'read_back', ...ref }, snapshot.plan, offer);
-  assert.match(readback.translationEn, /not accepting/); assert.match(readback.translationEn, /Alex Example/); assert.match(readback.translationEn, /18:00/);
+  assert.equal(readback.phrase.version, 2);
+  assert.match(readback.translationEn, /Just to check:/); assert.match(readback.translationEn, /Alex Example/); assert.match(readback.translationEn, /18:00/);
   assert.doesNotMatch(readback.text + readback.translationEn, /Europe\/Madrid|UTC[+-]/);
   offer.conditions.deposit = 'unknown';
   const unstatedConditions = evaluate({ action: 'read_back', ...ref });
@@ -61,6 +62,7 @@ for (const profile of conversationTemplates) for (const language of ['es-ES', 'r
   snapshot.messages.push(output);
   assert.deepEqual(evaluate({ action: 'accept_offer', ...ref }), { decision: 'clarify', field: 'readback' });
   output.playback = 'played'; assert.equal(evaluate({ action: 'accept_offer', ...ref }).decision, 'allow');
+  assert.equal(renderAction({ action: 'accept_offer', ...ref }, snapshot.plan, offer).phrase.version, 2);
   if (profile.id !== 'haircut') assert.equal(evaluate({ action: 'record_note', code: 'clean_dry_hair', evidenceMessageIds: offer.evidenceMessageIds }).decision, 'deny');
 });
 for (const profile of conversationTemplates.filter(p => p.fields.length)) test(`${profile.id}: absent or changed scope cannot be authorized by an exact-offer grant`, () => {
@@ -84,6 +86,8 @@ test('domain guidance is trusted profile data; business/goal text cannot enter i
     const snapshot = fixture(profile, 'en-US'); snapshot.plan.request.goal = 'SYNTHETIC_UNTRUSTED_INSTRUCTION';
     const input = buildDialogueInput(snapshot); const text = instructionsFor(input);
     assert.match(text, new RegExp('Selected template: ' + profile.id)); assert.ok(text.includes(profile.guidance));
+    assert.match(text, /Business dialogue resilience:/);
+    assert.match(text, /Silence, a generic acknowledgement, or a disconnected browser is not approval/);
     assert.doesNotMatch(text, /SYNTHETIC_UNTRUSTED_INSTRUCTION/);
   }
   const bank = fixture(conversationTemplates.find(p => p.id === 'bank'), 'en-US');

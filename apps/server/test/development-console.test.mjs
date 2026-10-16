@@ -1128,12 +1128,12 @@ test('dialogue mock: controller reserves offer identities; exact user approval p
   };
   assert.equal((await decide({ ...body, offer: { ...body.offer, offerVersion: 99 } }, randomUUID())).status, 409);
   const key = randomUUID(); const accepted = await decide(body, key); assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
-  await until(() => f.peer.messages.some(m => m.token.includes('Todavía no estoy aceptando')));
+  await until(() => f.peer.messages.some(m => m.token.startsWith('Entonces,')));
   assert.equal((await decide(body, key)).status, 200);
   f.prompt('Sí, son correctos'); await until(() => f.app.runtime.controller.replayEvents(f.id, 0).some(e => e.type === 'call.error'));
   assert.equal(f.peer.messages.length, 3);
   call = await f.snapshot(); assert.equal(call.bookingState, 'reading_back'); assert.equal(call.outcome.status, 'pending');
-  assert.ok(!f.peer.messages.some(m => /^Acepto la cita/.test(m.token)));
+  assert.ok(!f.peer.messages.some(m => /^Perfecto, reserve la cita/.test(m.token)));
   await f.app.api(`/api/v1/calls/${f.id}/stop`, 'POST', {});
   assert.notEqual((await f.snapshot()).outcome.status, 'confirmed');
 });
@@ -1218,7 +1218,7 @@ test('dialogue mock: a changed offer invalidates the old approval and advances t
   const result = await fetch(f.app.apiOrigin + `/api/v1/calls/${f.id}/approvals`, { method: 'POST', headers: {
     ...f.app.auth, 'content-type': 'application/json', 'idempotency-key': randomUUID() }, body: JSON.stringify({
       approvalId: original.id, decision: 'approve', plan: original.plan, offer: { offerId: original.offer.id, offerVersion: original.offer.version } }) });
-  assert.equal(result.status, 409); assert.ok(!f.peer.messages.some(m => m.token.startsWith('Acepto')));
+  assert.equal(result.status, 409); assert.ok(!(await f.snapshot()).messages.some(m => m.phrase?.id.endsWith('.acceptance')));
 });
 
 test('dialogue mock: expired approval resolves and ends the provider call without accepting', async t => {
@@ -1227,6 +1227,42 @@ test('dialogue mock: expired approval resolves and ends the provider call withou
   const call = await f.snapshot(); assert.equal(call.pendingApproval, null); assert.equal(call.callState, 'ended');
   assert.equal(call.outcome.reason, 'policy_declined'); assert.equal(f.app.hungUp, 1);
   assert.ok(f.app.runtime.controller.replayEvents(f.id, 0).some(e => e.type === 'approval.resolved' && e.payload.status === 'expired'));
+});
+
+for (const [language, goodbye] of [
+  ['es-ES', /No vamos a aceptar.*Muchas gracias.*Hasta luego/],
+  ['ru-RU', /не будем принимать.*Большое спасибо.*До свидания/],
+  ['en-US', /not be accepting.*Thank you very much.*Goodbye/],
+  ['pl-PL', /Nie skorzystamy.*Bardzo dziękuję.*Do widzenia/],
+]) test(`dialogue mock: rejecting an offer sends a polite ${language} closing before ending, once`, async t => {
+  const f = await offeredDialogue(t, { language });
+  await until(() => f.peer.messages.length === 2);
+  const approval = (await f.snapshot()).pendingApproval;
+  const key = randomUUID();
+  const reject = () => fetch(f.app.apiOrigin + `/api/v1/calls/${f.id}/approvals`, { method: 'POST', headers: {
+    ...f.app.auth, 'content-type': 'application/json', 'idempotency-key': key }, body: JSON.stringify({
+    approvalId: approval.id, decision: 'reject', plan: approval.plan,
+    offer: { offerId: approval.offer.id, offerVersion: approval.offer.version },
+  }) });
+  assert.equal((await reject()).status, 200);
+  await until(() => f.peer.messages.some(m => m.type === 'end'));
+  assert.deepEqual(f.peer.messages.slice(-2).map(m => m.type), ['text', 'end']);
+  const closing = f.peer.messages.at(-2);
+  assert.equal(closing.lang, language); assert.match(closing.token, goodbye);
+  let call = await f.snapshot();
+  const message = call.messages.at(-1);
+  assert.deepEqual(message.phrase, { id: 'haircut.closing_declined', version: 1, language });
+  assert.equal(message.originalText, closing.token);
+  assert.equal(message.translationEn, 'Thank you for waiting. We will not be accepting this offer. Thank you very much for your time. Goodbye.');
+  assert.equal(call.pendingApproval, null); assert.equal(call.outcome.reason, 'policy_declined');
+  assert.ok(!call.messages.some(m => m.phrase?.id.endsWith('.acceptance')));
+  const count = f.peer.messages.length;
+  assert.equal((await reject()).status, 200);
+  assert.equal(f.peer.messages.length, count);
+  await f.app.callback([...f.app.calls.keys()][0], 'completed', 1);
+  call = await f.snapshot();
+  assert.equal(call.callState, 'ended'); assert.equal(call.outcome.reason, 'policy_declined');
+  assert.equal(call.messages.at(-1).originalText, closing.token);
 });
 
 test('dialogue mock: business refusal produces a controlled closing and relay end command', async t => {
@@ -1246,14 +1282,14 @@ test('dialogue mock: approval cannot release old-offer readback while newer cont
     ...f.app.auth, 'content-type': 'application/json', 'idempotency-key': randomUUID() }, body: JSON.stringify({
       approvalId: approval.id, decision: 'approve', plan: approval.plan, offer: { offerId: approval.offer.id, offerVersion: approval.offer.version } }) });
   assert.equal(result.status, 409); assert.equal((await f.snapshot()).pendingApproval.id, approval.id);
-  assert.ok(!f.peer.messages.some(m => m.token.includes('Todavía no estoy aceptando')));
+  assert.ok(!f.peer.messages.some(m => m.token.startsWith('Entonces,')));
 });
 
 for (const [language, hello, price, repeat, waiting, readback, unavailable, affirmation] of [
-  ['es-ES', 'Hola', /precio total/, /repetir/, /consultar esta propuesta/, /Todavía no estoy aceptando/, /Acepto la cita/, 'Sí, todo correcto, gracias'],
-  ['ru-RU', 'Здравствуйте', /стоимость стрижки/, /повторите/, /согласовать это предложение/, /пока не принимаю/, /Я принимаю запись/, 'Да всё так спасибо'],
-  ['en-US', 'Hello', /total price/, /repeat/, /check this proposal/, /not accepting/, /I accept the appointment/, 'Yes, that is correct, thank you'],
-  ['pl-PL', 'Dzień dobry', /cenę strzyżenia/, /powtórzyć/, /uzgodnić tę propozycję/, /Jeszcze nie akceptuję/, /Akceptuję termin/, 'Tak, wszystko się zgadza, dziękuję'],
+  ['es-ES', 'Hola', /precio total/, /repetir/, /consultar esta propuesta/, /Entonces,/, /Perfecto, reserve la cita/, 'Sí, todo correcto, gracias'],
+  ['ru-RU', 'Здравствуйте', /стоимость стрижки/, /повторите/, /согласовать это предложение/, /Правильно понимаю:/, /Отлично, запишите, пожалуйста:/, 'Да всё так спасибо'],
+  ['en-US', 'Hello', /total price/, /repeat/, /check this proposal/, /Just to check:/, /Great, please book the appointment/, 'Yes, that is correct, thank you'],
+  ['pl-PL', 'Dzień dobry', /cenę strzyżenia/, /powtórzyć/, /uzgodnić tę propozycję/, /Dla pewności:/, /Świetnie, proszę zarezerwować termin:/, 'Tak, wszystko się zgadza, dziękuję'],
 ]) test(`dialogue mock: ${language} reaches TwiML, model context, policy replies and durable transcript IDs`, async t => {
   let turn = 0; const inputs = [];
   const { offerFixture } = await import('@callmate/contracts/fixtures');
@@ -1297,7 +1333,7 @@ for (const [language, hello, price, repeat, waiting, readback, unavailable, affi
   assert.equal(call.messages.at(-1).phrase.id, 'haircut.acceptance');
   assert.ok(call.messages.filter(m => /\.(acceptance|readback)$/.test(m.phrase?.id ?? '')).every(m => m.playback === 'played'));
   const messages = call.messages.filter(m => m.speaker === 'assistant');
-  assert.ok(messages.every(m => m.language === language && m.phrase.language === language && m.phrase.version === (m.phrase.id.endsWith('.greeting') ? 3 : m.phrase.id.endsWith('.availability') ? 3 : 1) && m.translationEn));
+  assert.ok(messages.every(m => m.language === language && m.phrase.language === language && m.phrase.version === (/\.(greeting|availability)$/.test(m.phrase.id) ? 3 : /\.(readback|acceptance)$/.test(m.phrase.id) ? 2 : 1) && m.translationEn));
   assert.ok(messages.every(m => !/Europe\/Madrid|UTC[+-]/.test(m.originalText + m.translationEn)));
   assert.equal(call.activeOffer.appointment.timeZone, f.plan.request.availability[0].start.timeZone);
   assert.ok(f.peer.messages.every(m => m.lang === language));
@@ -1358,7 +1394,7 @@ for (const [index, profile] of domainProfiles.entries()) test(`domain mock: ${pr
   f.prompt(JSON.stringify({ service: profile.service[2], details, priceEUR: 25, appointment: f.plan.request.availability[0].start }));
   await until(() => f.peer.messages.length === 5);
   call = await f.snapshot(); assert.equal(call.messages.at(-1).phrase.id, `${profile.id}.readback`);
-  assert.match(call.messages.at(-1).translationEn, /not accepting/); assert.equal(call.activeOffer.version, 2);
+  assert.match(call.messages.at(-1).translationEn, /Just to check:/); assert.equal(call.activeOffer.version, 2);
   assert.deepEqual(call.activeOffer.templateDetails, details); assert.equal(call.bookingState, 'reading_back'); assert.equal(call.outcome.status, 'pending');
   assert.ok(inputs.every(input => input.plan.request.templateId === profile.id));
   assert.ok(f.peer.messages.every(m => m.lang === language));
@@ -1375,10 +1411,49 @@ async function autoApprovalCall(t, extra = {}) {
       : input.bookingState === 'awaiting_business_confirmation'
         ? { action: 'record_business_confirmation', offerId: input.offer.id, offerVersion: input.offer.version, evidenceMessageIds: [input.triggerMessageId] }
         : { action: 'evaluate_offer', offer: { ...structuredClone(offerFixture), appointment: input.plan.request.availability[0].start,
-          price: { amountMinor: 5000, currency: 'EUR' }, evidenceMessageIds: [input.triggerMessageId] } };
+          price: { amountMinor: extra.offerPriceMinor ?? 5000, currency: 'EUR' }, evidenceMessageIds: [input.triggerMessageId] } };
     return dialogueProposal(input, candidate);
   } }, { language: 'ru-RU', playbackReceipts: true, ...extra,
     request: { pricePolicy: { maximum: { amountMinor: 5000, currency: 'EUR' }, allowUnknownPrice: false }, ...extra.request } });
+}
+
+for (const assent of ['Да всё так спасибо', 'Да всё так вас записать в это время']) {
+  test(`dialogue mock: approved 60 EUR offer survives the decision deadline/${assent}`, async t => {
+    const f = await autoApprovalCall(t, {
+      env: { CALLMATE_SIMULATOR_APPROVAL_SECONDS: '1' },
+      offerPriceMinor: 6000,
+    });
+    f.prompt('Стрижка в согласованное время стоит 60 евро.');
+    await until(async () => (await f.snapshot()).pendingApproval !== null);
+    const approval = (await f.snapshot()).pendingApproval;
+    assert.equal(approval.reason, 'above_price_limit');
+    assert.equal(approval.offer.price.amountMinor, 6000);
+    const body = { approvalId: approval.id, decision: 'approve', plan: approval.plan,
+      offer: { offerId: approval.offer.id, offerVersion: approval.offer.version } };
+    const key = randomUUID();
+    const decide = () => fetch(f.app.apiOrigin + `/api/v1/calls/${f.id}/approvals`, {
+      method: 'POST', headers: { ...f.app.auth, 'content-type': 'application/json', 'idempotency-key': key },
+      body: JSON.stringify(body),
+    });
+    assert.equal((await decide()).status, 200);
+    await until(async () => (await f.snapshot()).messages.some(m => m.phrase?.id.endsWith('.readback') && m.playback === 'played'));
+    await delay(Math.max(0, Date.parse(approval.expiresAt) - Date.now() + 20));
+    assert.equal((await decide()).status, 200); // Replay must not send another readback.
+    f.prompt(assent);
+    await until(async () => (await f.snapshot()).bookingState === 'awaiting_business_confirmation');
+    let call = await f.snapshot();
+    assert.equal(call.pendingApproval, null);
+    assert.equal(call.outcome.status, 'pending');
+    assert.equal(call.messages.filter(m => m.phrase?.id.endsWith('.readback')).length, 1);
+    assert.equal(call.messages.filter(m => m.phrase?.id.endsWith('.acceptance')).length, 1);
+    assert.ok(!call.messages.some(m => m.phrase?.id === 'haircut.blocked'));
+    // Asking whether to book only affirms readback details; it cannot complete the booking.
+    f.prompt('Да, записал вас');
+    await until(() => f.peer.messages.some(m => m.type === 'end'));
+    call = await f.snapshot();
+    assert.equal(call.outcome.status, 'confirmed');
+    assert.equal(call.outcome.offer.price.amountMinor, 6000);
+  });
 }
 
 for (const [language, assent, confirmation] of [
@@ -1449,7 +1524,7 @@ for (const [language, assent, confirmation] of [
   await until(async () => (await f.snapshot()).messages.some(m => m.phrase?.id.endsWith('.readback') && m.playback === 'played'));
   let call = await f.snapshot(); assert.equal(call.pendingApproval, null); assert.equal(call.outcome.status, 'pending');
   assert.equal(call.activeOffer.price.amountMinor, call.plan.request.pricePolicy.maximum.amountMinor);
-  assert.ok(!f.peer.messages.some(m => /^(Я принимаю|Acepto|I accept|Akceptuję)/.test(m.token)));
+  assert.ok(!(await f.snapshot()).messages.some(m => m.phrase?.id.endsWith('.acceptance')));
   f.prompt(assent);
   await until(async () => (await f.snapshot()).bookingState === 'awaiting_business_confirmation');
   call = await f.snapshot(); assert.equal(call.pendingApproval, null); assert.equal(call.outcome.status, 'pending');
@@ -1642,13 +1717,13 @@ for (const language of ['es-ES', 'ru-RU', 'en-US', 'pl-PL']) {
     const call = await f.snapshot();
     assert.equal(call.outcome.status, 'not_booked'); assert.equal(call.pendingApproval, null);
     assert.equal(f.app.hungUp, 1); assert.equal(f.app.creates, 1);
-    const closing = call.messages.filter(m => m.phrase?.id.endsWith('.closing'));
+    const closing = call.messages.filter(m => m.phrase?.id.endsWith('.closing_declined'));
     assert.equal(closing.length, 1); assert.equal(closing[0].language, language);
     assert.ok(f.peer.messages.some(m => m.type === 'text' && m.token === closing[0].originalText && m.lang === language));
     assert.ok(f.peer.messages.some(m => m.type === 'end'));
     assert.ok(!f.peer.messages.some(m => m.type === 'text' && /^(Acepto|Я принимаю|I accept|Akceptuję)/.test(m.token)));
     assert.equal((await decide()).callState, 'ended'); assert.equal(f.app.hungUp, 1);
-    assert.equal((await f.snapshot()).messages.filter(m => m.phrase?.id.endsWith('.closing')).length, 1);
+    assert.equal((await f.snapshot()).messages.filter(m => m.phrase?.id.endsWith('.closing_declined')).length, 1);
   });
 }
 
@@ -1666,7 +1741,7 @@ test('rejected offer retains its reservation on failed hangup and retries withou
   await f.app.runtime.development.tick();
   await until(async () => (await f.snapshot()).callState === 'ended');
   assert.equal((await f.snapshot()).outcome.reason, 'policy_declined');
-  assert.equal((await f.snapshot()).messages.filter(m => m.phrase?.id.endsWith('.closing')).length, 1);
+  assert.equal((await f.snapshot()).messages.filter(m => m.phrase?.id.endsWith('.closing_declined')).length, 1);
 });
 
 for (const [language, fragments] of [['en-US', [4000]], ['ru-RU', [2000, 2000]]]) {
