@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light"><title>CallMate · Relay operator</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+  <link rel="stylesheet" href="/assets/styles.css"><script type="module" src="/assets/app.js"></script>
+</head>
+<body>
+  <header class="topbar"><a href="/" class="brand"><span class="brand-icon" aria-hidden="true">⌁</span> CallMate <span class="brand-sub">/ Relay operator</span></a>
+    <div class="topbar-end"><span class="environment">LOCAL EMULATOR</span><span id="channel" role="status">Connecting…</span></div></header>
+  <main class="workspace">
+    <aside class="sidebar">
+      <div class="section-heading"><div><p class="eyebrow">OPERATOR DESK</p><h1>Mock calls <span id="count" class="count">0</span></h1></div><button id="new-call" class="icon-button" title="Create a mock call" aria-label="Create a mock call">+</button></div>
+      <p class="muted sidebar-intro">Play the business. Let CallMate do the talking.</p>
+      <div id="calls" class="call-list" aria-label="Mock calls"><p class="empty-list">Waiting for a mock call…</p></div>
+      <div class="sidebar-note"><span class="tiny-dot"></span><div><strong>No real phone calls</strong><p>Local transport. Synthetic callers.<br>In-memory sessions.</p></div></div>
+    </aside>
+    <section class="main-panel">
+      <div id="notice" class="notice" role="alert" hidden></div>
+      <section id="create-panel" class="create-panel" hidden>
+        <div class="panel-heading"><div><p class="eyebrow">DEVELOPMENT SESSION</p><h2>Create a mock call</h2></div><button id="close-create" class="subtle">Close</button></div>
+        <form id="create-form"><div class="form-grid"><label>From<input id="from" required maxlength="100"></label><label>To<input id="to" required maxlength="100"></label>
+          <label class="wide">Backend relay WebSocket<input id="relay-url" required maxlength="2048" placeholder="ws://host.docker.internal:3001/ws/voice"></label>
+          <label>Task ID<input id="task-id" maxlength="100" placeholder="task-demo-001"></label><label>Language<select id="create-language"><option value="pl-PL">Polski (pl-PL)</option><option value="es-ES">Español (es-ES)</option><option value="ru-RU">Русский (ru-RU)</option><option value="en-US">English (en-US)</option></select></label></div>
+          <p class="muted">Start the CallMate backend in development mock mode before answering. Its development relay returns scripted echo replies; it does not book appointments.</p><button type="submit" class="primary">Create ringing call</button></form>
+      </section>
+      <section id="empty" class="empty-state"><div class="empty-symbol" aria-hidden="true">⌁</div><p class="eyebrow">READY WHEN YOU ARE</p><h2>Your development line is open.</h2><p>Start an outbound call from CallMate or create a local session.<br>Answer here to act as the business on the other end.</p><button id="empty-create" class="primary">Create a mock call <span aria-hidden="true">↗</span></button><p class="empty-caption">No Twilio account · No tunnel · No paid calls</p></section>
+      <section id="conversation" hidden>
+        <div class="conversation-heading"><div><p class="eyebrow">BUSINESS SIDE OF THE CALL</p><h2 id="call-title">Conversation</h2><p id="call-meta" class="mono muted"></p></div><span id="call-status" class="status-badge"></span></div>
+        <div id="call-failure" class="notice" role="alert" hidden></div>
+        <div id="ringing" class="ringing-card" hidden><div class="ring-icon" aria-hidden="true">↙</div><div><strong>CallMate is calling</strong><p>Answer to connect to the backend relay.</p></div><button id="answer" class="primary">Answer call</button><button id="reject" class="danger-subtle">Reject</button></div>
+        <div class="conversation-tools"><span id="connection" class="connection"></span><span id="age" class="muted"></span><span id="ownership" class="muted"></span><button id="claim" class="subtle">Take controls</button><button id="release" class="subtle">Release controls</button></div>
+        <div class="audio-controls"><label class="checkbox"><input id="tts" type="checkbox"> Auto-play backend messages</label><button id="stop-audio" type="button" class="subtle">Stop audio</button></div>
+        <p class="muted audio-hint">After answering, click Listen beside a backend message to hear it. Voice and volume are under Speech &amp; keypad.</p>
+        <div id="transcript" class="transcript" role="log" aria-label="Conversation transcript"></div>
+        <div class="composer">
+          <div class="composer-label"><strong>You are the business</strong><span>Caller speech → CallMate</span></div>
+          <form id="utterance-form"><textarea id="utterance" rows="3" maxlength="8000" placeholder="Type what the business says. For example: Mamy termin o 18:00, ale kosztuje 35 euro." aria-label="Caller utterance"></textarea>
+            <div class="composer-actions"><label class="inline-label">Language <select id="language"><option value="pl-PL">Polski (pl-PL)</option><option value="es-ES">Español (es-ES)</option><option value="ru-RU">Русский (ru-RU)</option><option value="en-US">English (en-US)</option></select></label><label class="checkbox"><input type="checkbox" id="partial"> Partial prompt test</label><button id="send" type="submit" class="primary">Send caller utterance <span aria-hidden="true">↑</span></button></div></form>
+          <div class="call-controls"><button id="mic-start">Start microphone</button><button id="mic-stop">Stop microphone</button><button id="interrupt">Interrupt AI</button><button id="hangup" class="danger">Hang up</button></div>
+          <p id="speech-status" class="muted" role="status">Manual text input is always available.</p>
+          <details class="speech-options"><summary>Speech &amp; keypad</summary><div class="speech-grid"><label>Volume<input type="range" id="volume" min="0" max="1" step="0.1" value="0.8"></label><label>Voice<select id="voice"><option value="">System default</option></select></label></div><p class="muted">Microphone recognition may use your browser vendor’s online service. Typed input stays local to your configured backend.</p><div id="keypad" class="keypad" aria-label="DTMF keypad"></div></details>
+        </div>
+        <details class="diagnostics"><summary>Developer diagnostics <span class="mono">WS / EVENTS</span></summary><dl><dt>Selected destination</dt><dd id="destination" class="mono"></dd><dt>Call SID</dt><dd id="sid" class="mono"></dd><dt>Session</dt><dd id="session-id" class="mono"></dd><dt>Last error / close</dt><dd id="last-error"></dd><dt>Handoff data</dt><dd id="handoff" class="mono"></dd></dl><button id="copy-log">Copy event log as JSON</button><button id="download-log">Download JSON</button><button id="delete-call" class="danger-subtle">Delete terminal record</button><pre id="events" tabindex="0"></pre></details>
+      </section>
+    </section>
+  </main>
+  <footer>CallMate Mock ConversationRelay <span>Development protocol subset · No appointment outcome is inferred</span></footer>
+</body>
+</html>

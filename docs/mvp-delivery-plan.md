@@ -1,6 +1,10 @@
 # CallMate delivery plan for three engineers
 
-Status: proposed task allocation. Updated: 2026-10-15. Based on [requirements](requirements.md), [architecture](architecture.md), and the [technology stack](tech-stack.md).
+Status: original delivery allocation and future real-call gates; implementation checkpoint updated 2026-10-16. Based on [requirements](requirements.md), [architecture](architecture.md), and the [technology stack](tech-stack.md).
+
+**Implemented checkpoint:** all four application workspaces exist and are integrated. UI/backend simulations, HTTP/SSE, SQLite recovery/retention, contacts, Agreements/calendar/deletion, four dialogue languages/15 templates and Codex/OpenAI/Claude settings are present. Default Compose has two services: `zeus-llama` and `mock-relay`. Twilio selection is explicitly unavailable; real telephony, attested playback, production confirmation verification, provider billing and the supervised pilot remain open. Existing local/browser tests do not complete the real-call PoC below.
+
+Current work stays on `feat/app-integration` under [AGENTS.md](../AGENTS.md); the original parallel-branch instructions below are historical planning guidance.
 
 ## 1. Deliver two usable increments
 
@@ -39,7 +43,7 @@ Engineer 2 owns the authoritative call lifecycle, persistence, deadlines, and fi
 
 The local API routes and error shapes are now specified in [Shared interfaces](interfaces.md#4-private-http-api) and exported as `api` from the contracts package. Review changes through the shared contract rather than independently choosing route names during implementation.
 
-Code ownership (`packages/contracts/` now exists; application directories are still proposed):
+Original code ownership (all four application packages now exist; test paths below include planned provider-fixture ownership):
 
 ```text
 apps/web/                  Engineer 1
@@ -66,14 +70,19 @@ Engineer 1 can complete most visual work against fixtures while the backend and 
 
 ## 5. Engineer 2: backend, persistence, and telephony
 
+Begin the account/Console portion early using the [Twilio setup runbook](twilio-setup.md). The account owner handles identity, billing, purchases, and terms; Engineer 2 owns configuration and verification. BE-00 can proceed alongside backend/simulator work; real ConversationRelay testing requires paid-account eligibility and an implemented callback listener.
+
 | Task | Increment | Deliverable and acceptance | Dependency |
 | --- | --- | --- | --- |
+| BE-00: Twilio account and Console setup | PoC, start early | Account created/verified and upgraded for ConversationRelay; eligible Voice number/compliance; Spain geo permissions; AI/ML terms; private API credentials; inbound-call policy. Record readiness/blockers without secrets using the runbook. | Account owner, billing/identity information, and number availability. |
 | BE-01: Bootstrap and local persistence | PoC | Workspace/tooling, shared schemas, Fastify local API and separate callback listener, SQLite migrations, private data path, redacted logs, safe `.env.example`, and ignore rules for runtime data. Document actual start/test commands. | Joint kickoff decisions. |
 | BE-02: Simulator and event stream | PoC | Fake telephony adapter, call snapshots, ordered/replayable SSE, and deterministic test scenarios. Refreshing the UI restores state instead of starting a call. | Contracts and initial schema. |
-| BE-03: Twilio connectivity spike | PoC, earliest external risk | Secure tunnel; signed HTTP and WSS validation; outgoing call to an approved test number; Spanish ConversationRelay voice; safe end/fallback path; verified caller ID/account readiness. Do this before polishing the full UI. | User's provider configuration and consenting test endpoint. |
+| BE-03: Twilio connectivity spike | PoC, earliest external risk | Secure tunnel; signed HTTP and WSS validation; outgoing call to an approved test number; Spanish ConversationRelay voice; safe end/fallback path; verified caller ID/account readiness. Follow the runbook and do this before polishing the full UI. | BE-00, callback listener, and consenting test endpoint. |
 | BE-04: Controlled call lifecycle | PoC | Persist approved plan, reserve one active-call slot, prevent duplicate Start, set local/provider duration caps, wire dialogue adapter, execute Stop, and keep call outcome separate from booking outcome. An ambiguous dial timeout never triggers blind retry. | BE-01/03 and dialogue interface. |
 | BE-05: Approval/persistence APIs | MVP | Versioned approval decisions, deadlines, local history/deletion, retention, and cost/usage storage. Backend invokes booking policy before any acceptance text is sent. | Dialogue approval rules and booking schema. |
 | BE-06: Failure recovery and usage | MVP | Duplicate/out-of-order callback handling, late events, network/relay failures, restart reconciliation, orphaned-call handling, and estimated versus available settled usage. Tests prove terminal states do not regress. | Real Twilio adapter and persisted attempts. |
+
+BE-01 and BE-02 now provide a runnable Docker backend, SQLite settings/plans/call/event storage, deterministic simulator scenarios, private HTTP/SSE, idempotent Start, one-call reservation, Stop, approval/version/expiry cases, restart finalization, and history/deletion. See [Docker development](docker-development.md) for the walkthrough. The backend-started manual mock path now also shares persisted attempts, transcripts, history, Stop, the global active-call reservation and SSE with the simulator, using an explicit `manual_mock` snapshot with no booking plan or authority. The manual mock path persists provider/CallSid/session correlation and creation intent, reconciles after restart, and ends orphaned calls without redial; unidentified or unconfirmed calls retain the reservation. Signed local progress callbacks now persist ordering with atomic snapshot/events, ignore duplicates and stale deliveries, and keep terminal results immutable across restart, deletion and delayed REST responses. Backend call controls now enforce the shared one-call reservation, idempotent Start/Stop, frozen duration limits, caller-silence deadlines and queued/ringing cancellation, including in-flight creation/Answer races. Automatic retention now purges expired terminal transcript text and replay payloads at startup, every minute and on settings changes, preserving booking metadata, history and idempotency. Explicit opt-in test rates now persist elapsed usage with frozen rates/budgets, emit usage updates, and enforce per-call budgets across simulator/manual mock flows while keeping real provider charges unavailable. Readiness now checks database/configuration and local mock health with explicit enabled/ready capability flags; it keeps live calling/dialogue/billing disabled. These remain development paths; Twilio connectivity, real dialogue/policy integration and real-provider pricing/caps/reconciliation remain subsequent work.
 
 Engineer 2 owns retries and provider reconciliation. Neither another engineer's module nor an LLM may independently initiate a second call. Public tunnel routes must never expose the personal UI, call-start API, settings, or history.
 

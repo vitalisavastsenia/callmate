@@ -11,7 +11,7 @@
 ## Branch conventions
 
 - `main` is the primary branch. Do not rename it or rewrite its history unless explicitly requested.
-- Create a working branch before implementation unless the user explicitly requests work on the current branch or on `main`.
+- During the current integration phase, work directly on `feat/app-integration`. Do not create separate feature or fix branches unless the user explicitly requests one. Keep this temporary workflow until the user changes it.
 - Use `<type>/<short-description>` with lowercase, hyphen-separated descriptions.
 - Allowed branch types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, and `ci`.
 - Include an existing issue key in lowercase when supplied: `feat/odyssey-2026-add-call-history`. Do not invent issue keys.

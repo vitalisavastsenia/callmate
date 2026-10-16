@@ -27,3 +27,8 @@ node_modules/
 dist/
 coverage/
 .data/
+.llm-secrets/
+
+# Browser test artifacts
+playwright-report/
+test-results/

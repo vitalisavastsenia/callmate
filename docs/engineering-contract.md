@@ -1,6 +1,10 @@
 # CallMate agreement for three engineering scopes
 
-Status: proposed working agreement for engineer review. Updated: 2026-10-15.
+Status: original scope/real-call acceptance agreement, synchronized with implementation on 2026-10-16. No human sign-off is implied.
+
+**Current integration:** the React UI, private HTTP/SSE API, SQLite, owner authentication, contacts, Agreements/calendar, retention, recovery, multilingual dialogue and Codex/OpenAI/Claude settings are implemented. Default Compose runs `zeus-llama` (UI and backend) plus `mock-relay`. Browser/backend simulation is integrated; real Twilio calling, attested audio playback and production confirmation verification remain unfinished. The real-call gates below are targets, not completed milestones. [Architecture](architecture.md) is the current runtime reference.
+
+During the current integration phase, [AGENTS.md](../AGENTS.md) requires work directly on `feat/app-integration`. References below to separate engineering branches describe the original delivery process and do not override that workflow.
 
 Three engineers deliver one local CallMate application: a React UI, a Node.js server with SQLite and Twilio, and a dialogue module loaded by that server. Each scope must be independently developable against shared contracts and test doubles, then replaceable with its real implementation without changing the other scopes.
 
@@ -14,9 +18,9 @@ The first integrated PoC takes an English haircut request, obtains deliberate us
 
 All scopes use the same repository, npm workspace, shared schemas, attempt IDs, and simulator scenarios. There is one application backend and one authoritative database. The dialogue module runs inside that backend; it does not introduce another HTTP service. The UI accesses the backend through the private HTTP/SSE API.
 
-The implementation baseline remains Twilio ConversationRelay with a text LLM. OpenAI Realtime with Media Streams is an alternative to evaluate, not a change an engineer may make independently. Engineers 2 and 3 must first agree its voice boundary, commitment controls, cancellation behavior, and acceptance test, and update the architecture and interfaces. The UI contract should remain stable.
+The future real-call target remains Twilio ConversationRelay with a text LLM. Current reviewed mock calls use the same policy boundaries with simulated output receipts and four supported languages. OpenAI Realtime with Media Streams remains an alternative requiring an agreed voice/authority boundary and updated acceptance tests, not an implemented transport.
 
-Local infrastructure requires no AWS or Azure. Credentials remain in local server configuration. Only the Twilio callback listener is exposed through a tunnel; the UI, private API, settings, and history stay private. Simulator mode is the development default and cannot dial.
+Local infrastructure requires no AWS or Azure. Saved API credentials are encrypted in SQLite with a master key in a separate private volume/file; CLI login uses its own optional volume. All current ports bind to host loopback, with no public tunnel. A future Twilio tunnel must expose only the callback listener; UI, API, settings and history remain private. Current runtime mode is simulator and cannot dial real numbers.
 
 ## 2. Ownership and deliverables
 
@@ -28,7 +32,7 @@ Local infrastructure requires no AWS or Azure. Credentials remain in local serve
 
 Engineer 2 is the integration coordinator and maintainer of root manifests, lockfile, shared TypeScript/build configuration, `packages/contracts/`, migrations, and environment examples. Engineers 1 and 3 request root changes through Engineer 2 instead of creating competing configurations. Each engineer owns fixes and tests in their component; Engineer 1 coordinates the integrated browser demo.
 
-Application directories above are target deliverables. Currently only `packages/contracts/` and its validation tooling exist.
+`packages/contracts/` and `apps/server/` now exist. The Docker backend implements persisted simulator calls, HTTP/SSE, approvals, history/deletion, SQLite settings, and separate private/callback listeners. Fake adapters implement the shared ports; UI and live provider/dialogue wiring remain target deliverables. See [Docker development](docker-development.md).
 
 ## 3. Agreements at each connection
 
@@ -57,7 +61,7 @@ Engineer 2 prepares a shared foundation change; Engineers 1 and 3 review the bou
 
 All engineers branch from the same foundation commit after it is integrated through the repository's normal authorized workflow. Record that commit and contract version in each handoff. Follow `AGENTS.md` for branches, commits, reviews, and remote publication; this agreement does not authorize Git pushes or merges.
 
-The current commands `npm run build`, `npm run typecheck`, and `npm test` validate only the contracts package. Application development/start commands are foundation deliverables and must be documented once implemented.
+Run `docker compose up --build -d --wait zeus-llama` for the backend/simulator and `docker compose --profile checks run --build --rm checks` for contracts/server checks inside Docker. The root workspace commands build/type-check/test both packages within that environment. UI and real dialogue workspaces, and their combined browser flow, remain deliverables.
 
 ## 5. Independent development and substitutes
 

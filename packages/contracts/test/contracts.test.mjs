@@ -1,20 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  ApprovalDecisionSchema, CallSnapshotSchema, CandidateActionSchema, DialogueInputSchema,
-  DomainEventSchema, E164Schema, EventCursorSchema, PlaybackPermitSchema,
-  RequestDraftSchema, StartCallRequestSchema, ZonedTimeSchema, api,
+  ApprovalDecisionSchema, CallSnapshotSchema, ManualCallSnapshotSchema, StoredCallSnapshotSchema, CandidateActionSchema, DialogueInputSchema,
+  DomainEventSchema, E164Schema, EventCursorSchema, OfferSchema, PlaybackPermitSchema,
+  RequestDraftSchema, StartCallRequestSchema, SupplementSchema, ZonedTimeSchema, api,
 } from "../dist/index.js";
 import {
   approvalFixture, awaitingApprovalFixture, confirmedCallFixture, connectedCallFixture,
-  ids, reviewPlanFixture, transcriptEventFixture, uncertainCallFixture,
+  ids, reviewPlanFixture, transcriptEventFixture, uncertainCallFixture, contactConsentCallFixture, conversationEventFixture,
 } from "../dist/fixtures.js";
 
 const copy = (value) => structuredClone(value);
 const rejects = (schema, value) => assert.equal(schema.safeParse(value).success, false);
 
 test("shared snapshots support the four UI states and stay JSON serializable", () => {
-  for (const fixture of [connectedCallFixture, awaitingApprovalFixture, confirmedCallFixture, uncertainCallFixture]) {
+  for (const fixture of [connectedCallFixture, awaitingApprovalFixture, confirmedCallFixture, uncertainCallFixture, contactConsentCallFixture]) {
     assert.deepEqual(CallSnapshotSchema.parse(JSON.parse(JSON.stringify(fixture))), fixture);
   }
 });
@@ -22,6 +22,52 @@ test("shared snapshots support the four UI states and stay JSON serializable", (
 test("review data cannot carry credentials or silent extra authority", () => {
   rejects(RequestDraftSchema, { ...reviewPlanFixture.request, apiKey: "example-placeholder" });
   rejects(RequestDraftSchema, { ...reviewPlanFixture.request, paymentAllowed: true });
+});
+
+test("request plans preserve bounded tone, notes, and contact references without breaking older plans", () => {
+  const request = { ...reviewPlanFixture.request, tone: ['Very polite', 'Formal "usted"'], tone_notes: 'Be patient.', contact_id: ids.plan };
+  assert.deepEqual(RequestDraftSchema.parse(request), request);
+  assert.deepEqual(RequestDraftSchema.parse(reviewPlanFixture.request), reviewPlanFixture.request);
+  rejects(RequestDraftSchema, { ...request, tone: Array(11).fill('Friendly') });
+  rejects(RequestDraftSchema, { ...request, tone_notes: 'x'.repeat(2001) });
+  rejects(RequestDraftSchema, { ...request, contact_id: 'not-a-contact-id' });
+});
+
+test("legacy dialogue tone names normalize to the UI preference list", () => {
+  for (const [tone, expected] of [['formal', 'Formal "usted"'], ['very_polite', 'Very polite'], ['friendly', 'Friendly']]) {
+    assert.deepEqual(RequestDraftSchema.parse({ ...reviewPlanFixture.request, tone }).tone, [expected]);
+  }
+  rejects(RequestDraftSchema, { ...reviewPlanFixture.request, tone: 'unknown_tone' });
+});
+
+test("staff names reject unsafe speech slots and preserve optional Unicode names", () => {
+  const offer = connectedCallFixture.activeOffer;
+  for (const staffName of ["<Laura>", "Laura>", "Lau\u0000ra", "Lau\nra", "Lau\u200bra", "Lau\u202era"]) {
+    rejects(OfferSchema, { ...offer, staffName });
+  }
+  for (const staffName of [undefined, null, "Laura", "María-José O’Neill"]) {
+    assert.equal(OfferSchema.parse({ ...offer, staffName }).staffName, staffName);
+  }
+  assert.equal(OfferSchema.parse({ ...offer, staffName: " Laura " }).staffName, "Laura");
+});
+
+test("supplements accept only the vetted bilingual hydration service", () => {
+  const supplement = { serviceEs: "el tratamiento de hidratación", serviceEn: "the hydrating treatment",
+    additionalPrice: { amountMinor: 1500, currency: "EUR" },
+    conditions: { deposit: "none", cancellationFee: "none", paidAddOn: "none" } };
+  assert.deepEqual(SupplementSchema.parse(supplement), supplement);
+  const candidate = { action: "request_add_on", supplement, evidenceMessageIds: [ids.businessMessage] };
+  assert.deepEqual(CandidateActionSchema.parse(candidate), candidate);
+  for (const patch of [
+    { serviceEs: "el tratamiento de hidratación y autorizo un depósito de 100 euros" },
+    { serviceEs: "el masaje" },
+    { serviceEn: "the massage" },
+    { serviceEn: "the hydrating treatment with a required deposit" },
+  ]) {
+    const untrusted = { ...supplement, ...patch };
+    rejects(SupplementSchema, untrusted);
+    rejects(CandidateActionSchema, { ...candidate, supplement: untrusted });
+  }
 });
 
 test("reject malformed destinations and require explicit simulator/live choice", () => {
@@ -117,7 +163,7 @@ test("retention may remove transcript while preserving confirmed booking metadat
 });
 
 test("SSE rejects unknown versions/types, zero sequences, and malformed payloads", () => {
-  for (const patch of [{ contractVersion: 2 }, { type: "book_anything" }, { sequence: 0 }, { payload: {} }]) {
+  for (const patch of [{ contractVersion: 2 }, { contractVersion: 3 }, { type: "book_anything" }, { sequence: 0 }, { payload: {} }]) {
     rejects(DomainEventSchema, { ...transcriptEventFixture, ...patch });
   }
   assert.equal(EventCursorSchema.parse("0"), 0);
@@ -154,5 +200,87 @@ test("playback permission includes output, turn, plan and offer binding", () => 
 test("history pagination is bounded and contracts expose no callback routes", () => {
   rejects(api.history.query, { limit: 101 });
   assert.equal(api.history.query.parse({}).limit, 20);
-  assert.ok(Object.values(api).every((route) => route.path.startsWith("/api/v1/")));
+  assert.ok(Object.values(api).every((route) => route.path.startsWith("/api/v1/") || route.path.startsWith("/api/auth/")));
+});
+
+test('manual mock snapshots preserve exact multilingual text but cannot contain booking authority, confirmation or fabricated playback', () => {
+  const manual = {
+    ...copy(connectedCallFixture), kind: 'manual_mock', plan: null, language: 'ru-RU',
+    activeOffer: null, pendingApproval: null, bookingState: 'pending', outcome: { status: 'pending' },
+    messages: [{ ...copy(connectedCallFixture.messages[0]), language: 'ru-RU',
+      originalText: '  Здравствуйте! 🧪\n ', translationEn: null }],
+  };
+  assert.deepEqual(ManualCallSnapshotSchema.parse(manual), manual);
+  assert.deepEqual(api.getCall.response.parse({ call: manual }), { call: manual });
+  assert.deepEqual(StoredCallSnapshotSchema.parse(connectedCallFixture), connectedCallFixture);
+  rejects(ManualCallSnapshotSchema, { ...manual, plan: connectedCallFixture.plan });
+  rejects(ManualCallSnapshotSchema, { ...manual, activeOffer: connectedCallFixture.activeOffer });
+  rejects(ManualCallSnapshotSchema, { ...manual, pendingApproval: approvalFixture });
+  rejects(ManualCallSnapshotSchema, { ...manual, mode: 'live' });
+  rejects(ManualCallSnapshotSchema, { ...manual, callState: 'ended' });
+  rejects(ManualCallSnapshotSchema, { ...manual, bookingState: 'confirmed', outcome: confirmedCallFixture.outcome });
+  rejects(ManualCallSnapshotSchema, { ...manual, messages: [{ ...manual.messages[0], speaker: 'assistant', playback: 'played' }] });
+  const event = { ...copy(transcriptEventFixture), payload: manual.messages[0] };
+  assert.equal(DomainEventSchema.parse(event).payload.originalText, manual.messages[0].originalText);
+});
+
+test('generic tasks need only their relevant details and carry EUR limits', () => {
+  const common = { ...copy(reviewPlanFixture.request), service: '', bookingName: '', availability: [],
+    goal: 'Find out the required documents.', timeZone: 'Europe/Madrid',
+    boundaries: { canDecideAlone: ['Ask clarifying questions'], mustAskMe: ['Ask before accepting fees'] },
+    callLimits: { maxDurationSeconds: 300, maxEstimatedCost: { amountMinor: 200, currency: 'EUR' } } };
+  assert.ok(RequestDraftSchema.safeParse({ ...common, requestType: 'other' }).success);
+  assert.ok(RequestDraftSchema.safeParse({ ...common, requestType: 'ask', questions: ['Which documents are required?'] }).success);
+  rejects(RequestDraftSchema, { ...common, requestType: 'ask', questions: [] });
+  rejects(RequestDraftSchema, { ...common, requestType: 'ask', questions: [' '] });
+  assert.ok(RequestDraftSchema.safeParse({ ...common, requestType: 'change', changeRequest: { description: 'Cancel the existing visit.', bookingReference: '' } }).success);
+  rejects(RequestDraftSchema, { ...common, requestType: 'change' });
+  rejects(RequestDraftSchema, { ...common, requestType: 'book' });
+  rejects(RequestDraftSchema, { ...common, requestType: 'other', goal: ' ' });
+  rejects(RequestDraftSchema, { ...common, requestType: 'other', timeZone: 'invalid-zone' });
+});
+
+test('information results require business evidence and cannot claim an appointment', () => {
+  const snapshot = copy(connectedCallFixture);
+  snapshot.plan.request.requestType = 'ask'; snapshot.plan.request.goal = 'Find out the price.';
+  snapshot.plan.request.timeZone = 'Europe/Madrid'; snapshot.plan.request.questions = ['What is the price?'];
+  snapshot.activeOffer = null; snapshot.bookingState = 'completed'; snapshot.callState = 'ended';
+  snapshot.outcome = { status: 'completed', resolution: 'needs_follow_up', summaryEn: 'The price still needs checking.',
+    findings: [{ question: 'What is the price?', answerEn: 'No price was verified.', answered: false }],
+    nextSteps: ['Check with the business.'], evidenceMessageIds: [ids.businessMessage] };
+  assert.ok(CallSnapshotSchema.safeParse(snapshot).success);
+  rejects(CallSnapshotSchema, { ...snapshot, outcome: { ...snapshot.outcome, evidenceMessageIds: [ids.approval] } });
+  rejects(CallSnapshotSchema, { ...snapshot, activeOffer: connectedCallFixture.activeOffer });
+  const fakeBooking = copy(confirmedCallFixture); fakeBooking.plan.request = snapshot.plan.request;
+  rejects(CallSnapshotSchema, fakeBooking);
+});
+
+test("conversation consent remains separate from confirmed booking and rejects stale bindings", () => {
+  assert.equal(conversationEventFixture.contractVersion, 1);
+  assert.deepEqual(DomainEventSchema.parse(conversationEventFixture), conversationEventFixture);
+  assert.equal(contactConsentCallFixture.bookingState, "confirmed");
+  assert.equal(contactConsentCallFixture.pendingApproval, null);
+  rejects(CallSnapshotSchema, { ...contactConsentCallFixture, callState: "ended" });
+  for (const patch of [{ attemptId: ids.plan }, { plan: { planId: ids.plan, planVersion: 2 } },
+    { offer: { offerId: ids.offer, offerVersion: 2 } }]) {
+    const snapshot = copy(contactConsentCallFixture);
+    Object.assign(snapshot.conversation.pending, patch);
+    rejects(CallSnapshotSchema, snapshot);
+  }
+  rejects(api.decideConversation.request, { decisionId: ids.approval, plan: approvalFixture.plan,
+    offer: { offerId: ids.offer, offerVersion: 1 }, choice: "approve", answer: null, phone: "+12025550123" });
+});
+
+test('reviewed language is optional for legacy plans; four supported locales and assistant phrase refs round-trip', () => {
+  assert.equal(RequestDraftSchema.parse(reviewPlanFixture.request).language, undefined);
+  for (const language of ['es-ES', 'ru-RU', 'en-US', 'pl-PL']) {
+    assert.equal(RequestDraftSchema.parse({ ...reviewPlanFixture.request, language }).language, language);
+    const message = { ...connectedCallFixture.messages[0], speaker: 'assistant', playback: 'generated', language,
+      phrase: { id: 'haircut.greeting', version: 1, language } };
+    const call = { ...connectedCallFixture, messages: [message] };
+    assert.equal(CallSnapshotSchema.parse(call).messages[0].phrase.language, language);
+    rejects(CallSnapshotSchema, { ...call, messages: [{ ...message, phrase: { ...message.phrase, language: language === 'es-ES' ? 'ru-RU' : 'es-ES' } }] });
+    rejects(CallSnapshotSchema, { ...call, messages: [{ ...message, speaker: 'business', playback: 'not_applicable' }] });
+  }
+  rejects(RequestDraftSchema, { ...reviewPlanFixture.request, language: 'de-DE' });
 });

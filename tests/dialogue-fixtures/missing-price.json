@@ -1,0 +1,57 @@
+{
+  "formatVersion": 1,
+  "id": "dialogue-missing-price",
+  "description": "A possible slot is stated, but the price remains unknown and acceptance is not proposed.",
+  "messages": [
+    {
+      "id": "30000000-0000-4000-8000-000000000401",
+      "turnId": "30000000-0000-4000-8000-000000005401",
+      "speaker": "assistant",
+      "originalText": "Hola, soy un asistente de inteligencia artificial. Llamo en nombre de Alex Example para pedir una cita para un corte de pelo.",
+      "language": "es-ES",
+      "translationEn": null,
+      "final": true,
+      "playback": "played",
+      "createdAt": "2026-10-15T10:01:00Z"
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000402",
+      "turnId": "30000000-0000-4000-8000-000000005402",
+      "speaker": "business",
+      "originalText": "Tenemos una cita para el corte de pelo el 20 de octubre de 2026 a las 18:00. No sé cuánto costará.",
+      "language": "es-ES",
+      "translationEn": null,
+      "final": true,
+      "playback": "not_applicable",
+      "createdAt": "2026-10-15T10:01:05Z"
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000403",
+      "turnId": "30000000-0000-4000-8000-000000005403",
+      "speaker": "assistant",
+      "originalText": "¿Puede confirmar el precio total del corte de pelo antes de reservar?",
+      "language": "es-ES",
+      "translationEn": null,
+      "final": true,
+      "playback": "played",
+      "createdAt": "2026-10-15T10:01:10Z"
+    }
+  ],
+  "turns": [
+    {
+      "triggerMessageId": "30000000-0000-4000-8000-000000000402",
+      "bookingState": "pending",
+      "activeOffer": null,
+      "candidate": {
+        "action": "clarify",
+        "missing": [
+          "price"
+        ]
+      },
+      "translationEn": "We have a haircut appointment on 20 October 2026 at 18:00. I do not know how much it will cost."
+    }
+  ],
+  "expectedOutcome": {
+    "status": "pending"
+  }
+}

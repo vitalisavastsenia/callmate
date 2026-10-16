@@ -1,0 +1,93 @@
+import { expect, test } from './fixtures';
+
+test('Zeus Llama serves the built UI, assets and authenticated API from one origin', async ({ page }) => {
+  const failures: string[] = [];
+  page.on('pageerror', error => failures.push(error.message));
+  const scripts: string[] = [];
+  page.on('request', request => { if (request.resourceType() === 'script') scripts.push(request.url()); });
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Home', exact: true })).toBeVisible();
+  expect(scripts.some(url => new URL(url).origin === new URL(page.url()).origin && /^\/assets\/index-.*\.js$/.test(new URL(url).pathname))).toBe(true);
+  expect(scripts.every(url => !url.includes('/@vite/') && !url.includes('/src/'))).toBe(true);
+  expect((await page.request.get('/api/v1/history')).ok()).toBe(true);
+  await page.getByRole('button', { name: 'Agreements', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Agreements', exact: true })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath('zeus-llama-built-ui.png'), fullPage: true });
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Home', exact: true })).toBeVisible();
+  expect(failures).toEqual([]);
+});
+
+test('the technical console shares the app session and logout on the same port', async ({ page }) => {
+  await page.goto('/console/');
+  await expect(page.getByRole('button', { name: 'Start conversation', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+  expect((await page.request.get('/api/v1/history')).status()).toBe(401);
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Home', exact: true })).toHaveCount(0);
+});
+
+test('LLM Settings persist model and effort while API keys stay write-only and can be deleted', async ({ page }) => {
+  const secret = 'test-placeholder-browser-only-key'; const failures: string[] = [];
+  page.on('pageerror', error => failures.push(error.message));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByLabel('LLM provider').selectOption('openai');
+  await page.getByLabel('Agent model', { exact: true }).fill('gpt-6.1-sol');
+  await page.getByLabel('Reasoning effort').selectOption('high');
+  await page.getByLabel('OpenAI API key action').selectOption('replace');
+  await page.getByLabel('New OpenAI API key').fill(secret);
+  await page.getByRole('button', { name: 'Save LLM agent', exact: true }).click();
+  await expect(page.getByText('LLM agent saved. Settings apply to the next Backend call.')).toBeVisible();
+  const response = await page.request.get('/api/v1/settings/llm');
+  expect(response.ok()).toBe(true); expect(await response.text()).not.toContain(secret);
+  expect((await response.json()).credentials.openai).toEqual({ configured: true, usable: true, source: 'stored' });
+  await page.reload(); await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.getByLabel('LLM provider')).toHaveValue('openai');
+  await expect(page.getByLabel('Agent model', { exact: true })).toHaveValue('gpt-6.1-sol');
+  await expect(page.getByLabel('Reasoning effort')).toHaveValue('high');
+  await expect(page.locator('input[type="password"]')).toHaveCount(0);
+  expect(await page.evaluate(() => JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage)]))).not.toContain(secret);
+  await page.screenshot({ path: test.info().outputPath('llm-agent-settings.png'), fullPage: true });
+  await page.getByLabel('OpenAI API key action').selectOption('remove');
+  await page.getByRole('button', { name: 'Save LLM agent', exact: true }).click();
+  await expect(page.getByText('LLM agent saved. Settings apply to the next Backend call.')).toBeVisible();
+  await expect(page.getByText('No key configured').first()).toBeVisible();
+  expect((await (await page.request.get('/api/v1/settings/llm')).json()).credentials.openai.configured).toBe(false);
+  await page.getByLabel('LLM provider').selectOption('anthropic');
+  await expect(page.getByLabel('Agent model', { exact: true })).toHaveValue('claude-sonnet-5-5');
+  await expect(page.getByLabel('Reasoning effort')).toHaveValue('default');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.getByLabel('LLM provider').selectOption('codex');
+  await expect(page.getByLabel('Agent model', { exact: true })).toHaveValue('');
+  await page.getByLabel('LLM provider').selectOption('disabled');
+  await page.getByRole('button', { name: 'Save LLM agent', exact: true }).click();
+  await expect(page.getByText('LLM agent saved. Settings apply to the next Backend call.')).toBeVisible();
+  expect(failures).toEqual([]);
+});
+
+test('Call engine Settings persist Twilio as unavailable and restore Mock service without a call', async ({ page }) => {
+  const failures: string[] = []; let starts = 0;
+  page.on('pageerror', error => failures.push(error.message));
+  page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/v1/calls') starts++; });
+  await page.goto('/'); await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Backend', exact: true }).click();
+  const engine = page.getByRole('combobox', { name: 'Call engine', exact: true });
+  await expect(engine).toHaveValue('mock'); await engine.selectOption('twilio');
+  await expect(page.getByText('Twilio integration is not implemented yet. Backend calls are unavailable while Twilio is selected.')).toBeVisible();
+  await page.getByRole('button', { name: 'Save call engine', exact: true }).click();
+  await expect(page.getByText('Call engine saved.', { exact: true })).toBeVisible();
+  await expect.poll(async () => (await (await page.request.get('/api/v1/readiness')).json()).ready).toBe(false);
+  await page.reload(); await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(engine).toHaveValue('twilio');
+  await page.screenshot({ path: test.info().outputPath('call-engine-twilio-unavailable.png'), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await expect(page.getByText('Twilio integration is not implemented yet. Backend calls are unavailable while Twilio is selected.')).toBeVisible();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await engine.selectOption('mock'); await page.getByRole('button', { name: 'Save call engine', exact: true }).click();
+  await expect(page.getByText('Call engine saved.', { exact: true })).toBeVisible();
+  await expect.poll(async () => (await (await page.request.get('/api/v1/readiness')).json()).ready).toBe(true);
+  expect(starts).toBe(0); expect(failures).toEqual([]);
+});

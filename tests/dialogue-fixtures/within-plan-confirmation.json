@@ -1,0 +1,158 @@
+{
+  "formatVersion": 1,
+  "id": "dialogue-within-plan-confirmation",
+  "description": "An authorized readback and acceptance is followed by explicit business confirmation of the exact offer.",
+  "messages": [
+    {
+      "id": "30000000-0000-4000-8000-000000000101",
+      "turnId": "30000000-0000-4000-8000-000000005101",
+      "speaker": "assistant",
+      "originalText": "Hola, soy un asistente de inteligencia artificial. Llamo en nombre de Alex Example para pedir una cita para un corte de pelo.",
+      "language": "es-ES",
+      "translationEn": null,
+      "final": true,
+      "playback": "played",
+      "createdAt": "2026-10-15T10:01:00Z"
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000102",
+      "turnId": "30000000-0000-4000-8000-000000005102",
+      "speaker": "business",
+      "originalText": "Hay cita para un corte de pelo el 20 de octubre de 2026 a las 18:00, a nombre de Alex Example, por 25 euros. No hay depósito, gastos de cancelación ni extras de pago obligatorios.",
+      "language": "es-ES",
+      "translationEn": null,
+      "final": true,
+      "playback": "not_applicable",
+      "createdAt": "2026-10-15T10:01:05Z"
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000103",
+      "turnId": "30000000-0000-4000-8000-000000005103",
+      "speaker": "assistant",
+      "originalText": "Perfecto, reserve la cita para un corte de pelo el 20 de octubre de 2026 a las 18:00, a nombre de Alex Example, por 25 euros, por favor.",
+      "language": "es-ES",
+      "translationEn": null,
+      "final": true,
+      "playback": "played",
+      "createdAt": "2026-10-15T10:01:10Z"
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000104",
+      "turnId": "30000000-0000-4000-8000-000000005104",
+      "speaker": "business",
+      "originalText": "Sí, queda confirmada la cita para el corte de pelo el 20 de octubre de 2026 a las 18:00, a nombre de Alex Example, por 25 euros y con esas condiciones.",
+      "language": "es-ES",
+      "translationEn": null,
+      "final": true,
+      "playback": "not_applicable",
+      "createdAt": "2026-10-15T10:01:15Z"
+    }
+  ],
+  "turns": [
+    {
+      "triggerMessageId": "30000000-0000-4000-8000-000000000102",
+      "bookingState": "pending",
+      "activeOffer": null,
+      "candidate": {
+        "action": "evaluate_offer",
+        "offer": {
+          "id": "30000000-0000-4000-8000-000000001000",
+          "version": 1,
+          "service": "Haircut",
+          "bookingName": "Alex Example",
+          "appointment": {
+            "localDate": "2026-10-20",
+            "localTime": "18:00",
+            "timeZone": "Europe/Madrid",
+            "instant": "2026-10-20T16:00:00Z"
+          },
+          "durationMinutes": null,
+          "price": {
+            "amountMinor": 2500,
+            "currency": "EUR"
+          },
+          "conditions": {
+            "deposit": "none",
+            "cancellationFee": "none",
+            "paidAddOn": "none"
+          },
+          "evidenceMessageIds": [
+            "30000000-0000-4000-8000-000000000102"
+          ]
+        }
+      },
+      "translationEn": "There is a haircut appointment on 20 October 2026 at 18:00 under Alex Example for 25 euros. There is no deposit, cancellation fee, or required paid add-on."
+    },
+    {
+      "triggerMessageId": "30000000-0000-4000-8000-000000000104",
+      "bookingState": "awaiting_business_confirmation",
+      "activeOffer": {
+        "id": "30000000-0000-4000-8000-000000001000",
+        "version": 1,
+        "service": "Haircut",
+        "bookingName": "Alex Example",
+        "appointment": {
+          "localDate": "2026-10-20",
+          "localTime": "18:00",
+          "timeZone": "Europe/Madrid",
+          "instant": "2026-10-20T16:00:00Z"
+        },
+        "durationMinutes": null,
+        "price": {
+          "amountMinor": 2500,
+          "currency": "EUR"
+        },
+        "conditions": {
+          "deposit": "none",
+          "cancellationFee": "none",
+          "paidAddOn": "none"
+        },
+        "evidenceMessageIds": [
+          "30000000-0000-4000-8000-000000000102"
+        ]
+      },
+      "candidate": {
+        "action": "record_business_confirmation",
+        "offerId": "30000000-0000-4000-8000-000000001000",
+        "offerVersion": 1,
+        "evidenceMessageIds": [
+          "30000000-0000-4000-8000-000000000104"
+        ]
+      },
+      "translationEn": "Yes, the haircut appointment is confirmed for 20 October 2026 at 18:00 under Alex Example, for 25 euros and with those conditions."
+    }
+  ],
+  "expectedOutcome": {
+    "status": "confirmed",
+    "offer": {
+      "id": "30000000-0000-4000-8000-000000001000",
+      "version": 1,
+      "service": "Haircut",
+      "bookingName": "Alex Example",
+      "appointment": {
+        "localDate": "2026-10-20",
+        "localTime": "18:00",
+        "timeZone": "Europe/Madrid",
+        "instant": "2026-10-20T16:00:00Z"
+      },
+      "durationMinutes": null,
+      "price": {
+        "amountMinor": 2500,
+        "currency": "EUR"
+      },
+      "conditions": {
+        "deposit": "none",
+        "cancellationFee": "none",
+        "paidAddOn": "none"
+      },
+      "evidenceMessageIds": [
+        "30000000-0000-4000-8000-000000000102"
+      ]
+    },
+    "confirmedAt": "2026-10-15T10:01:15Z",
+    "confirmationMessageIds": [
+      "30000000-0000-4000-8000-000000000104"
+    ],
+    "summaryEn": "Haircut confirmed for 20 October 2026 at 18:00 in Europe/Madrid, under Alex Example, for €25. Duration is unknown."
+  }
+}

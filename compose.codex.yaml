@@ -1,0 +1,20 @@
+# Opt-in local mock dialogue using a saved ChatGPT subscription login.
+# docker compose -f compose.yaml -f compose.codex.yaml up --build -d
+services:
+  zeus-llama:
+    build:
+      target: runtime-codex
+      args:
+        VITE_MOCK: "false"
+    environment:
+      CALLMATE_DIALOGUE_PROVIDER: codex
+      CALLMATE_DIALOGUE_TIMEOUT_MS: "60000"
+      CODEX_HOME: /codex
+      OPENAI_API_KEY: ""
+    volumes:
+      - callmate-codex:/codex
+  web:
+    environment:
+      VITE_MOCK: "false"
+volumes:
+  callmate-codex:

@@ -1,0 +1,119 @@
+services:
+  mock-relay:
+    build:
+      context: ./mock-conversation-relay
+      target: runtime
+    ports:
+      - "127.0.0.1:${CALLMATE_MOCK_PORT:-8080}:8080"
+    environment:
+      NODE_ENV: development
+      PORT: "8080"
+      MOCK_ACCOUNT_SID: "${MOCK_ACCOUNT_SID:-AC00000000000000000000000000000000}"
+      MOCK_API_USERNAME: "${MOCK_API_USERNAME:-mock}"
+      MOCK_API_PASSWORD: "${MOCK_API_PASSWORD:-mock-local-only}"
+      MOCK_AUTH_TOKEN: "${MOCK_AUTH_TOKEN:-mock-auth-token-local-only}"
+      MOCK_DIAL_DELAY_MS: "${MOCK_DIAL_DELAY_MS:-0}"
+      CALLMATE_WS_URL: "ws://zeus-llama:${CALLMATE_CALLBACK_PORT:-3001}/ws/voice"
+      CALLMATE_TWIML_URL: "http://zeus-llama:${CALLMATE_CALLBACK_PORT:-3001}/twiml"
+      ALLOWED_BACKEND_HOSTS: "zeus-llama,server,host.docker.internal,localhost,127.0.0.1"
+      DEFAULT_LANGUAGE: "${DEFAULT_LANGUAGE:-pl-PL}"
+      AUTO_ANSWER: "${AUTO_ANSWER:-false}"
+      ENABLE_BROWSER_SPEECH: "${ENABLE_BROWSER_SPEECH:-true}"
+      MAX_ACTIVE_CALLS: "${MAX_ACTIVE_CALLS:-5}"
+      CALL_TIMEOUT_SECONDS: "${CALL_TIMEOUT_SECONDS:-300}"
+      BACKEND_TIMEOUT_MS: "${BACKEND_TIMEOUT_MS:-2500}"
+      SESSION_RETENTION_MINUTES: "${SESSION_RETENTION_MINUTES:-60}"
+      LOG_LEVEL: "${CALLMATE_LOG_LEVEL:-info}"
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    init: true
+    stop_grace_period: 10s
+  zeus-llama:
+    image: zeus-llama:local
+    depends_on:
+      mock-relay:
+        condition: service_healthy
+    build:
+      context: .
+      target: runtime
+      args:
+        VITE_MOCK: "${VITE_MOCK:-true}"
+    ports:
+      - "127.0.0.1:${CALLMATE_API_PORT:-3000}:${CALLMATE_API_PORT:-3000}"
+      - "127.0.0.1:${CALLMATE_CALLBACK_PORT:-3001}:${CALLMATE_CALLBACK_PORT:-3001}"
+    environment:
+      NODE_ENV: "${NODE_ENV:-development}"
+      TELEPHONY_PROVIDER: "${TELEPHONY_PROVIDER:-mock}"
+      CALLMATE_MOCK_API_BASE: "${CALLMATE_MOCK_API_BASE:-http://mock-relay:8080}"
+      CALLMATE_MOCK_OPERATOR_ORIGIN: "${CALLMATE_MOCK_OPERATOR_ORIGIN:-http://localhost:${CALLMATE_MOCK_PORT:-8080}}"
+      CALLMATE_MOCK_RELAY_URL: "${CALLMATE_MOCK_RELAY_URL:-ws://zeus-llama:${CALLMATE_CALLBACK_PORT:-3001}/ws/voice}"
+      MOCK_ACCOUNT_SID: "${MOCK_ACCOUNT_SID:-AC00000000000000000000000000000000}"
+      MOCK_API_USERNAME: "${MOCK_API_USERNAME:-mock}"
+      MOCK_API_PASSWORD: "${MOCK_API_PASSWORD:-mock-local-only}"
+      MOCK_AUTH_TOKEN: "${MOCK_AUTH_TOKEN:-mock-auth-token-local-only}"
+      CALLMATE_API_PORT: "${CALLMATE_API_PORT:-3000}"
+      CALLMATE_CALLBACK_PORT: "${CALLMATE_CALLBACK_PORT:-3001}"
+      CALLMATE_DATA_DIR: /data
+      CALLMATE_LLM_SECRETS_DIR: /run/zeus-secrets
+      CALLMATE_LLM_MASTER_KEY_FILE: "${CALLMATE_LLM_MASTER_KEY_FILE-}"
+      CALLMATE_MODE: "${CALLMATE_MODE:-simulator}"
+      CALLMATE_SILENCE_TIMEOUT_SECONDS: "${CALLMATE_SILENCE_TIMEOUT_SECONDS:-60}"
+      CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE: "${CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE-}"
+      CALLMATE_DIALOGUE_PROVIDER: "${CALLMATE_DIALOGUE_PROVIDER:-disabled}"
+      CALLMATE_DIALOGUE_MODEL: "${CALLMATE_DIALOGUE_MODEL-}"
+      CALLMATE_DIALOGUE_TIMEOUT_MS: "${CALLMATE_DIALOGUE_TIMEOUT_MS:-10000}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY-}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY-}"
+      CALLMATE_LOG_LEVEL: "${CALLMATE_LOG_LEVEL:-info}"
+      CALLMATE_SIMULATOR_SCENARIO: "${CALLMATE_SIMULATOR_SCENARIO:-within_plan}"
+      CALLMATE_SIMULATOR_STEP_MS: "${CALLMATE_SIMULATOR_STEP_MS:-750}"
+      CALLMATE_SIMULATOR_APPROVAL_SECONDS: "${CALLMATE_SIMULATOR_APPROVAL_SECONDS:-30}"
+    volumes:
+      - callmate-data:/data
+      - zeus-llm-secrets:/run/zeus-secrets
+    networks:
+      default:
+        aliases: [server]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    stop_grace_period: 10s
+  checks:
+    profiles: [checks]
+    network_mode: none
+    build:
+      context: .
+      target: build
+    command: ["sh", "-c", "npm run typecheck && npm test"]
+  web:
+    profiles: [dev]
+    depends_on:
+      zeus-llama:
+        condition: service_healthy
+    build:
+      context: .
+      target: build
+    ports:
+      - "127.0.0.1:${CALLMATE_WEB_PORT:-5173}:5173"
+    environment:
+      VITE_MOCK: "${VITE_MOCK:-true}"
+      CALLMATE_DEV_API_TARGET: "http://zeus-llama:${CALLMATE_API_PORT:-3000}"
+    command: ["npm", "run", "dev", "--workspace", "@callmate/web", "--", "--host", "0.0.0.0", "--port", "5173", "--strictPort"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173/',{signal:AbortSignal.timeout(2000)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  callmate-data:
+  zeus-llm-secrets:

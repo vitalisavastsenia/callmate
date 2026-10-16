@@ -1,0 +1,57 @@
+{
+  "formatVersion": 1,
+  "id": "dialogue-ambiguous-time",
+  "description": "The business gives an ambiguous time; the assistant must not infer a resolved appointment.",
+  "messages": [
+    {
+      "id": "30000000-0000-4000-8000-000000000501",
+      "turnId": "30000000-0000-4000-8000-000000005501",
+      "speaker": "assistant",
+      "originalText": "Hola, soy un asistente de inteligencia artificial. Llamo en nombre de Alex Example para pedir una cita para un corte de pelo.",
+      "language": "es-ES",
+      "translationEn": null,
+      "final": true,
+      "playback": "played",
+      "createdAt": "2026-10-15T10:01:00Z"
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000502",
+      "turnId": "30000000-0000-4000-8000-000000005502",
+      "speaker": "business",
+      "originalText": "El 20 de octubre tenemos una cita a las seis.",
+      "language": "es-ES",
+      "translationEn": null,
+      "final": true,
+      "playback": "not_applicable",
+      "createdAt": "2026-10-15T10:01:05Z"
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000503",
+      "turnId": "30000000-0000-4000-8000-000000005503",
+      "speaker": "assistant",
+      "originalText": "¿Se refiere a las seis de la mañana o a las seis de la tarde, hora de Madrid?",
+      "language": "es-ES",
+      "translationEn": null,
+      "final": true,
+      "playback": "played",
+      "createdAt": "2026-10-15T10:01:10Z"
+    }
+  ],
+  "turns": [
+    {
+      "triggerMessageId": "30000000-0000-4000-8000-000000000502",
+      "bookingState": "pending",
+      "activeOffer": null,
+      "candidate": {
+        "action": "clarify",
+        "missing": [
+          "time"
+        ]
+      },
+      "translationEn": "On 20 October we have an appointment at six."
+    }
+  ],
+  "expectedOutcome": {
+    "status": "pending"
+  }
+}

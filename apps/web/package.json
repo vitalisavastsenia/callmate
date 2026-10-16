@@ -1,0 +1,33 @@
+{
+  "name": "@callmate/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "predev": "npm run build --workspace @callmate/contracts",
+    "prebuild": "npm run build --workspace @callmate/contracts",
+    "pretypecheck": "npm run build --workspace @callmate/contracts",
+    "pretest": "npm run build --workspace @callmate/contracts"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "@callmate/contracts": "0.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.14",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "tailwindcss": "^4.1.14",
+    "typescript": "7.0.2",
+    "vite": "^7.1.9",
+    "vitest": "^5.0.4",
+    "@playwright/test": "^1.56.1"
+  }
+}

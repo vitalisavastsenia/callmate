@@ -1,0 +1,357 @@
+import { browserStorage } from './browserStorage';
+import { useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { OwnerAccountContext } from './components/AuthGate';
+import { activeKey, pendingKey, readActiveAttempt, savedAttemptTransport } from './attemptStorage';
+import zeusLlamaLogo from './assets/zeus-llama.png';
+import * as api from './api';
+import { defaultSettings } from './mock';
+import { callIsTerminal, subscribeToCall } from './ws';
+import { RequestDraftSchema, ReviewPlanSchema, type ApprovalDecision, type CallSnapshot, type ConnectionState, type HistoryEntry, type Readiness, type RequestDraft, type ReviewPlan, type Scenario, type Settings } from './types';
+import RequestForm from './components/RequestForm';
+import DeleteConversationDialog from './components/DeleteConversationDialog';
+import ContactsView from './components/ContactsView';
+import Home from './components/Home';
+import SettingsView from './components/SettingsView';
+import { readRequestDefaults, saveRequestDefaults } from './preferences';
+import { useApprovalAttention } from './useApprovalAttention';
+import CallHistory from './components/CallHistory';
+import AgreementsView from './components/AgreementsView';
+import { ApprovalCard, LiveCall, PlanDetails, Result, ShortResult, Transcript } from './components/CallViews';
+import { Modal } from './components/ContactFields';
+import { callActivityChanges, type CallActivity } from './callActivity';
+
+type Page = 'home' | 'request' | 'summary' | 'agreements' | 'contacts' | 'settings';
+interface PendingStart { transport: 'browser' | 'backend'; plan: ReviewPlan; mode: 'simulator' | 'live'; key: string; scenario: Scenario }
+export default function App() {
+  const accountControls = useContext(OwnerAccountContext);
+  const storageAvailable = useSyncExternalStore(browserStorage.subscribe, browserStorage.available);
+  const [defaults, setDefaults] = useState(readRequestDefaults);
+  const [simulator, setSimulator] = useState(api.isMockMode);
+  const [inlineApprovalVisible, setInlineApprovalVisible] = useState(false);
+  const [approvalRecords, setApprovalRecords] = useState<Record<string, { callId: string; text: string }>>({});
+  const latestCall = useRef<CallSnapshot | null>(null);
+  const [page, setPage] = useState<Page>('home');
+  const [readiness, setReadiness] = useState<Readiness | null>(null);
+  const [settings, setSettings] = useState<Settings>(defaultSettings);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [plan, setPlan] = useState<ReviewPlan | null>(null);
+  const [requestInitial, setRequestInitial] = useState<RequestDraft | undefined>();
+  const [initialPrepared, setInitialPrepared] = useState(false);
+  const [showCall, setShowCall] = useState(false);
+  const [callWindowOpen, setCallWindowOpen] = useState(false);
+  const [callActivity, setCallActivity] = useState<CallActivity[]>([]);
+  const [deleteTarget, setDeleteTarget] = useState<CallSnapshot | null>(null);
+  const [historyCall, setHistoryCall] = useState<CallSnapshot | null>(null);
+  const [requestKey, setRequestKey] = useState(0);
+  const [call, setCall] = useState<CallSnapshot | null>(null);
+  const [scenario, setScenario] = useState<Scenario>('alternative');
+  const [connection, setConnection] = useState<ConnectionState>('connecting');
+  const [busy, setBusy] = useState(false);
+  const [stopping, setStopping] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [now, setNow] = useState(Date.now());
+  const [pending, setPending] = useState<PendingStart | null>(null);
+  const inFlight = useRef(false);
+  const startCommand = useRef<PendingStart | null>(null);
+  const main = useRef<HTMLElement>(null);
+  const active = !!call && !callIsTerminal(call);
+  function closeCallWindow() {
+    setCallWindowOpen(false);
+    requestAnimationFrame(() => document.getElementById('view-call')?.focus());
+  }
+  const [, storageChanged] = useState(0);
+  const storedAttempt = readActiveAttempt();
+  const foreignPending = !!browserStorage.getItem(pendingKey) && !pending;
+  const unresolved = (!!storedAttempt && (storedAttempt.id !== call?.id || (!!savedAttemptTransport() && savedAttemptTransport() !== (simulator ? 'browser' : 'backend')))) || foreignPending;
+  const mockNeedsDialogue = !simulator && !!readiness?.capabilities.some(c => c.name === 'mock_relay' && c.enabled)
+    && !readiness?.capabilities.some(c => c.name === 'dialogue_integration' && c.ready);
+  const mayStart = storageAvailable && !mockNeedsDialogue && !!readiness?.ready && !active && !loading && !unresolved;
+
+  function openAgentSettings() {
+    setPage('settings');
+    requestAnimationFrame(() => {
+      const section = document.getElementById('settings-agent');
+      section?.scrollIntoView({ behavior: 'instant', block: 'start' });
+      section?.focus({ preventScroll: true });
+    });
+  }
+
+  function acceptSnapshot(next: CallSnapshot) {
+    const old = latestCall.current;
+    if (old?.id === next.id && old.revision > next.revision) return;
+    const changes = callActivityChanges(next, old);
+    if (next.conversationData === 'deleted') setCallActivity([]);
+    else if (old?.id !== next.id || changes.length) setCallActivity(items => old?.id === next.id ? [...items, ...changes] : changes);
+    if (old?.id !== next.id && !callIsTerminal(next)) setCallWindowOpen(true);
+    if (old?.id === next.id && old.pendingApproval && !next.pendingApproval && next.outcome.status === 'not_booked') {
+      const id = old.pendingApproval.id;
+      setApprovalRecords(records => records[id] ? records : { ...records, [id]: { callId: next.id, text: next.outcome.status === 'not_booked' ? next.outcome.summaryEn : '' } });
+    }
+    latestCall.current = next;
+    setCall(old => old?.id === next.id && old.revision > next.revision ? old : next);
+    if (!callIsTerminal(next) && (!readActiveAttempt() || readActiveAttempt()?.id === next.id)) browserStorage.setItem(activeKey, JSON.stringify({ id: next.id, transport: api.isMockMode ? 'browser' : 'backend' }));
+    else if (callIsTerminal(next) && readActiveAttempt()?.id === next.id) browserStorage.removeItem(activeKey);
+  }
+  async function refreshHistory() { setHistory((await api.getHistory()).items); }
+  async function refreshReadiness() { setReadiness(await api.getReadiness()); }
+  async function perform(action: () => Promise<void>) {
+    if (inFlight.current) return;
+    inFlight.current = true; setBusy(true); setError(''); setNotice('');
+    try { await action(); } catch (e) { setError(e instanceof api.ApiError ? e.message + (e.details.length ? ' ' + e.details.map(d => d.path + ': ' + d.message).join('; ') : '') : e instanceof Error ? e.message : 'The request could not be completed.'); }
+    finally { inFlight.current = false; setBusy(false); }
+  }
+  async function executeStart(command: PendingStart) {
+    let next: CallSnapshot;
+    try { next = await api.startCall(command.plan, command.mode, command.key, command.scenario); }
+    catch (error) {
+      setCallWindowOpen(false);
+      if (api.isDefinitiveStartRejection(error)) {
+        browserStorage.removeItem(pendingKey); startCommand.current = null; setPending(null);
+        setShowCall(false); setRequestInitial(command.plan.request); setInitialPrepared(false); setRequestKey(old => old + 1);
+        setPage('request'); setNotice('The server rejected Start before creating an attempt. Review your request or settings before trying again.');
+      } else {
+        setPage('home'); setNotice('The Start response is unknown. Check the original request below; do not start another attempt.');
+      }
+      throw error;
+    }
+    acceptSnapshot(next); setShowCall(true); setPage('home');
+    browserStorage.removeItem(pendingKey); startCommand.current = null; setPending(null);
+  }
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const results = await Promise.allSettled([api.getReadiness(), api.getSettings(), api.getHistory()]);
+        if (cancelled) return;
+        if (results[0].status === 'fulfilled') setReadiness(results[0].value);
+        if (results[1].status === 'fulfilled') setSettings(results[1].value);
+        if (results[2].status === 'fulfilled') setHistory(results[2].value.items);
+        const failed = results.find(result => result.status === 'rejected');
+        if (failed?.status === 'rejected') setError(failed.reason instanceof Error ? failed.reason.message : 'Backend unavailable. Real calls are disabled until readiness is known.');
+        const savedStart = browserStorage.getItem(pendingKey);
+        const currentId = readActiveAttempt()?.id ?? (results[2].status === 'fulfilled' ? results[2].value.items.find(item => !['ended', 'busy', 'no_answer', 'failed'].includes(item.callState))?.id : undefined);
+        if (savedStart) {
+          const saved = JSON.parse(savedStart) as PendingStart;
+          saved.transport ??= simulator ? 'browser' : 'backend';
+          saved.plan = ReviewPlanSchema.parse(saved.plan);
+          startCommand.current = saved; setPending(saved); setPlan(saved.plan); setRequestInitial(saved.plan.request); setRequestKey(old => old + 1); setPage('home');
+          setNotice('A Start response may have been lost. Check the original request below; it uses the same command key and cannot create a second attempt.');
+        } else if (currentId) {
+          const next = await api.getCall(currentId);
+          if (!cancelled) { acceptSnapshot(next); setPlan(next.plan); setRequestInitial(next.plan.request); setRequestKey(old => old + 1); setShowCall(true); setPage('home'); }
+        }
+      } catch (e) { if (!cancelled) setError('Could not restore the previous call. Do not start another attempt until its state is known. ' + (e instanceof Error ? e.message : '')); }
+      finally { if (!cancelled) setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    const changed = (event: StorageEvent) => { if (!event.key || [activeKey, pendingKey].includes(event.key)) storageChanged(n => n + 1); };
+    window.addEventListener('storage', changed);
+    return () => window.removeEventListener('storage', changed);
+  }, []);
+  useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(timer); }, []);
+  useEffect(() => { main.current?.focus({ preventScroll: true }); }, [page]);
+  const callId = call?.id;
+  useEffect(() => {
+    if (!callId) return;
+    return subscribeToCall(callId, {
+      onSnapshot: acceptSnapshot, onConnection: setConnection, onError: setError,
+      onApprovalResolved: resolution => {
+        const text = resolution.status === 'approved' ? 'You answered: Approve this offer' : resolution.status === 'rejected' ? 'You answered: Reject offer' : resolution.status === 'expired' ? 'No answer — approval expired.' : 'The offer changed or closed. The previous approval no longer applies.';
+        setApprovalRecords(old => ({ ...old, [resolution.approvalId]: { callId, text } }));
+      },
+      onConversationDeleted: () => setCall(old => old ? { ...old, messages: [], conversationData: 'deleted' } : old),
+    });
+  }, [callId]);
+  const revision = call?.revision;
+  useEffect(() => { if (call && callIsTerminal(call)) void refreshHistory().catch(() => {}); }, [callId, revision]);
+
+  const backendUnreachable = !simulator && error.includes(api.BACKEND_UNREACHABLE_MESSAGE);
+  const modeLocked = !storageAvailable || active || !!pending || loading || unresolved;
+  const requestDisabled = active || !!pending || loading || unresolved || busy;
+  function newRequest(request?: RequestDraft, destination: 'home' | 'request' = request ? 'request' : 'home') {
+    if (requestDisabled) return;
+    setCallWindowOpen(false);
+    setNotice(''); setError(''); setPlan(null); setShowCall(false); setRequestInitial(request); setInitialPrepared(false);
+    setRequestKey(old => old + 1); startCommand.current = null; setPage(destination);
+    requestAnimationFrame(() => document.getElementById(destination === 'request' ? 'manual-request-title' : 'request-title')?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' }));
+  }
+  function openSummary(selected?: CallSnapshot) {
+    setCallWindowOpen(false);
+    setHistoryCall(selected ?? null);
+    setPage('summary'); void perform(refreshHistory);
+  }
+  async function openHistoryCall(id: string) {
+    const selected = await api.getCall(id);
+    if (!callIsTerminal(selected)) { acceptSnapshot(selected); setCallWindowOpen(true); setShowCall(true); setPage('home'); }
+    else { setHistoryCall(selected); setPage('summary'); }
+  }
+  function repeatCall(selected: CallSnapshot) {
+    if (!callIsTerminal(selected)) { acceptSnapshot(selected); setShowCall(true); setPage('home'); return; }
+    newRequest(structuredClone(selected.plan.request));
+    if (selected.outcome.status === 'uncertain') setNotice('This earlier result was uncertain. Check with the business before repeating the request.');
+  }
+  async function deleteConversation(selected: CallSnapshot) {
+    await api.deleteConversation(selected.id);
+    const next = await api.getCall(selected.id);
+    if (next.id === call?.id) acceptSnapshot(next);
+    setHistoryCall(old => old?.id === next.id ? next : old);
+    await refreshHistory();
+  }
+  async function deleteAgreement(id: string) {
+    const next = await api.deleteAgreement(id);
+    if (next.id === call?.id) acceptSnapshot(next);
+    setHistoryCall(old => old?.id === next.id ? next : old);
+    setHistory(old => old.map(item => item.id === next.id ? { ...item, agreementDeletedAt: next.agreementDeletedAt } : item));
+  }
+  async function callRequest(request: RequestDraft) {
+    if (!browserStorage.available() || !mayStart || pending || browserStorage.getItem(pendingKey) || readActiveAttempt()) return;
+    prepareAttention();
+    const saved = await api.makePlan(request); setPlan(saved);
+    // A backend-normalized plan needs another deliberate review before dialing.
+    if (JSON.stringify(RequestDraftSchema.parse(saved.request)) !== JSON.stringify(RequestDraftSchema.parse(request))) {
+      setRequestInitial(saved.request); setInitialPrepared(true); setRequestKey(old => old + 1);
+      setCallWindowOpen(false); setShowCall(false); setPage('request');
+      setNotice('The backend adjusted the plan. Review the updated details below, then choose Call to approve them.'); return;
+    }
+    if (!browserStorage.available() || browserStorage.getItem(pendingKey) || readActiveAttempt()) { setNotice('Another tab saved a call request. Restore it before starting again.'); return; }
+    const command: PendingStart = { transport: simulator ? 'browser' : 'backend', plan: saved, mode: readiness!.mode, key: crypto.randomUUID(), scenario: (request.requestType ?? 'book') !== 'book' && !['uncertain', 'no_answer', 'interrupted'].includes(scenario) ? 'within_plan' : scenario };
+    if (!browserStorage.setItem(pendingKey, JSON.stringify(command))) {
+      browserStorage.removeItem(pendingKey);
+      throw new Error('Start was not sent because the recovery command could not be saved. Enable browser storage and reload before trying again.');
+    }
+    startCommand.current = command; setPending(command);
+    await executeStart(command);
+  }
+  const homeOutcome = showCall ? call?.outcome.status : undefined;
+  useEffect(() => {
+    if (page !== 'home' || (!showCall && !pending)) return;
+    const target = document.getElementById('home-call-stage');
+    target?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' });
+    target?.focus({ preventScroll: true });
+  }, [page, showCall, !!pending, homeOutcome]);
+  useEffect(() => {
+    if (page === 'summary' && historyCall) {
+      document.getElementById('history-detail')?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' });
+      document.getElementById('history-detail')?.focus({ preventScroll: true });
+    }
+  }, [page, historyCall?.id]);
+  function showApproval() {
+    setCallWindowOpen(true);
+    requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector('.call-dialog .approval-actions')?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'center' })));
+  }
+  const prepareAttention = useApprovalAttention(call?.pendingApproval && Date.parse(call.pendingApproval.expiresAt) > now ? call.pendingApproval : null, showApproval);
+  function decideApproval(decision: 'approve' | 'reject') {
+    if (!call || connection !== 'connected' || !call.pendingApproval || Date.parse(call.pendingApproval.expiresAt) <= Date.now()) return;
+    void perform(async () => {
+      const approval = call.pendingApproval; if (!approval) return;
+      const storageKey = 'zeus-llama.decision.' + approval.id + '.' + decision;
+      const key = browserStorage.getItem(storageKey) ?? crypto.randomUUID(); browserStorage.setItem(storageKey, key);
+      const body: ApprovalDecision = { approvalId: approval.id, plan: approval.plan, offer: { offerId: approval.offer.id, offerVersion: approval.offer.version }, decision };
+      try {
+        const next = await api.decideApproval(call.id, body, key);
+        setApprovalRecords(old => ({ ...old, [approval.id]: { callId: call.id, text: decision === 'approve' ? 'You answered: Approve this offer' : 'You answered: Reject offer' } }));
+        acceptSnapshot(next);
+      } catch (e) { acceptSnapshot(await api.getCall(call.id)); throw e; }
+    });
+  }
+  async function switchMode(next: boolean) {
+    if (!browserStorage.available() || active || pending || unresolved || loading || simulator === next) return;
+    api.setMockMode(next); setSimulator(next); setCall(null); latestCall.current = null;
+    setCallWindowOpen(false); setCallActivity([]);
+    setPlan(null); setShowCall(false); setHistoryCall(null); setHistory([]); setReadiness(null); setConnection('closed');
+    const results = await Promise.allSettled([api.getReadiness(), api.getSettings(), api.getHistory()]);
+    if (results[0].status === 'fulfilled') setReadiness(results[0].value);
+    if (results[1].status === 'fulfilled') setSettings(results[1].value);
+    if (results[2].status === 'fulfilled') {
+      setHistory(results[2].value.items);
+      const ongoing = results[2].value.items.find(item => !['ended', 'busy', 'no_answer', 'failed'].includes(item.callState));
+      if (ongoing) { acceptSnapshot(await api.getCall(ongoing.id)); setShowCall(true); }
+    }
+    const failure = results.find(result => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
+  }
+  const approvalLines = Object.values(approvalRecords).filter(record => record.callId === call?.id).map(record => record.text);
+  const attentionPanel = !callWindowOpen && !!call?.pendingApproval && !callIsTerminal(call) && (page === 'summary' || page === 'agreements' || page === 'settings' || page === 'contacts' || !inlineApprovalVisible);
+  function stopCall() {
+    if (!call || stopping) return; setStopping(true); setError('');
+    void api.stopCall(call.id).then(acceptSnapshot).catch(e => setError((e instanceof Error ? e.message : 'Stop response unavailable.') + ' Hangup is not confirmed; keep checking this attempt.')).finally(() => setStopping(false));
+  }
+  const liveCall = call && <LiveCall call={call} connection={connection} now={now} busy={busy} stopping={stopping} showStop={!callWindowOpen} onStop={stopCall} onDecision={decideApproval} onApprovalVisibility={setInlineApprovalVisible} approvalLines={approvalLines} activity={callActivity} />;
+  const callFlow = pending && plan ? <section id="home-call-stage" tabIndex={-1} className="panel workflow-stage">
+    <h2>Check the original call request</h2><p className="notice">The Start response may have been lost. Retrying uses the same command key and cannot create a second attempt.</p>
+    <PlanDetails plan={plan} /><button className="primary mt-5" disabled={busy} onClick={() => void perform(() => executeStart(pending))}>{busy ? 'Checking…' : 'Check original Start request'}</button>
+  </section> : showCall && call ? <div id="home-call-stage" tabIndex={-1} className="workflow-stage">
+    {callWindowOpen ? <section className="panel"><h2>{active ? 'Call in progress' : 'Call finished'}</h2><p>The conversation and agent actions are open in the call window.</p></section> : callIsTerminal(call) ? <>
+      <ShortResult call={call} />
+      <div className="flex flex-wrap gap-3"><button className="primary" onClick={() => openSummary(call)}>View in Summary</button><button className="secondary" disabled={requestDisabled} onClick={() => newRequest()}>New request</button></div>
+    </> : liveCall}
+  </div> : undefined;
+  return <div className={'app-shell mx-auto max-w-7xl px-4 py-6 sm:px-8' + (attentionPanel ? ' has-attention-panel' : '')}>
+    <header className="app-header mb-6 border-b border-stone-700 pb-6">
+      <div className="flex items-center gap-3"><img src={zeusLlamaLogo} alt="White llama wearing a golden headset and laurel crown" width={203} height={342} className="h-[80px] w-auto shrink-0 object-contain sm:h-[104px]" /><div><p className="eyebrow">A little divine intervention</p><h1 className="font-serif text-3xl sm:text-5xl">Zeus <span className="text-amber-300">Llama</span></h1></div></div>
+      <div className="header-controls">{accountControls}<nav aria-label="Main navigation" className="header-nav">
+      <button className="secondary" aria-current={page === 'home' ? 'page' : undefined} onClick={() => setPage('home')}>Home</button>
+      <button className="secondary" aria-current={page === 'request' ? 'page' : undefined} onClick={() => setPage('request')}>Request</button>
+      <button className="secondary" aria-current={page === 'summary' ? 'page' : undefined} onClick={() => openSummary()}>Summary</button>
+      <button className="secondary" aria-current={page === 'agreements' ? 'page' : undefined} onClick={() => { setPage('agreements'); void perform(refreshHistory); }}>Agreements</button>
+      <button className="secondary" aria-current={page === 'contacts' ? 'page' : undefined} onClick={() => setPage('contacts')}>Contacts</button>
+      <button className="secondary" aria-current={page === 'settings' ? 'page' : undefined} onClick={() => setPage('settings')}>Settings</button>
+      </nav></div>
+    </header>
+    {call && <button id="view-call" type="button" className="secondary mb-5" onClick={() => setCallWindowOpen(true)}>View call{active ? ' · In progress' : ' · Finished'}</button>}
+    {error && <div role="alert" className="notice error"><p>{error}</p>{backendUnreachable && <>
+      <button type="button" className="secondary mt-3" disabled={busy || modeLocked} onClick={() => void perform(() => switchMode(true))}>Switch to Simulator</button>
+      {modeLocked && <p className="mt-2 text-base">Finish or resolve the current call attempt before switching modes.</p>}
+    </>}</div>}{notice && <p role="status" className="notice">{notice}</p>}
+    {!storageAvailable && <div role="alert" className="notice error"><p>Browser storage is unavailable. New calls and mode changes are disabled because recovery data cannot be read or saved. Keep this tab open while a call or Start request is unresolved; existing call controls remain available.</p>{!active && !pending && <button type="button" className="secondary mt-3" onClick={() => window.location.reload()}>Reload after enabling storage</button>}</div>}
+    {!loading && unresolved && <div role="alert" className="notice"><p>A call request is saved in another tab or transport. Restore it before starting or switching modes.</p><button type="button" className="secondary mt-3" onClick={() => window.location.reload()}>Restore saved call</button></div>}
+    <main ref={main} tabIndex={-1} className="outline-none">
+      {loading && <p role="status" className="notice">Checking readiness and restoring local state…</p>}
+      <div hidden={page !== 'home' && page !== 'request'}>
+        {!simulator && readiness?.checks.filter(check => check.name === 'telephony' && check.status === 'missing').map(check => <p key={check.name} role="status" className="notice mb-4">{check.message}</p>)}
+        <div hidden={page !== 'home'}><Home onRequest={() => { setNotice(''); setPage('request'); }} /></div>
+        {!loading && <RequestForm key={requestKey} initial={requestInitial} initialPrepared={initialPrepared} view={page === 'request' ? 'request' : 'home'} onRequest={message => { setNotice(message ?? ''); setPage('request'); }} settings={settings} defaults={defaults} approvalPending={!!call?.pendingApproval} busy={busy} locked={requestDisabled || showCall} callDisabled={!mayStart}
+          callHelp={<>{mockNeedsDialogue && <div className="notice"><p>Mock calls need a ready dialogue engine. Choose a provider and model in Settings → LLM agent, then add your API key or set up the Codex CLI login.</p><button type="button" className="secondary mt-3" onClick={openAgentSettings}>Set up LLM agent</button></div>}{(!readiness?.ready || mockNeedsDialogue) && <div className="notice"><p>Calling requires confirmed backend readiness.</p><button type="button" className="secondary mt-3" disabled={busy} onClick={() => void perform(refreshReadiness)}>Check readiness again</button></div>}{!simulator && !mockNeedsDialogue && readiness?.capabilities.some(c => c.name === 'mock_relay' && c.ready) && <p className="notice">Local mock call: open localhost:8080 and click Answer when it rings. No real phone number is dialed.</p>}{api.isMockMode && <p className="text-base text-stone-300">No number will be dialed. Custom simulator requests use scripted answers and may need follow-up.</p>}</>}
+          flow={callFlow} onCall={request => void perform(() => callRequest(request))}
+          scenario={scenario} onScenarioChange={setScenario}
+        />}
+      </div>
+      {page === 'summary' && <div className="space-y-6">
+        <CallHistory history={history} currentCall={call} now={now} busy={busy} repeatDisabled={requestDisabled} loading={loading}
+          onOpen={id => void perform(() => openHistoryCall(id))} onRepeat={id => void perform(async () => repeatCall(await api.getCall(id)))}
+          onCreate={() => newRequest(undefined, 'home')} onReturn={() => setPage('home')} />
+        {historyCall && <section id="history-detail" tabIndex={-1} className="workflow-stage" aria-label="Call details">
+          <Result call={historyCall} deleting={busy} onDelete={() => setDeleteTarget(historyCall)} />
+          <section className="panel mb-6"><h3 className="section-title">Agreements</h3>{historyCall.outcome.status === 'confirmed' ? <p>{historyCall.outcome.summaryEn}</p> : <p>{historyCall.outcome.status === 'completed' ? 'See the findings above for answered and unanswered questions. No appointment is confirmed.' : 'No verified agreement is recorded.'}</p>}</section>
+          <Transcript call={historyCall} approvalLines={Object.values(approvalRecords).filter(r => r.callId === historyCall.id).map(r => r.text)} />
+          <button className="primary mt-5" disabled={requestDisabled} onClick={() => repeatCall(historyCall)}>Repeat</button>
+        </section>}
+      </div>}
+      {page === 'agreements' && <AgreementsView history={history} currentCall={call} now={now} loading={loading} busy={busy} onRefresh={() => void perform(refreshHistory)} onOpen={id => void perform(() => openHistoryCall(id))} onDelete={deleteAgreement} />}
+      {page === 'contacts' && <ContactsView />}
+      {page === 'settings' && <SettingsView key={String(simulator)} readiness={readiness} settings={settings} defaults={defaults} busy={busy || loading} simulator={simulator} modeLocked={modeLocked} scenario={scenario} onScenarioChange={setScenario}
+        onModeChange={value => void perform(() => switchMode(value))} onRefresh={() => void perform(refreshReadiness)}
+        onSave={async (value, nextDefaults) => {
+          if (inFlight.current) throw new Error('Another command is pending. Please try again.');
+          inFlight.current = true; setBusy(true); setNotice('');
+          try { const saved = await api.updateSettings(value); setSettings(saved); saveRequestDefaults(nextDefaults); setDefaults(nextDefaults); }
+          finally { inFlight.current = false; setBusy(false); }
+        }} />}
+    </main>
+    {deleteTarget && <DeleteConversationDialog call={deleteTarget} onDelete={() => deleteConversation(deleteTarget)} onClose={() => setDeleteTarget(null)} />}
+    {callWindowOpen && call && <Modal className="call-dialog" title={'Call with ' + call.plan.request.business.name} onClose={closeCallWindow}
+      headerActions={!callIsTerminal(call) ? <button type="button" className="stop" disabled={stopping || call.callState === 'ending'} onClick={stopCall}>{stopping ? 'Requesting stop…' : call.callState === 'ending' ? 'Hangup requested…' : 'Stop call'}</button> : undefined}>
+      <p className="call-context">{call.plan.request.business.phone} · Closing this window does not stop the call.</p>
+      {error && <p role="alert" className="notice error">{error}</p>}
+      {callIsTerminal(call) && <ShortResult call={call} />}
+      {liveCall}
+      <div className="call-window-footer flex flex-wrap gap-3"><button type="button" className="secondary" onClick={closeCallWindow}>{active ? 'Minimize call' : 'Close call window'}</button>{callIsTerminal(call) && <><button type="button" className="primary" disabled={requestDisabled || !mayStart} onClick={() => void perform(() => callRequest(structuredClone(call.plan.request)))}>Call again</button><button type="button" className="secondary" onClick={() => openSummary(call)}>View in Summary</button></>}</div>
+    </Modal>}
+    {attentionPanel && call && <aside className="attention-panel" aria-label="Zeus needs your approval"><ApprovalCard compact call={call} now={now} disabled={busy || connection !== 'connected'} onDecision={decideApproval} /><button className="text-add" onClick={showApproval}>Go to the conversation</button></aside>}
+    <footer className="mt-10 text-center text-base text-stone-400">Your intention. Zeus’s voice.</footer>
+  </div>;
+}

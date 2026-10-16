@@ -1,6 +1,6 @@
 # CallMate backend to UI message contract
 
-Status: proposed rules, formats, and examples for implementation review. Updated: 2026-10-15. This document adds no application implementation.
+Status: current HTTP/SSE interaction reference, updated 2026-10-16. Examples illustrate the shared executable schemas and local runtime; future real-provider behavior does not imply implemented Twilio calling. See [architecture](architecture.md) for the runtime boundary.
 
 Engineer 2 produces these messages; Engineer 1 consumes them. Engineer 3 supplies conversation and booking information to the backend through the internal dialogue ports. The browser receives application messages, never raw Twilio/OpenAI events.
 
@@ -17,9 +17,27 @@ Use HTTP JSON for commands and snapshots, and server-sent events (SSE) for ongoi
 | Two separate states | `callState` describes the telephone connection; `bookingState` and `outcome` describe the appointment. An ended call does not mean a confirmed appointment. |
 | Authoritative state | Backend persists a consistent snapshot and its events together before publishing. The UI cannot grant booking authority or infer acceptance from a button click. |
 | IDs and time | UUIDs identify app entities. Timestamps include an offset; appointment data also includes business-local time and IANA timezone. Show the business timezone explicitly. |
-| Prices | Integer minor units: `3500 EUR` means €35. Service prices are EUR; call costs are USD in v1. Unknown values are `null`, never zero. |
+| Prices | Integer minor units: `3500 EUR` means €35. Service prices are EUR; call budgets match the application settings currency (USD or EUR). Usage retains its recorded currency. Unknown values are `null`, never zero. |
 | Privacy | Never send credentials, provider payloads, stack traces, or unapproved contact data. Error text must not echo sensitive request content. |
 | Compatibility | Parse messages using the shared schemas. Unknown event type/version or invalid payload requires resynchronization and an incompatibility indicator if it persists; do not guess a meaning. |
+
+### Owner authentication
+
+Before mounting the application, request `GET /api/auth/session`. A fresh installation returns:
+
+```json
+{ "setupRequired": true, "authenticated": false, "username": null, "expiresAt": null }
+```
+
+Show owner setup for that state, otherwise show sign-in when `authenticated` is false. Submit `{ "username": "owner", "password": "<user-entered-password>" }` to `/api/auth/setup` or `/api/auth/login` as JSON. Successful responses set the HttpOnly session cookie and return:
+
+```json
+{ "setupRequired": false, "authenticated": true, "username": "owner", "expiresAt": "2026-10-17T08:00:00.000Z" }
+```
+
+Mount the app only after this response. Credentials must never enter URL parameters, local storage, logs, or call messages. REST and fetch-based SSE send same-origin cookies. `401 UNAUTHENTICATED` on a private API unmounts the app and shows login; it never triggers Start, redial, or a simulator fallback. `401 INVALID_CREDENTIALS` keeps the login form with a generic error, `409 AUTH_ALREADY_CONFIGURED` means use login, and `429 AUTH_RATE_LIMITED` asks the user to wait five minutes. Connection errors show Retry on the locked login screen.
+
+`POST /api/auth/logout` with `{}` revokes the current session and returns `{ "loggedOut": true }`; clear displayed private data by unmounting the app. Existing SSE streams close on logout/expiry. If logout fails, show an error and keep the session state until the server confirms. Recheck sessions on window focus, every minute, and at the returned absolute expiry. There is no public password reset or additional-user registration flow; [local recovery](docker-development.md#16-owner-login-and-sessions) preserves application data.
 
 ## 2. HTTP exchanges
 
@@ -27,7 +45,7 @@ The [complete API reference](interfaces.md#4-private-http-api) defines all field
 
 | User action | UI sends | Backend returns | UI behavior |
 | --- | --- | --- | --- |
-| Open app | `GET /api/v1/readiness` | `200 Readiness` | Show simulator/live mode and readiness checks. Disable live Start when not ready. No attempt event stream exists yet. |
+| Open app | `GET /api/v1/readiness` | `200 Readiness` | Show simulator/live mode, checks and capability flags. Gate the relevant Start action on its capability readiness. No attempt event stream exists yet. |
 | Prepare request | `POST /api/v1/plans` with `RequestDraft` | `201 { plan: ReviewPlan }` | Show normalized details for deliberate review. This does not start a call. |
 | Start reviewed plan | `POST /api/v1/calls` with `{ planId, planVersion, mode }` and UUID `Idempotency-Key` | `202 { call: CallSnapshot }` | Show that attempt, then subscribe to its events. `202` means accepted for processing, not connected. |
 | Load/reconnect | `GET /api/v1/calls/:attemptId` | `200 { call: CallSnapshot }` | Replace authoritative state; resume events from `lastEventSequence`. |
@@ -35,8 +53,13 @@ The [complete API reference](interfaces.md#4-private-http-api) defines all field
 | Stop | `POST /api/v1/calls/:attemptId/stop` with `{}` | `202 { call: CallSnapshot }` | Show the returned state, usually `ending`; wait for provider termination or reconciliation. Stop is repeatable. |
 | View history | `GET /api/v1/history` | `200 { items: HistoryEntry[], nextCursor }` | Render saved outcomes; an empty list is a normal state. |
 | Delete conversation | `DELETE /api/v1/calls/:attemptId/conversation` | `200 { attemptId, deleted: true }` | Remove transcript and translation text locally; retain structured booking metadata. |
+| Delete Agreement | `DELETE /api/v1/calls/:attemptId/agreement` | `200 { call: CallSnapshot }` with `agreementDeletedAt` | Remove from Agreements/list/calendar, retaining the source call. This does not cancel an appointment. |
+| Load/save LLM agent | `GET/PUT /api/v1/settings/llm` | `200 LlmSettingsSchema` | Render provider/model/effort and credential status only. PUT may include write-only keys; clear secret inputs after success, never persist them in browser storage. |
+| Load/save call engine | `GET/PUT /api/v1/settings/call-engine` | `200 { engine, editable }` | Show Mock service or Twilio. Label Twilio not implemented; new Backend Starts return `503 PROVIDER_NOT_READY`, without fallback. |
 
 For a retry of the same Start or approval command, reuse its original idempotency key and body. Never generate a new Start key merely because the response was lost. A new key represents a new command. A transport timeout is a UI connection problem, not proof that the backend rejected the command.
+
+Persist the pending Start key/body before sending. An ambiguous HTTP 500 also requires resolving that same command/attempt before a new Start. Call-engine and LLM settings return `editable=false` while a call holds the reservation; concurrent updates return `409 CALL_ALREADY_ACTIVE`. Browser Simulator is independent of the backend engine and keeps local call history, while contacts and these settings remain server-backed in both browser modes. Credential usability in Settings/readiness is a local decryption/configuration check, not a paid provider probe.
 
 ## 3. SSE envelope and payload formats
 
@@ -64,9 +87,10 @@ This block describes a format, not literal JSON. `sequence` increases per attemp
 | `offer.updated` | `Offer` | Business proposed a particular service/time/price/conditions, with evidence IDs. This is not a booking. |
 | `approval.requested` | `ApprovalRequest` | Show the exact offer, reason, plan/offer versions, and expiry; enable decision controls only while valid. |
 | `approval.resolved` | `{ approvalId, offer: { offerId, offerVersion }, status }` | Status is `approved`, `rejected`, `expired`, or `invalidated`. Close/disable controls for that approval. |
-| `booking.updated` | `{ bookingState: BookingState, outcome: Outcome }` | Booking progress or result changed. Only `outcome.status: "confirmed"` permits a confirmed result/calendar export. |
-| `usage.updated` | `{ estimate, settledTotal, status, measuredAt }` | Show unavailable, estimated, partial, or settled USD call costs. |
+| `booking.updated` | `{ bookingState: BookingState, outcome: Outcome }` | Appointment/task progress or result changed. Generic completion uses `bookingState: "completed"`. Only `outcome.status: "confirmed"` permits a confirmed result/calendar export. |
+| `usage.updated` | `{ estimate, settledTotal, status, measuredAt, testUsage? }` | Show unavailable, estimated, partial, or settled costs in the recorded currency. Test-rate estimates remain separate from unavailable provider charges. |
 | `conversation.deleted` | `{ conversationData: "deleted" }` | Immediately clear cached transcript/translation text, then refetch the snapshot. |
+| `agreement.deleted` | `{ agreementDeletedAt: ISO timestamp }` | Refetch the snapshot and hide its saved entry from Agreements/list/calendar; retain the call in Summary. This does not cancel a business appointment. |
 | `call.error` | `{ code: ErrorCode, message: string, recoverable: boolean }` | Show a safe error notice. `recoverable` does not authorize retrying a dial or deciding the booking outcome. |
 
 `CallState`, `BookingState`, and all reason/code enums are fixed by the shared schemas. Do not add ad hoc event names such as `booking_success` or `new_message` in an individual scope.
@@ -80,7 +104,7 @@ Events listed together describe one persisted transition; publish them in the li
 | Call creation accepted | HTTP `202` snapshot: `callState: creating`, `bookingState: pending`, `outcome: { status: pending }`. | “Starting call.” Open the stream for this attempt. |
 | Provider dial begins / phone rings | `call.status` with `dialing`, then `ringing` if reported. | “Calling…” / “Ringing.” Providers may skip an intermediate status. |
 | Business answers | `call.status` with `connected`. | “Connected.” No booking success indication. |
-| Business speaks | `transcript.updated` with `speaker: business`, Spanish text, `final`, and `translationEn` or `null`. | Show Spanish and available English translation. Mark provisional text; no duplicate rows for updates. |
+| Business speaks | `transcript.updated` with `speaker: business`, original conversation-language text, `final`, and `translationEn` or `null`. | Show original text in `language` and the available English translation. Mark provisional text; no duplicate rows for updates. |
 | Translation arrives later | `transcript.updated` for the same message ID, with `translationEn` filled. | Update the existing row. |
 | Assistant prepares/speaks/is interrupted | `transcript.updated` with `speaker: assistant` and actual `playback` state: `withheld`, `generated`, `playing`, `played`, or `interrupted`. | Distinguish prepared text from played speech. Do not claim the whole message was heard after interruption. |
 | Complete offer extracted | `offer.updated`, then `booking.updated` with `offer_received` and pending outcome. | Show proposed details without a confirmed badge. Incomplete/ambiguous details remain conversation/clarification, not a fabricated complete offer. |
@@ -281,3 +305,89 @@ For v1, use snapshots as authoritative state and SSE as change notifications. On
 6. Heartbeats are SSE comments without IDs. Reconnection never issues Start. Keep stream/reconnect handling available for later usage/deletion updates even after telephone termination.
 
 Browser connection state, request-in-flight indicators, and countdown display are UI state. Telephone state, pending approvals, booking authority, and final outcomes are backend state.
+
+## Development manual-call extension
+
+Backend-started mock calls now use the same persisted attempt GET/Stop/history/deletion/SSE routes. Their snapshot is identified by `kind: "manual_mock"`, with `plan: null`, `mode: "simulator"`, no offer/approval and no booking authority. History entries include the same kind marker. Consumers must branch on this marker before rendering booking-plan fields; existing booking snapshots retain their format. See [the manual-call contract](interfaces.md#9-persisted-manual-mock-calls-development-extension).
+
+For manual `transcript.updated` events, preserve the exact text/locale, render a missing translation as unavailable, and replace a message with the same ID when its playback changes from `withheld` to `generated`. Do not show played/heard or booked: this path has no audio-playback acknowledgment or booking engine. A relay disconnect uses `reconciliation_required`; completion is `not_booked`. SSE replay, deletion resets and sequence handling follow the existing rules. The simple development console continues polling a projection of these persisted records; clients can consume the common SSE endpoint directly.
+
+Manual mock recovery uses the same `call.error`, `call.status` and `booking.updated` events. After restart/relay loss, show `reconciliation_required` as an active attempt with a safe error; keep Start blocked. When a provider-confirmed orphan hangup completes, show `ended` with `not_booked/technical_failure` (or `user_stopped` for explicit Stop). If the provider already ended the call, preserve its terminal meaning. Missing provider records and unknown CallSids remain unresolved; do not treat a page refresh, restart, or error as permission for a fresh Start. Recovery emits no replayed greeting or fabricated transcript. The development projection exposes nullable `sessionId` for correlation; no token/hash is exposed.
+
+Signed mock progress callbacks use the existing lifecycle/SSE event shapes. Duplicate/stale callbacks and events after a terminal result produce no UI revision or SSE event. Higher-sequence regressing progress advances only an internal cursor. A callback can report `connected` before relay setup; this leaves initial text `withheld`. UI SSE sequence remains independent of provider `SequenceNumber`, so clients must not infer a replay gap from missing provider sequence numbers. Stop/recovery states remain active until termination is confirmed, and completed/deleted conversations remain closed across callback replay and restart.
+
+For manual mock deadline expiry, display the existing `call.error` duration/silence message and `call.status=ending`; keep Start blocked until provider-confirmed termination. The final `booking.updated` has `not_booked/technical_failure` and a summary identifying the deadline. Explicit user Stop remains `not_booked/user_stopped`. Repeated Stop does not create extra lifecycle events after completion. Keep Stop usable while Start is in progress, retain the attempt/request ID for cancellation, and do not let a delayed Start response overwrite a completed Stop. Backend controls continue without a browser. See [call controls](docker-development.md#12-call-controls-and-limits).
+
+Automatic retention emits the same `conversation.deleted` event as manual deletion. Clear cached original/translated messages and the initial manual message, then refetch the empty snapshot while preserving the booking card and outcome. A stale replay cursor receives `reset/snapshot_required`; refetch and clear cached text under the same rule. History entries remain. Automatic cleanup applies only after terminal completion and never implies a call ended or a booking changed. The development polling projection includes `conversationData=deleted`; preserve a new unsent draft when clearing the old editor text. See [automatic retention](docker-development.md#13-automatic-conversation-retention).
+
+For explicit test rates, `usage.updated`, snapshots and history may include `usage.testUsage`; see the [payload example and rate rules](docker-development.md#14-test-rate-usage-and-budgets). Display **Test-rate estimate** and its USD amount separately from **Provider charges: unavailable**. Keep that label after the call ends; completion never makes synthetic amounts settled. Without test metadata, keep the normal usage-status rules. `409 BUDGET_EXCEEDED` during Start means the configured test budget permits no elapsed time; show the error without a call card. During an active call, `call.error/BUDGET_EXCEEDED` means local budget termination is underway: disable further output/approval, retain the call card and usage, and keep Start blocked until terminal confirmation. A later `usage.updated` can exceed the budget while hangup is unconfirmed; display the reported value without clamping it. Budget termination cannot change a confirmed booking. The simple console returns usage through its development projection; the full cost display belongs to the booking UI.
+
+
+Readiness responses now include `capabilities: [{ name, enabled, ready }]` and `configuration`/`mock` checks. Display a disabled capability separately from an enabled capability whose prerequisites failed. A failed dependency still returns HTTP 200: inspect the report instead of treating HTTP success as call readiness. When the selected mock transport is down, overall `ready=false` and `manual_mock_calls.ready=false`; local history remains available. A separately configured fake/scripted transport needs no mock probe. Live calling and provider billing remain disabled, while configured Codex/OpenAI/Claude dialogue is available for reviewed mock calls. `voiceEngine` describes the configured path, not verified real audio. API dialogue readiness checks local key usability, not provider connectivity. Refreshing readiness never starts or retries a call. See the [full response example](docker-development.md#15-readiness-diagnostics); reverse callback/WS connectivity and provider credentials are not proven by the health probe.
+
+## Generic request extension
+
+The executable shared schemas now include a generic request extension requested for the web UI. Existing appointment fixtures/saved drafts remain readable. Backend and dialogue consumers must adopt and review this extension before enabling generic live calls; strict older consumers will reject the new fields. The existing version-1 routes and event envelope are retained, and no server/provider implementation is implied.
+
+New drafts supply `requestType` (`book`, `ask`, `change`, `other`), `goal` (English), `timeZone` (IANA), and `boundaries: { canDecideAlone: string[], mustAskMe: string[] }`, together with the existing destination, approved contact data and call limits. Empty boundary lists grant no extra authority. Free-text boundaries need authoritative backend policy handling; the browser never infers permissions by parsing their prose.
+
+New UI drafts also send `tone: string[]` (at most 10 nonempty strings, 100 characters each) and `tone_notes: string` (at most 2,000 characters), plus `contact_id?: string` (UUID) when referencing a selected/saved destination contact. These belong to `RequestDraft`, the body of `POST /api/v1/plans`, and are retained in `ReviewPlan.request` and call snapshots. They are optional in the shared schema so older plans remain readable. Backend consumers must accept/persist these fields before enabling the updated UI in live mode; the HTTP routes and SSE protocol are unchanged. Tone and notes express manner/context, not additional authority or permission to share data. The reviewed boundaries and sharing policy remain authoritative.
+
+Destination contacts persist in backend SQLite through the [private contacts API](interfaces.md#4-private-http-api), including in browser-simulator call mode. Contact name/phone/timezone/tone/notes are copied into the editable request when selected. Later edits/deletion of a saved contact cannot alter a reviewed or started call. The form displays call duration in minutes and serializes `callLimits.maxDurationSeconds` in seconds, keeping the existing 30–600 second limits. Country-code timezone defaults are editable suggestions, including for countries with multiple zones.
+
+### Contact messages
+
+Create example (`POST /api/v1/contacts`):
+
+```json
+{"name":"Barber Luna","phone":"+34612345678","timeZone":"Europe/Madrid","tone":["Friendly"],"notes":"Please speak slowly."}
+```
+
+The backend responds `201 { "contact": { "id": "<generated UUID>", ...submittedNormalizedFields } }`. List returns `200 { "items": [...] }`. Update uses `PUT /api/v1/contacts/:contactId` with the same details and returns `200 { "contact": ... }`. Delete returns `200 { "contactId": "<UUID>", "deleted": true }`, including on retry. These HTTP acknowledgements update the contact list/picker; no call-state SSE message is emitted.
+
+| Case | Backend response | UI behavior |
+| --- | --- | --- |
+| Invalid name/phone/timezone or excessive notes/tone | `400 INVALID_REQUEST` in `ApiErrorSchema` | Keep the form and show the error; permit correction. |
+| Phone belongs to another saved contact | `409 CONTACT_ALREADY_EXISTS` | Explain the duplicate; keep entered values. |
+| Contact was deleted before an update | `404 NOT_FOUND` | Keep the draft and report that the contact no longer exists. |
+| Save/delete network failure or timeout | No acknowledged mutation | Preserve form/cache; show error and permit deliberate retry. A lost response may have saved the record; refresh to reconcile before recreating it. |
+| List unavailable | Failed GET | Show an error and Retry; do not pretend an empty response was received. |
+| Import | `200 { "imported": 2, "duplicates": 1 }` | Reload the list and display counts. Each batch is atomic; retry interrupted multi-batch imports by deduplicating phones. |
+
+Legacy `zeus-llama.contacts.v1` browser records are imported only when the user selects **Import previous browser contacts**; the original browser copy remains untouched. Address-book entries do not grant sharing or booking authority.
+
+| Request type | Extra data and validation |
+| --- | --- |
+| `book` | Nonempty `service`, at least one `availability` window, `pricePolicy`, and `bookingAuthority`. The approved sharing name remains in `bookingName`, and may be withheld. A business that needs an unapproved name must be asked/left unbooked. |
+| `ask` | Nonempty `questions: string[]`; no appointment data required. |
+| `change` | `changeRequest: { description, bookingReference }`; reference may be empty. Optional `availability` describes new windows; cancellation needs no new window. |
+| `other` | No extra fields. |
+
+The UI clears unused service/availability/price/authority/question/change values when serializing a different type. Booking fields retain neutral defaults in parsed non-booking drafts for compatibility with existing consumers, not fabricated appointment details. Old drafts without `requestType` retain their appointment semantics. New call budgets use the selected transport's settings currency (USD or EUR); existing usage retains its currency. A currency change invalidates plan review and requires re-entering edited or saved amounts in the new currency. Enforce budgets in a supported matching currency or reject them before dialing. No currency conversion is performed.
+
+Non-booking calls cannot carry appointment offers/pending appointment approvals or claim `outcome.status: "confirmed"`. They may emit the existing `booking.updated` event with `bookingState: "completed"` and this outcome:
+
+```json
+{
+  "status": "completed",
+  "resolution": "needs_follow_up",
+  "summaryEn": "The document list was explained, but the referral requirement still needs checking.",
+  "findings": [
+    { "question": "Do I need a referral?", "answerEn": "It depends on the service; the business did not verify this.", "answered": false }
+  ],
+  "nextSteps": ["Confirm the referral requirement with the business."],
+  "evidenceMessageIds": ["40000000-0000-4000-8000-000000000001"]
+}
+```
+
+`resolution: "resolved"` requires all findings answered. `needs_follow_up` requires next steps and renders “Follow-up needed,” never an appointment confirmation. While text is retained, evidence IDs must reference finalized recipient messages in the same attempt. History may include `requestType` so stopped/unanswered tasks display “Request not completed.” Calendar export remains exclusive to a structured confirmed appointment.
+
+The browser simulator preserves the original booking/approval scenarios. Its separate non-booking script explicitly reports unanswered questions and leaves existing bookings unchanged; there is no simulated generic commitment approval or arbitrary goal execution. Actual changes/cancellations, generic approval semantics, and dialogue policy remain integration work.
+
+### Multilingual haircut transcripts
+
+Reviewed haircut mock calls support `es-ES`, `ru-RU`, `en-US`, and `pl-PL` via optional `request.language`; old plans default to Spanish. Assistant messages may include `phrase: { id, version, language }`, for example `{ "id": "haircut.greeting", "version": 1, "language": "ru-RU" }`. Display `originalText` and `translationEn` from the event/snapshot, using the message language for accessibility. Phrase IDs identify a versioned backend SQLite template and are not playback instructions. They are absent on business speech and optional on historical messages. Existing events, message IDs, playback states, retention, and exact-offer approval rules are unchanged. See the [localized dialogue contract and complete payload example](interfaces.md#localized-haircut-dialogue).
+
+### Domain template fields
+
+Review/plan requests can add `templateId` and `templateDetails` for any of the [15 appointment profiles](../packages/dialogue/README.md#conversation-templates). Offer events/snapshots may carry evidenced `templateDetails`; show these beside the appointment and price, with missing values visibly unconfirmed. Domain changes produce new offer versions and invalidate approval under existing rules. Phrase references now use the selected namespace, such as `bank.requirements`. No new event names or transport routes are required. The model-only `ask_requirements` action asks controlled domain questions; the UI receives its rendered assistant transcript message and English translation.

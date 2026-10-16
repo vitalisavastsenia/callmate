@@ -2,11 +2,22 @@
   "name": "callmate",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/contracts"],
-  "engines": { "node": ">=24" },
+  "workspaces": [
+    "packages/contracts",
+    "packages/dialogue",
+    "apps/server",
+    "apps/web"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
-    "build": "npm run build --workspace @callmate/contracts",
-    "typecheck": "npm run typecheck --workspace @callmate/contracts",
-    "test": "npm run test --workspace @callmate/contracts"
+    "dev": "npm run dev --workspace @callmate/web",
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run build --workspace @callmate/contracts && npm run typecheck --workspaces",
+    "test": "npm run test --workspaces"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.3"
   }
 }
