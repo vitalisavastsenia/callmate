@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import ContactEditor from './ContactEditor';
 import { Modal } from './ContactFields';
 export { ToneFields } from './ContactFields';
@@ -46,9 +46,20 @@ export default function ContactPicker({ value, contacts, selectedId, saveChecked
   const showSave = !knownNumber;
   const [query, setQuery] = useState(''); const [open, setOpen] = useState(false); const [active, setActive] = useState(-1);
   const [editing, setEditing] = useState(false); const [table, setTable] = useState<ContactTable | null>(null); const [message, setMessage] = useState(''); const [error, setError] = useState('');
-  const file = useRef<HTMLInputElement>(null); const listId = useId();
+  const file = useRef<HTMLInputElement>(null); const list = useRef<HTMLUListElement>(null); const listId = useId();
   const filtered = contacts.filter(c => (c.name + ' ' + c.phone).toLowerCase().includes(query.toLowerCase()) || (!!query.replace(/\D/g, '') && c.phone.includes(query.replace(/\D/g, ''))));
   const index = Math.max(0, Math.min(active, filtered.length));
+  useEffect(() => {
+    if (!open) return;
+    const container = list.current;
+    const option = container?.children.item(index);
+    if (!container || !option) return;
+    const bounds = container.getBoundingClientRect();
+    const item = option.getBoundingClientRect();
+    // Scroll only the popup, keeping keyboard focus and the page position intact.
+    if (item.bottom > bounds.bottom - container.clientTop) container.scrollTop += item.bottom - bounds.bottom + container.clientTop;
+    else if (item.top < bounds.top + container.clientTop) container.scrollTop -= bounds.top + container.clientTop - item.top;
+  }, [open, index, query, filtered.length]);
   function choose(i: number) {
     setOpen(false); setQuery('');
     const contact = filtered[i]; if (contact) onSelect(contact); else file.current?.click();
@@ -62,7 +73,7 @@ export default function ContactPicker({ value, contacts, selectedId, saveChecked
       }} /></label>
       {selected && <button type="button" className="icon-button" aria-label="Edit selected contact" title="Edit selected contact" onClick={() => setEditing(true)}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="m16 3 5 5-12 12-6 1 1-6Z M13 6l5 5" /></svg></button>}</div>
       {nameInvalid && <small id={`${listId}-name-error`} className="field-error">Enter a name</small>}
-      {open && <ul id={listId} role="listbox" aria-label="Contacts" className="contact-options">{filtered.map((c, i) => <li key={c.id} id={`${listId}-${i}`} role="option" aria-selected={index === i} onMouseDown={e => e.preventDefault()} onClick={() => choose(i)}>{c.name}<small>{c.phone}</small></li>)}<li id={`${listId}-${filtered.length}`} role="option" aria-selected={index === filtered.length} onMouseDown={e => e.preventDefault()} onClick={() => choose(filtered.length)}>Import contacts (.vcf / .csv)</li></ul>}
+      {open && <ul ref={list} id={listId} role="listbox" aria-label="Contacts" className="contact-options">{filtered.map((c, i) => <li key={c.id} id={`${listId}-${i}`} role="option" aria-selected={index === i} onMouseDown={e => e.preventDefault()} onClick={() => choose(i)}>{c.name}<small>{c.phone}</small></li>)}<li id={`${listId}-${filtered.length}`} role="option" aria-selected={index === filtered.length} onMouseDown={e => e.preventDefault()} onClick={() => choose(filtered.length)}>Import contacts (.vcf / .csv)</li></ul>}
     </div>
     <PhoneField compact deferErrors={deferErrors} showErrors={showErrors} value={value.phone} onChange={phone => onChange({ ...value, phone })} /></div>
     <input ref={file} type="file" aria-label="Contacts file" accept=".vcf,.csv,text/vcard,text/csv" hidden onChange={async e => {

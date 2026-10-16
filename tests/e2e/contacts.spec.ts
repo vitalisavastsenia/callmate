@@ -280,3 +280,34 @@ test('Home saves a new contact only when opted in and sends the entered destinat
   expect(request.contact_id).toBe(saved[0].id);
   await button(page, 'Stop call').click();
 });
+
+test('keyboard navigation keeps long contact lists and the import option in view', async ({ page }) => {
+  const contacts = Array.from({ length: 36 }, (_, index) => ({ name: `Keyboard Contact ${String(index).padStart(2, '0')}`, phone: `+3461200${String(index).padStart(4, '0')}`, timeZone: 'Europe/Madrid', tone: [], notes: '' }));
+  expect((await page.request.post('http://127.0.0.1:3000/api/v1/contacts/import', { data: { contacts } })).ok()).toBe(true);
+  await page.goto('/');
+  const name = page.getByRole('combobox', { name: 'Name', exact: true });
+  await name.click();
+  const list = page.getByRole('listbox', { name: 'Contacts', exact: true });
+  await expect(list.getByRole('option')).toHaveCount(37);
+  async function activeInView() {
+    await expect.poll(() => list.evaluate(element => {
+      const selected = element.querySelector('[aria-selected="true"]')!;
+      const box = element.getBoundingClientRect(); const item = selected.getBoundingClientRect();
+      return item.top >= box.top && item.bottom <= box.bottom;
+    })).toBe(true);
+    await expect(name).toBeFocused();
+  }
+  for (let i = 0; i < 22; i++) await name.press('ArrowDown');
+  await activeInView();
+  await expect(name).toHaveValue('');
+  await name.press('Enter'); await expect(name).toHaveValue('Keyboard Contact 21');
+  await name.click();
+  for (let i = 0; i < 36; i++) await name.press('ArrowUp');
+  await activeInView();
+  for (let i = 0; i < 36; i++) await name.press('ArrowDown');
+  await activeInView();
+  await expect(list.getByRole('option', { selected: true })).toHaveText('Import contacts (.vcf / .csv)');
+  await expect(name).toHaveValue('Keyboard Contact 21');
+  const chooser = page.waitForEvent('filechooser'); await name.press('Enter'); await chooser;
+  await expect(name).toHaveValue('Keyboard Contact 21');
+});

@@ -111,3 +111,5 @@ A temporary session-check/network failure keeps the mounted request draft and of
 If browser storage is blocked or full, the app shows a recovery notice and disables new calls and mode changes. Known call controls remain available in the current tab; do not close it while Start or a call is unresolved. Enable storage and reload after resolving the attempt. Start is never sent unless its recovery command was saved successfully. Unexpected render errors show a recovery screen without clearing saved call data.
 
 **Delete conversation text** opens a confirmation naming the business and explaining permanent removal. Cancel is focused first. The dialog stays open on failure for retry and blocks repeated submission or dismissal while deletion is pending.
+
+The contact picker keeps the active keyboard option visible in long lists, including **Import contacts**, while retaining focus in the name field. Arrow navigation does not change the selected destination until Enter.
