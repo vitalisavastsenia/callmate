@@ -1,9 +1,10 @@
 import { api, ApiErrorSchema, CallSnapshotSchema, type ApprovalDecision, type RequestDraft, type ReviewPlan, type Scenario, type Settings } from './types';
+import { savedAttemptTransport } from './attemptStorage';
 import * as mock from './mock';
 
 const modeKey = 'zeus-llama.mode.v1';
 function initialMode() {
-  try { const saved = localStorage.getItem(modeKey); if (saved === 'simulator' || saved === 'live') return saved === 'simulator'; } catch { /* Use the environment default when storage is unavailable. */ }
+  try { const transport = savedAttemptTransport(); if (transport) return transport === 'browser'; const saved = localStorage.getItem(modeKey); if (saved === 'simulator' || saved === 'live') return saved === 'simulator'; } catch { /* Use the environment default when storage is unavailable. */ }
   return import.meta.env.VITE_MOCK === 'true';
 }
 export let isMockMode = initialMode();

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { activeKey, pendingKey, readActiveAttempt, savedAttemptTransport } from './attemptStorage';
 import zeusLlamaLogo from './assets/zeus-llama.png';
 import * as api from './api';
 import { defaultSettings } from './mock';
@@ -17,9 +18,7 @@ import { Modal } from './components/ContactFields';
 import { callActivityChanges, type CallActivity } from './callActivity';
 
 type Page = 'home' | 'request' | 'summary' | 'agreements' | 'contacts' | 'settings';
-const activeKey = 'zeus-llama.active-attempt.v1';
-const pendingKey = 'zeus-llama.pending-start.v1';
-interface PendingStart { plan: ReviewPlan; mode: 'simulator' | 'live'; key: string; scenario: Scenario }
+interface PendingStart { transport: 'browser' | 'backend'; plan: ReviewPlan; mode: 'simulator' | 'live'; key: string; scenario: Scenario }
 export default function App() {
   const [defaults, setDefaults] = useState(readRequestDefaults);
   const [simulator, setSimulator] = useState(api.isMockMode);
@@ -56,7 +55,10 @@ export default function App() {
     setCallWindowOpen(false);
     requestAnimationFrame(() => document.getElementById('view-call')?.focus());
   }
-  const unresolved = !!localStorage.getItem(activeKey) && !call;
+  const [, storageChanged] = useState(0);
+  const storedAttempt = readActiveAttempt();
+  const foreignPending = !!localStorage.getItem(pendingKey) && !pending;
+  const unresolved = (!!storedAttempt && (storedAttempt.id !== call?.id || (!!savedAttemptTransport() && savedAttemptTransport() !== (simulator ? 'browser' : 'backend')))) || foreignPending;
   const mockNeedsDialogue = !simulator && !!readiness?.capabilities.some(c => c.name === 'mock_relay' && c.enabled)
     && !readiness?.capabilities.some(c => c.name === 'dialogue_integration' && c.ready);
   const mayStart = !mockNeedsDialogue && !!readiness?.ready && !active && !loading && !unresolved;
@@ -74,8 +76,8 @@ export default function App() {
     }
     latestCall.current = next;
     setCall(old => old?.id === next.id && old.revision > next.revision ? old : next);
-    if (!callIsTerminal(next)) localStorage.setItem(activeKey, next.id);
-    else if (localStorage.getItem(activeKey) === next.id) localStorage.removeItem(activeKey);
+    if (!callIsTerminal(next) && (!readActiveAttempt() || readActiveAttempt()?.id === next.id)) localStorage.setItem(activeKey, JSON.stringify({ id: next.id, transport: api.isMockMode ? 'browser' : 'backend' }));
+    else if (callIsTerminal(next) && readActiveAttempt()?.id === next.id) localStorage.removeItem(activeKey);
   }
   async function refreshHistory() { setHistory((await api.getHistory()).items); }
   async function refreshReadiness() { setReadiness(await api.getReadiness()); }
@@ -102,9 +104,10 @@ export default function App() {
         const failed = results.find(result => result.status === 'rejected');
         if (failed?.status === 'rejected') setError(failed.reason instanceof Error ? failed.reason.message : 'Backend unavailable. Real calls are disabled until readiness is known.');
         const savedStart = localStorage.getItem(pendingKey);
-        const currentId = localStorage.getItem(activeKey) ?? (results[2].status === 'fulfilled' ? results[2].value.items.find(item => !['ended', 'busy', 'no_answer', 'failed'].includes(item.callState))?.id : undefined);
+        const currentId = readActiveAttempt()?.id ?? (results[2].status === 'fulfilled' ? results[2].value.items.find(item => !['ended', 'busy', 'no_answer', 'failed'].includes(item.callState))?.id : undefined);
         if (savedStart) {
           const saved = JSON.parse(savedStart) as PendingStart;
+          saved.transport ??= simulator ? 'browser' : 'backend';
           saved.plan = ReviewPlanSchema.parse(saved.plan);
           startCommand.current = saved; setPending(saved); setPlan(saved.plan); setRequestInitial(saved.plan.request); setRequestKey(old => old + 1); setPage('home');
           setNotice('A Start response may have been lost. Check the original request below; it uses the same command key and cannot create a second attempt.');
@@ -116,6 +119,11 @@ export default function App() {
       finally { if (!cancelled) setLoading(false); }
     })();
     return () => { cancelled = true; };
+  }, []);
+  useEffect(() => {
+    const changed = (event: StorageEvent) => { if (!event.key || [activeKey, pendingKey].includes(event.key)) storageChanged(n => n + 1); };
+    window.addEventListener('storage', changed);
+    return () => window.removeEventListener('storage', changed);
   }, []);
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(timer); }, []);
   useEffect(() => { main.current?.focus({ preventScroll: true }); }, [page]);
@@ -173,7 +181,7 @@ export default function App() {
     setHistory(old => old.map(item => item.id === next.id ? { ...item, agreementDeletedAt: next.agreementDeletedAt } : item));
   }
   async function callRequest(request: RequestDraft) {
-    if (!mayStart || pending) return;
+    if (!mayStart || pending || localStorage.getItem(pendingKey) || readActiveAttempt()) return;
     prepareAttention();
     const saved = await api.makePlan(request); setPlan(saved);
     // A backend-normalized plan needs another deliberate review before dialing.
@@ -182,7 +190,8 @@ export default function App() {
       setCallWindowOpen(false); setShowCall(false); setPage('request');
       setNotice('The backend adjusted the plan. Review the updated details below, then choose Call to approve them.'); return;
     }
-    const command: PendingStart = { plan: saved, mode: readiness!.mode, key: crypto.randomUUID(), scenario: (request.requestType ?? 'book') !== 'book' && !['uncertain', 'no_answer', 'interrupted'].includes(scenario) ? 'within_plan' : scenario };
+    if (localStorage.getItem(pendingKey) || readActiveAttempt()) { setNotice('Another tab saved a call request. Restore it before starting again.'); return; }
+    const command: PendingStart = { transport: simulator ? 'browser' : 'backend', plan: saved, mode: readiness!.mode, key: crypto.randomUUID(), scenario: (request.requestType ?? 'book') !== 'book' && !['uncertain', 'no_answer', 'interrupted'].includes(scenario) ? 'within_plan' : scenario };
     startCommand.current = command; setPending(command); localStorage.setItem(pendingKey, JSON.stringify(command));
     try { await executeStart(command); } catch (e) { setCallWindowOpen(false); setPage('home'); setNotice('The Start response is unknown. Check the original request below; do not start another attempt.'); throw e; }
   }
@@ -229,7 +238,7 @@ export default function App() {
     if (results[2].status === 'fulfilled') {
       setHistory(results[2].value.items);
       const ongoing = results[2].value.items.find(item => !['ended', 'busy', 'no_answer', 'failed'].includes(item.callState));
-      if (ongoing) { localStorage.setItem(activeKey, ongoing.id); acceptSnapshot(await api.getCall(ongoing.id)); setShowCall(true); }
+      if (ongoing) { acceptSnapshot(await api.getCall(ongoing.id)); setShowCall(true); }
     }
     const failure = results.find(result => result.status === 'rejected');
     if (failure?.status === 'rejected') throw failure.reason;
@@ -266,6 +275,7 @@ export default function App() {
       <button type="button" className="secondary mt-3" disabled={busy || modeLocked} onClick={() => void perform(() => switchMode(true))}>Switch to Simulator</button>
       {modeLocked && <p className="mt-2 text-base">Finish or resolve the current call attempt before switching modes.</p>}
     </>}</div>}{notice && <p role="status" className="notice">{notice}</p>}
+    {!loading && unresolved && <div role="alert" className="notice"><p>A call request is saved in another tab or transport. Restore it before starting or switching modes.</p><button type="button" className="secondary mt-3" onClick={() => window.location.reload()}>Restore saved call</button></div>}
     <main ref={main} tabIndex={-1} className="outline-none">
       {loading && <p role="status" className="notice">Checking readiness and restoring local state…</p>}
       <div hidden={page !== 'home' && page !== 'request'}>

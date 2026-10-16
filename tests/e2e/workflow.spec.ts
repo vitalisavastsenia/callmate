@@ -43,7 +43,7 @@ test('call popup follows both speakers and agent actions, minimizes and reopens 
   await expect(actions).not.toContainText('Business confirmation recorded');
   expect(await popup.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
   await page.screenshot({ path: test.info().outputPath('call-popup.png') });
-  const id = await page.evaluate(() => localStorage.getItem('zeus-llama.active-attempt.v1'));
+  const id = await page.evaluate(() => JSON.parse(localStorage.getItem('zeus-llama.active-attempt.v1') ?? 'null')?.id);
   await page.keyboard.press('Escape');
   await expect(popup).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'View call · In progress', exact: true })).toBeFocused();
@@ -64,12 +64,12 @@ test('call popup follows both speakers and agent actions, minimizes and reopens 
 
 test('call popup restores the same call after reload and Stop remains available', async ({ page }) => {
   await page.clock.install(); await prepare(page, 'above_price'); await start(page, true); await advance(page, 5);
-  const id = await page.evaluate(() => localStorage.getItem('zeus-llama.active-attempt.v1'));
+  const id = await page.evaluate(() => JSON.parse(localStorage.getItem('zeus-llama.active-attempt.v1') ?? 'null')?.id);
   await page.reload();
   const popup = page.getByRole('dialog');
   await expect(popup).toBeVisible();
   await expect(popup.getByRole('region', { name: 'Agent decisions and actions' })).toContainText('Agent paused for your approval');
-  expect(await page.evaluate(() => localStorage.getItem('zeus-llama.active-attempt.v1'))).toBe(id);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('zeus-llama.active-attempt.v1') ?? 'null')?.id)).toBe(id);
   await popup.getByRole('button', { name: 'Stop call', exact: true }).click();
   await expect(popup.getByRole('heading', { name: 'Not booked', exact: true })).toBeVisible();
   await expect(popup.getByRole('button', { name: 'Approve this offer', exact: true })).toHaveCount(0);
@@ -88,7 +88,7 @@ test('call popup starts a new attempt from the same reviewed request after Stop'
   await again.evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
   await expect(popup.getByRole('button', { name: 'Stop call', exact: true })).toBeVisible();
   await expect(again).toHaveCount(0);
-  const after = await page.evaluate(() => ({ id: localStorage.getItem('zeus-llama.active-attempt.v1'), sessions: JSON.parse(localStorage.getItem('zeus-llama.simulator.v1')!).sessions }));
+  const after = await page.evaluate(() => ({ id: JSON.parse(localStorage.getItem('zeus-llama.active-attempt.v1') ?? 'null')?.id, sessions: JSON.parse(localStorage.getItem('zeus-llama.simulator.v1')!).sessions }));
   expect(after.id).not.toBe(before.id);
   expect(after.sessions).toHaveLength(2);
   const previous = after.sessions.find((s: { call: { id: string } }) => s.call.id === before.id).call;
@@ -162,9 +162,9 @@ test('Stop and repeated Call cannot create a second attempt', async ({ page }) =
 test('refresh restores the same inline approval and expiry never accepts it', async ({ page }) => {
   await page.clock.install(); await prepare(page, 'alternative'); await start(page); await advance(page, 5);
   await expect(button(page, 'Approve this offer')).toBeVisible();
-  const id = await page.evaluate(() => localStorage.getItem('zeus-llama.active-attempt.v1'));
+  const id = await page.evaluate(() => JSON.parse(localStorage.getItem('zeus-llama.active-attempt.v1') ?? 'null')?.id);
   await page.reload(); await expect(button(page, 'Approve this offer')).toBeVisible();
-  expect(await page.evaluate(() => localStorage.getItem('zeus-llama.active-attempt.v1'))).toBe(id);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('zeus-llama.active-attempt.v1') ?? 'null')?.id)).toBe(id);
   await page.clock.runFor(31_000);
   await expect(page.getByRole('heading', { name: 'Not booked', exact: true })).toBeVisible();
   await expect(button(page, 'Approve this offer')).toHaveCount(0);
@@ -690,4 +690,27 @@ test('switching to a different budget currency clears an edited amount and requi
   await button(page, 'Review call plan').click();
   await expect(page.locator('.inline-plan')).toContainText('US$1.00');
   await expect(page.locator('.inline-plan')).toContainText('Maximum €30.00');
+});
+
+test('another tab cannot switch away from a saved call and reload restores its transport', async ({ page, context }) => {
+  await page.clock.install(); await prepare(page, 'above_price'); await start(page, true);
+  await page.getByRole('dialog').getByRole('button', { name: 'Stop call', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close call window', exact: true }).click();
+  await page.evaluate(() => localStorage.setItem('zeus-llama.active-attempt.v1', JSON.parse(localStorage.getItem('zeus-llama.simulator.v1')!).sessions[0].call.id));
+  const other = await context.newPage();
+  await other.goto('/');
+  await expect(other.getByRole('button', { name: 'View call · Finished', exact: true })).toBeVisible();
+  await other.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(other.getByRole('button', { name: 'Backend', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'View call · Finished', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Call again', exact: true }).click();
+  await expect(page.getByRole('dialog').getByRole('button', { name: 'Stop call', exact: true })).toBeVisible();
+  await expect(other.getByRole('button', { name: 'Backend', exact: true })).toBeDisabled();
+  await expect(other.getByRole('button', { name: 'Restore saved call', exact: true })).toBeVisible();
+  // A previously saved selection must never override the attempt's transport.
+  await other.evaluate(() => localStorage.setItem('zeus-llama.mode.v1', 'live'));
+  await page.reload();
+  await expect(page.getByRole('dialog').getByRole('button', { name: 'Stop call', exact: true })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Stop call', exact: true }).click();
+  await other.close();
 });
