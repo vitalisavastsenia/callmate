@@ -109,3 +109,5 @@ A structured pre-attempt Start rejection (for example, `503 PROVIDER_NOT_READY`)
 A temporary session-check/network failure keeps the mounted request draft and offers **Retry connection**. A verified signed-out response, private API 401, explicit logout, or the existing session expiry still locks the UI.
 
 If browser storage is blocked or full, the app shows a recovery notice and disables new calls and mode changes. Known call controls remain available in the current tab; do not close it while Start or a call is unresolved. Enable storage and reload after resolving the attempt. Start is never sent unless its recovery command was saved successfully. Unexpected render errors show a recovery screen without clearing saved call data.
+
+**Delete conversation text** opens a confirmation naming the business and explaining permanent removal. Cancel is focused first. The dialog stays open on failure for retry and blocks repeated submission or dismissal while deletion is pending.

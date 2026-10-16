@@ -123,6 +123,12 @@ test('inline request → exact approval → result → history, calendar, deleti
   expect((await download).suggestedFilename()).toMatch(/zeus-llama-.*\.ics/);
   await expect(details.getByText('Duration is unknown.', { exact: false })).toBeVisible();
   await details.getByRole('button', { name: 'Delete conversation text', exact: true }).click();
+  const confirmation = page.getByRole('dialog', { name: 'Delete conversation text?', exact: true });
+  await expect(confirmation.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+  await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(details.getByRole('log')).toContainText('Good morning');
+  await details.getByRole('button', { name: 'Delete conversation text', exact: true }).click();
+  await confirmation.getByRole('button', { name: 'Permanently delete conversation text', exact: true }).click();
   await expect(details.getByText('Conversation text was deleted. Booking details remain.', { exact: true })).toBeVisible();
   await button(page, 'Repeat').click();
   await expect(page.getByLabel('Goal', { exact: true })).toHaveValue(/Book a haircut/);

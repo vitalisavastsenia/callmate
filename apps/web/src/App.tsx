@@ -7,6 +7,7 @@ import { defaultSettings } from './mock';
 import { callIsTerminal, subscribeToCall } from './ws';
 import { RequestDraftSchema, ReviewPlanSchema, type ApprovalDecision, type CallSnapshot, type ConnectionState, type HistoryEntry, type Readiness, type RequestDraft, type ReviewPlan, type Scenario, type Settings } from './types';
 import RequestForm from './components/RequestForm';
+import DeleteConversationDialog from './components/DeleteConversationDialog';
 import ContactsView from './components/ContactsView';
 import Home from './components/Home';
 import SettingsView from './components/SettingsView';
@@ -37,6 +38,7 @@ export default function App() {
   const [showCall, setShowCall] = useState(false);
   const [callWindowOpen, setCallWindowOpen] = useState(false);
   const [callActivity, setCallActivity] = useState<CallActivity[]>([]);
+  const [deleteTarget, setDeleteTarget] = useState<CallSnapshot | null>(null);
   const [historyCall, setHistoryCall] = useState<CallSnapshot | null>(null);
   const [requestKey, setRequestKey] = useState(0);
   const [call, setCall] = useState<CallSnapshot | null>(null);
@@ -309,7 +311,7 @@ export default function App() {
           onOpen={id => void perform(() => openHistoryCall(id))} onRepeat={id => void perform(async () => repeatCall(await api.getCall(id)))}
           onCreate={() => newRequest(undefined, 'home')} onReturn={() => setPage('home')} />
         {historyCall && <section id="history-detail" tabIndex={-1} className="workflow-stage" aria-label="Call details">
-          <Result call={historyCall} deleting={busy} onDelete={() => void perform(() => deleteConversation(historyCall))} />
+          <Result call={historyCall} deleting={busy} onDelete={() => setDeleteTarget(historyCall)} />
           <section className="panel mb-6"><h3 className="section-title">Agreements</h3>{historyCall.outcome.status === 'confirmed' ? <p>{historyCall.outcome.summaryEn}</p> : <p>{historyCall.outcome.status === 'completed' ? 'See the findings above for answered and unanswered questions. No appointment is confirmed.' : 'No verified agreement is recorded.'}</p>}</section>
           <Transcript call={historyCall} approvalLines={Object.values(approvalRecords).filter(r => r.callId === historyCall.id).map(r => r.text)} />
           <button className="primary mt-5" disabled={requestDisabled} onClick={() => repeatCall(historyCall)}>Repeat</button>
@@ -321,6 +323,7 @@ export default function App() {
         onModeChange={value => void perform(() => switchMode(value))} onRefresh={() => void perform(refreshReadiness)}
         onSave={(value, nextDefaults) => void perform(async () => { const saved = await api.updateSettings(value); setSettings(saved); saveRequestDefaults(nextDefaults); setDefaults(nextDefaults); setNotice('Settings saved. Defaults apply to new requests and untouched fields in your current draft.'); })} />}
     </main>
+    {deleteTarget && <DeleteConversationDialog call={deleteTarget} onDelete={() => deleteConversation(deleteTarget)} onClose={() => setDeleteTarget(null)} />}
     {callWindowOpen && call && <Modal className="call-dialog" title={'Call with ' + call.plan.request.business.name} onClose={closeCallWindow}>
       <p className="mb-4 text-base text-stone-300">{call.plan.request.business.phone} · Closing this window does not stop the call.</p>
       {error && <p role="alert" className="notice error">{error}</p>}

@@ -245,3 +245,36 @@ test('a definitive Start rejection unlocks editing and is not restored as a lost
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Simulator', exact: true })).toBeEnabled();
 });
+
+test('conversation deletion confirms, blocks duplicate submission, and retries errors', async ({ page }) => {
+  let deletes = 0;
+  const call = structuredClone(confirmedCallFixture);
+  await page.route('**/api/v1/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.startsWith('/api/v1/contacts')) return route.continue();
+    if (path.endsWith('/readiness')) return route.fulfill({ json: { mode: 'simulator', ready: true, voiceEngine: null, capabilities: [], checks: [] } });
+    if (path.endsWith('/settings')) return route.fulfill({ json: { defaultCallLimits: reviewPlanFixture.request.callLimits, transcriptRetentionDays: 30 } });
+    if (path.endsWith('/history')) return route.fulfill({ json: { items: [{ id: call.id, mode: call.mode, businessName: call.plan.request.business.name,
+      callState: call.callState, outcome: call.outcome, createdAt: call.createdAt, usage: call.usage }], nextCursor: null } });
+    if (path.endsWith('/conversation')) {
+      deletes++; expect(route.request().method()).toBe('DELETE');
+      await new Promise(resolve => setTimeout(resolve, 500));
+      if (deletes === 1) return route.fulfill({ status: 503, json: { error: { code: 'PROVIDER_UNAVAILABLE', message: 'Try deletion again.', requestId: crypto.randomUUID(), details: [] } } });
+      call.messages = []; call.conversationData = 'deleted'; call.revision++;
+      return route.fulfill({ status: 204 });
+    }
+    return route.fulfill({ json: { call } });
+  });
+  await page.goto('/'); await page.getByRole('button', { name: 'Summary', exact: true }).click();
+  await page.getByRole('button', { name: /^View details for / }).click();
+  await page.getByRole('button', { name: 'Delete conversation text', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Delete conversation text?', exact: true });
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click(); expect(deletes).toBe(0);
+  await page.getByRole('button', { name: 'Delete conversation text', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Permanently delete conversation text', exact: true }).evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
+  await page.keyboard.press('Escape'); await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('alert')).toContainText('Try deletion again'); expect(deletes).toBe(1);
+  await dialog.getByRole('button', { name: 'Permanently delete conversation text', exact: true }).click();
+  await expect(dialog).toHaveCount(0); expect(deletes).toBe(2);
+  await expect(page.getByText('Conversation text was deleted. Booking details remain.', { exact: true })).toBeVisible();
+});
