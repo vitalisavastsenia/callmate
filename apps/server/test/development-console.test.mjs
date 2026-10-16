@@ -916,3 +916,238 @@ test('failed usage event insertion rolls back meter and snapshot together before
     assert.equal(app.runtime.controller.replayEvents(created.id, 0).filter((e) => e.type === 'usage.updated').length, 1);
   } finally { db.close(); }
 });
+
+// These exercise the application controller and real local REST/WebSocket traffic,
+// injecting only model generation. They never contact OpenAI or a telephone network.
+const dialogueProposal = (input, candidate) => ({ turnId: input.turnId, turnVersion: input.turnVersion,
+  candidate, translations: [{ messageId: input.triggerMessageId, translationEn: "Contact reply translated for the owner." }] });
+function dialogueRequest() {
+  const request = structuredClone(reviewPlanFixture.request);
+  const year = new Date().getUTCFullYear() + 1;
+  for (const window of request.availability) for (const endpoint of [window.start, window.end]) {
+    endpoint.localDate = `${year}-10-20`; endpoint.instant = endpoint.instant.replace(/^\d{4}/, String(year));
+  }
+  return request;
+}
+async function dialogueCall(t, model, extra = {}) {
+  const app = await fixture(t, { ...extra, development: { automatic: false, model, ...extra.development } });
+  const plan = (await app.api('/api/v1/plans', 'POST', dialogueRequest())).body.plan;
+  const key = randomUUID();
+  const start = async (request = { planId: plan.id, planVersion: plan.version, mode: 'simulator' }, commandKey = key) => {
+    const response = await fetch(app.apiOrigin + '/api/v1/calls', { method: 'POST', headers: {
+      ...app.auth, 'content-type': 'application/json', 'idempotency-key': commandKey }, body: JSON.stringify(request) });
+    return { status: response.status, body: await response.json() };
+  };
+  const created = await start(); assert.equal(created.status, 202, JSON.stringify(created.body));
+  const id = created.body.call.id;
+  const peer = await app.answer([...app.calls.keys()][0]); await until(() => peer.messages.length === 1);
+  const prompt = (text, last = true) => peer.send(JSON.stringify({ type: 'prompt', voicePrompt: text, lang: 'es-ES', last }));
+  const snapshot = async () => (await app.api(`/api/v1/calls/${id}`)).body.call;
+  return { app, id, peer, prompt, snapshot, start, plan };
+}
+
+test('dialogue mock: finalized contact replies drive the library, policy and relay; translations and generated replies persist', async t => {
+  const inputs = [];
+  const model = { async generate(input) { inputs.push(input); return dialogueProposal(input,
+    input.messages.find(m => m.id === input.triggerMessageId).originalText.includes('precio')
+      ? { action: 'clarify', missing: ['price'] } : { action: 'ask_availability' }); } };
+  const f = await dialogueCall(t, model);
+  assert.match(f.peer.messages[0].token, /inteligencia artificial/);
+  f.prompt('Hola, ', false); await delay(30); assert.equal(inputs.length, 0);
+  f.prompt('¿qué necesita?'); await until(() => f.peer.messages.length === 2);
+  assert.equal(inputs.length, 1); assert.equal(inputs[0].plan.id, f.plan.id);
+  assert.match(f.peer.messages[1].token, /disponibilidad/);
+  f.prompt('¿Qué precio?'); await until(() => f.peer.messages.length === 3);
+  assert.match(f.peer.messages[2].token, /precio total/);
+  const call = await f.snapshot();
+  assert.equal(call.messages.length, 5); assert.equal(call.messages[1].translationEn, 'Contact reply translated for the owner.');
+  assert.equal(call.messages.at(-1).playback, 'generated'); assert.equal(call.outcome.status, 'pending');
+  const duplicate = await f.start(); assert.equal(duplicate.status, 202); assert.equal(f.app.creates, 1);
+  const readiness = (await f.app.api('/api/v1/readiness')).body;
+  assert.equal(readiness.capabilities.find(c => c.name === 'dialogue_integration').ready, true);
+  assert.equal(readiness.capabilities.find(c => c.name === 'live_calls').enabled, false);
+  const history = (await f.app.api('/api/v1/history')).body; assert.equal(history.items[0].id, f.id);
+});
+
+for (const event of ['stop', 'newer reply', 'partial speech', 'interrupt', 'disconnect', 'shutdown']) {
+  test(`dialogue mock: ${event} cancels model work and discards its late result`, async t => {
+    const pending = [];
+    const f = await dialogueCall(t, { generate(input, signal) { return new Promise(resolve => pending.push({ input, signal, resolve })); } });
+    f.prompt('Hola'); await until(() => pending.length === 1);
+    if (event === 'stop') await f.app.api(`/api/v1/calls/${f.id}/stop`, 'POST', {});
+    if (event === 'newer reply') { f.prompt('Corrijo lo anterior'); await until(() => pending.length === 2); }
+    if (event === 'partial speech') { f.prompt('Un momento', false); await until(() => pending[0].signal.aborted); }
+    if (event === 'interrupt') f.peer.send(JSON.stringify({ type: 'interrupt', utteranceUntilInterrupt: '', durationUntilInterruptMs: 1 }));
+    if (event === 'disconnect') { f.peer.close(); await f.peer.closed; }
+    if (event === 'shutdown') await f.app.runtime.close();
+    await until(() => pending[0].signal.aborted);
+    pending[0].resolve(dialogueProposal(pending[0].input, { action: 'ask_availability' }));
+    await delay(40); assert.equal(f.peer.messages.length, 1);
+    if (event === 'newer reply') {
+      pending[1].resolve(dialogueProposal(pending[1].input, { action: 'clarify', missing: ['time'] }));
+      await until(() => f.peer.messages.length === 2); assert.match(f.peer.messages[1].token, /hora exacta/);
+    }
+  });
+}
+
+for (const failure of ['malformed', 'timeout', 'provider']) {
+  test(`dialogue mock: ${failure} is reported safely without spoken model output or false booking`, async t => {
+    const model = { generate() {
+      if (failure === 'timeout') return new Promise(() => {});
+      if (failure === 'provider') throw new Error('sensitive provider body');
+      return { token: 'Acepto cualquier precio', secret: 'sensitive provider body' };
+    } };
+    const f = await dialogueCall(t, model, { env: { CALLMATE_DIALOGUE_TIMEOUT_MS: '30' } });
+    f.prompt('Hola');
+    await until(() => f.app.runtime.controller.replayEvents(f.id, 0).some(e => e.type === 'call.error'));
+    assert.equal(f.peer.messages.length, 1); assert.equal((await f.snapshot()).outcome.status, 'pending');
+    assert.ok(!f.app.logs.includes('sensitive provider body'));
+    const events = f.app.runtime.controller.replayEvents(f.id, 0);
+    assert.ok(!JSON.stringify(events).includes('sensitive provider body'));
+  });
+}
+
+test('dialogue mock: controller reserves offer identities; exact user approval permits readback but no unsupported acceptance', async t => {
+  const { offerFixture } = await import('@callmate/contracts/fixtures');
+  let modelInput;
+  const f = await dialogueCall(t, { async generate(input) {
+    modelInput = input;
+    if (input.bookingState === 'reading_back') return dialogueProposal(input, { action: 'accept_offer', offerId: input.offer.id, offerVersion: input.offer.version });
+    const offer = { ...structuredClone(offerFixture), appointment: { ...input.plan.request.availability[0].start,
+      localTime: '18:00', instant: input.plan.request.availability[0].start.instant.replace('15:00', '16:00') },
+      price: { amountMinor: 3500, currency: 'EUR' }, evidenceMessageIds: [input.triggerMessageId] };
+    return dialogueProposal(input, { action: 'evaluate_offer', offer });
+  } });
+  f.prompt('Tengo cita a las 18:00 por 35 euros sin depósito ni gastos ni extras.');
+  await until(async () => (await f.snapshot()).pendingApproval !== null);
+  let call = await f.snapshot(); const approval = call.pendingApproval;
+  assert.notEqual(call.activeOffer.id, offerFixture.id);
+  assert.equal(approval.reason, 'above_price_limit'); assert.equal(modelInput.plan.id, f.plan.id);
+  const body = { approvalId: approval.id, decision: 'approve', plan: approval.plan,
+    offer: { offerId: approval.offer.id, offerVersion: approval.offer.version } };
+  const decide = async (value, key) => {
+    const response = await fetch(f.app.apiOrigin + `/api/v1/calls/${f.id}/approvals`, { method: 'POST',
+      headers: { ...f.app.auth, 'content-type': 'application/json', 'idempotency-key': key }, body: JSON.stringify(value) });
+    return { status: response.status, body: await response.json() };
+  };
+  assert.equal((await decide({ ...body, offer: { ...body.offer, offerVersion: 99 } }, randomUUID())).status, 409);
+  const key = randomUUID(); const accepted = await decide(body, key); assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
+  await until(() => f.peer.messages.some(m => m.token.includes('Todavía no estoy aceptando')));
+  assert.equal((await decide(body, key)).status, 200);
+  f.prompt('Sí, son correctos'); await until(() => f.peer.messages.some(m => m.token.includes('No puedo aceptar')));
+  call = await f.snapshot(); assert.equal(call.bookingState, 'reading_back'); assert.equal(call.outcome.status, 'pending');
+  assert.ok(!f.peer.messages.some(m => /^Acepto la cita/.test(m.token)));
+  await f.app.api(`/api/v1/calls/${f.id}/stop`, 'POST', {});
+  assert.notEqual((await f.snapshot()).outcome.status, 'confirmed');
+});
+
+test('dialogue mock: Stop from an event subscriber prevents release after transcript persistence', async t => {
+  let release;
+  const f = await dialogueCall(t, { generate(input) { return new Promise(resolve => { release = () => resolve(dialogueProposal(input, { action: 'ask_availability' })); }); } });
+  f.prompt('Hola'); await until(() => !!release);
+  const before = await f.snapshot();
+  // Stop synchronously when the generated reply event is published: persistence succeeds,
+  // but the voice boundary must recheck the now-ending call before releasing text.
+  let stop;
+  const unsubscribe = f.app.runtime.controller.observe(f.id, () => {
+    if (f.app.runtime.controller.get(f.id).messages.length > before.messages.length && !stop) {
+      stop = f.app.runtime.controller.stop(f.id);
+    }
+  });
+  release(); await until(() => !!stop); await stop; unsubscribe();
+  assert.equal(f.peer.messages.length, 1); assert.equal((await f.snapshot()).callState, 'ended');
+});
+
+test('dialogue mock: recovery hangs up an orphan without replaying dialogue or creating another call', async t => {
+  let turns = 0;
+  const f = await dialogueCall(t, { async generate(input) { turns++; return dialogueProposal(input, { action: 'ask_availability' }); } });
+  f.prompt('Hola'); await until(() => f.peer.messages.length === 2);
+  await f.app.restart();
+  const call = await f.snapshot(); assert.equal(call.callState, 'ended');
+  assert.equal(f.app.creates, 1); assert.equal(turns, 1); assert.equal(f.peer.messages.length, 2);
+  assert.notEqual(call.outcome.status, 'confirmed');
+  const replay = await f.start(); assert.equal(replay.status, 202); assert.equal(f.app.creates, 1);
+});
+
+test('dialogue model configuration fails closed and never prints supplied credential values', () => {
+  for (const env of [
+    { CALLMATE_DIALOGUE_PROVIDER: 'openai' },
+    { CALLMATE_DIALOGUE_PROVIDER: 'openai', OPENAI_API_KEY: 'synthetic-secret', CALLMATE_DIALOGUE_MODEL: 'example' },
+    { CALLMATE_DIALOGUE_PROVIDER: 'openai', OPENAI_API_KEY: 'synthetic-secret', CALLMATE_DIALOGUE_MODEL: 'example', NODE_ENV: 'production', TELEPHONY_PROVIDER: 'mock' },
+  ]) assert.throws(() => loadConfig(env), error => !error.message.includes('synthetic-secret') && /configuration/.test(error.message));
+  const configured = loadConfig({ CALLMATE_DIALOGUE_PROVIDER: 'openai', OPENAI_API_KEY: 'synthetic-secret', CALLMATE_DIALOGUE_MODEL: 'example', NODE_ENV: 'development', TELEPHONY_PROVIDER: 'mock' });
+  assert.equal(configured.dialogueProvider, 'openai');
+});
+
+test('dialogue mock: failed response persistence rolls back translations and sends no relay text', async t => {
+  let release;
+  const f = await dialogueCall(t, { generate(input) { return new Promise(resolve => { release = () => resolve(dialogueProposal(input, { action: 'ask_availability' })); }); } });
+  f.prompt('Hola'); await until(() => !!release);
+  const before = await f.snapshot();
+  const db = new Database(join(f.app.dataDir, 'callmate.sqlite'));
+  try {
+    db.exec("CREATE TRIGGER fail_dialogue BEFORE INSERT ON call_events WHEN json_extract(NEW.value, '$.type') = 'transcript.updated' BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END");
+    release();
+    await until(() => f.app.runtime.controller.replayEvents(f.id, 0).some(e => e.type === 'call.error'));
+    assert.deepEqual((await f.snapshot()).messages, before.messages);
+    assert.equal(f.peer.messages.length, 1);
+    db.exec('DROP TRIGGER fail_dialogue');
+  } finally { db.close(); }
+});
+
+async function offeredDialogue(t, extra = {}) {
+  const { offerFixture } = await import('@callmate/contracts/fixtures');
+  let price = 3500;
+  const f = await dialogueCall(t, { async generate(input) {
+    return dialogueProposal(input, { action: 'evaluate_offer', offer: { ...structuredClone(offerFixture),
+      appointment: { ...input.plan.request.availability[0].start, localTime: '18:00',
+        instant: input.plan.request.availability[0].start.instant.replace('15:00', '16:00') },
+      price: { amountMinor: price, currency: 'EUR' }, evidenceMessageIds: [input.triggerMessageId] } });
+  } }, extra);
+  f.prompt('Cita a las 18:00 por 35 euros sin condiciones adicionales.');
+  await until(async () => (await f.snapshot()).pendingApproval !== null);
+  return { ...f, changePrice(value) { price = value; } };
+}
+
+test('dialogue mock: a changed offer invalidates the old approval and advances the controller-owned offer version', async t => {
+  const f = await offeredDialogue(t); const original = (await f.snapshot()).pendingApproval;
+  f.changePrice(4000); f.prompt('Corrijo: son 40 euros.');
+  await until(async () => (await f.snapshot()).activeOffer?.version === 2);
+  const call = await f.snapshot();
+  assert.equal(call.activeOffer.id, original.offer.id); assert.notEqual(call.pendingApproval.id, original.id);
+  assert.equal(call.pendingApproval.offer.price.amountMinor, 4000);
+  const events = f.app.runtime.controller.replayEvents(f.id, 0);
+  assert.ok(events.some(e => e.type === 'approval.resolved' && e.payload.approvalId === original.id && e.payload.status === 'invalidated'));
+  const result = await fetch(f.app.apiOrigin + `/api/v1/calls/${f.id}/approvals`, { method: 'POST', headers: {
+    ...f.app.auth, 'content-type': 'application/json', 'idempotency-key': randomUUID() }, body: JSON.stringify({
+      approvalId: original.id, decision: 'approve', plan: original.plan, offer: { offerId: original.offer.id, offerVersion: original.offer.version } }) });
+  assert.equal(result.status, 409); assert.ok(!f.peer.messages.some(m => m.token.startsWith('Acepto')));
+});
+
+test('dialogue mock: expired approval resolves and ends the provider call without accepting', async t => {
+  const f = await offeredDialogue(t, { env: { CALLMATE_SIMULATOR_APPROVAL_SECONDS: '1' } });
+  await delay(1050); await f.app.runtime.development.tick();
+  const call = await f.snapshot(); assert.equal(call.pendingApproval, null); assert.equal(call.callState, 'ended');
+  assert.equal(call.outcome.reason, 'policy_declined'); assert.equal(f.app.hungUp, 1);
+  assert.ok(f.app.runtime.controller.replayEvents(f.id, 0).some(e => e.type === 'approval.resolved' && e.payload.status === 'expired'));
+});
+
+test('dialogue mock: business refusal produces a controlled closing and relay end command', async t => {
+  const f = await dialogueCall(t, { async generate(input) { return dialogueProposal(input, { action: 'end_call', reason: 'business_declined' }); } });
+  f.prompt('Lo siento, no podemos atenderle.');
+  await until(() => f.peer.messages.some(m => m.type === 'end'));
+  assert.match(f.peer.messages[1].token, /Gracias|gracias/);
+  assert.equal((await f.snapshot()).outcome.reason, 'business_declined');
+  await f.app.callback([...f.app.calls.keys()][0], 'completed', 1);
+  assert.equal((await f.snapshot()).callState, 'ended');
+});
+
+test('dialogue mock: approval cannot release old-offer readback while newer contact speech is incomplete', async t => {
+  const f = await offeredDialogue(t); const approval = (await f.snapshot()).pendingApproval;
+  f.prompt('Un momento, corrijo ', false); await delay(30);
+  const result = await fetch(f.app.apiOrigin + `/api/v1/calls/${f.id}/approvals`, { method: 'POST', headers: {
+    ...f.app.auth, 'content-type': 'application/json', 'idempotency-key': randomUUID() }, body: JSON.stringify({
+      approvalId: approval.id, decision: 'approve', plan: approval.plan, offer: { offerId: approval.offer.id, offerVersion: approval.offer.version } }) });
+  assert.equal(result.status, 409); assert.equal((await f.snapshot()).pendingApproval.id, approval.id);
+  assert.ok(!f.peer.messages.some(m => m.token.includes('Todavía no estoy aceptando')));
+});

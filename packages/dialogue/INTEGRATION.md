@@ -5,7 +5,7 @@ and types from `@callmate/contracts`. Contract version: 1. Dialogue runs in the
 server process and adds no HTTP service or database. The Codex CLI adapter uses saved ChatGPT login in a local subprocess; the optional
 OpenAI API adapter uses server-supplied API credentials and one HTTPS request per turn.
 Root workspace and Docker registration are complete on the integration branch.
-Server bootstrap/controller wiring remains with Engineer 2; see [integration status](README.md#integration-with-engineer-2).
+The optional server mock controller now handles finalized Spanish business turns, translations, offer identities, approvals and controlled replies. Full playback evidence, acceptance and semantic confirmation remain unavailable; see [runtime setup](../../docs/docker-development.md#17-dialogue-driven-local-mock-calls). For the library boundary, see [integration status](README.md#integration-with-engineer-2).
 
 ## Constructors and dependencies
 
@@ -151,7 +151,7 @@ call. The ordinary package test includes the evaluation suite, so CI can use one
 command after building contracts. Root scripts include these checks.
 
 The exported contract version is unchanged. Before an integrated app is
-declared ready, Engineer 2 must wire the controller/providers, and
-Engineers 2 and 3 must arrange a production Spanish semantic verifier and fluent
-review. The standalone evaluations do not satisfy the combined-app or real-call
+declared ready for real bookings, Engineer 2 must complete real provider wiring
+and attested playback, and Engineers 2 and 3 must arrange a production Spanish
+semantic verifier and fluent review. The standalone evaluations do not satisfy the combined-app or real-call
 acceptance gates in the [engineering agreement](../../docs/engineering-contract.md).

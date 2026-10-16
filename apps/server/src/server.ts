@@ -71,7 +71,7 @@ function createListener(config: Config, stream?: Writable) {
   return app;
 }
 
-function privateRoutes(app: FastifyInstance, config: Config, store: Store, controller: CallController, retention: Retention) {
+function privateRoutes(app: FastifyInstance, config: Config, store: Store, controller: CallController, retention: Retention, dialogueEnabled: boolean) {
   app.addHook("onRequest", async (request, reply) => {
     const address = app.server.address();
     const port = typeof address === "object" && address !== null ? address.port : config.apiPort;
@@ -91,7 +91,7 @@ function privateRoutes(app: FastifyInstance, config: Config, store: Store, contr
 
   app.get("/health", async () => { store.check(); return { status: "ok" }; });
   mountAuth(app, store);
-  const readiness = new Readiness(config, store);
+  const readiness = new Readiness(config, store, dialogueEnabled);
   app.get(api.readiness.path, async () => readiness.report());
   app.get(api.getSettings.path, async () => SettingsSchema.parse(store.getSettings()));
   app.put(api.updateSettings.path, async (request) => {
@@ -115,7 +115,7 @@ export function createRuntime(config: Config, logStream?: Writable, simulatorOpt
   mountMockStatus(callbacks, config, development);
   mountMockRelay(callbacks, config, () => store.getSettings().defaultCallLimits.maxDurationSeconds,
     (setup, send, disconnect) => development.attach(setup, send, disconnect));
-  privateRoutes(privateApi, config, store, controller, retention);
+  privateRoutes(privateApi, config, store, controller, retention, development.dialogueEnabled);
   mountDevelopmentConsole(privateApi, development);
   let closing: Promise<void> | undefined;
   const close = () => closing ??= (async () => {

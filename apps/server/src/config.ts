@@ -26,10 +26,17 @@ const schema = z.object({
   mockAuthToken: z.string().min(1).max(200).default("mock-auth-token-local-only"),
   silenceTimeoutSeconds: z.coerce.number().int().min(5).max(600).default(60),
   testRateMinorPerMinute: z.coerce.number().int().min(1).max(60000).optional(),
+  dialogueProvider: z.enum(["disabled", "openai"]).default("disabled"),
+  dialogueModel: z.string().trim().min(1).max(200).regex(/^\S+$/).optional(),
+  openaiApiKey: z.string().trim().min(1).regex(/^\S+$/).optional(),
+  dialogueTimeoutMs: z.coerce.number().int().min(1).max(60000).default(10000),
   logLevel: z.enum(["silent", "error", "warn", "info", "debug"]).default("info"),
   simulatorScenario: SimulatorScenarioSchema.default("within_plan"),
   simulatorStepMs: z.coerce.number().int().min(50).max(5000).default(750),
   simulatorApprovalSeconds: z.coerce.number().int().min(1).max(120).default(30),
+}).refine((config) => config.dialogueProvider !== "openai" || (!!config.dialogueModel && !!config.openaiApiKey
+  && config.mode === "simulator" && config.telephonyProvider === "mock" && config.nodeEnv !== "production"), {
+  path: ["dialogueProvider"], message: "Dialogue needs explicit model credentials and development mock mode",
 }).refine((config) => config.apiPort !== config.callbackPort
   || (config.nodeEnv === "test" && config.apiPort === 0 && config.callbackPort === 0), {
   path: ["callbackPort"], message: "Listeners need separate ports",
@@ -61,6 +68,10 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     mockAuthToken: env.MOCK_AUTH_TOKEN,
     silenceTimeoutSeconds: env.CALLMATE_SILENCE_TIMEOUT_SECONDS,
     testRateMinorPerMinute: env.CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE === "" ? undefined : env.CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE,
+    dialogueProvider: env.CALLMATE_DIALOGUE_PROVIDER,
+    dialogueModel: env.CALLMATE_DIALOGUE_MODEL || undefined,
+    openaiApiKey: env.OPENAI_API_KEY || undefined,
+    dialogueTimeoutMs: env.CALLMATE_DIALOGUE_TIMEOUT_MS,
     logLevel: env.CALLMATE_LOG_LEVEL,
     simulatorScenario: env.CALLMATE_SIMULATOR_SCENARIO,
     simulatorStepMs: env.CALLMATE_SIMULATOR_STEP_MS,

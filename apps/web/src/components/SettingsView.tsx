@@ -13,8 +13,8 @@ export default function SettingsView({ readiness, settings, defaults, busy, simu
   return <section className="panel settings-view"><h2>Settings</h2>
     <fieldset className="mb-6" disabled={modeLocked || busy}><legend className="section-title">Call mode</legend><div className="flex flex-wrap gap-2">
       <button type="button" className="secondary template-chip" aria-pressed={simulator} onClick={() => onModeChange(true)}>Simulator</button>
-      <button type="button" className="secondary template-chip" aria-pressed={!simulator} onClick={() => onModeChange(false)}>Live</button>
-    </div><p className="mt-3 text-base text-stone-300">{modeLocked ? 'Finish or resolve the current call attempt before switching modes.' : simulator ? 'Scripted calls on this device. No number is dialed.' : 'Real calls require a ready backend and your approval of the plan.'}</p></fieldset>
+      <button type="button" className="secondary template-chip" aria-pressed={!simulator} onClick={() => onModeChange(false)}>Backend</button>
+    </div><p className="mt-3 text-base text-stone-300">{modeLocked ? 'Finish or resolve the current call attempt before switching modes.' : simulator ? 'Scripted calls on this device. No number is dialed.' : 'Calls use the backend’s reported mode. With the local mock, answer in the operator window at localhost:8080. Real phone calling is unavailable.'}</p></fieldset>
     {simulator && <label className="mb-6">Simulated outcome<select aria-label="Simulated outcome" disabled={modeLocked || busy} value={scenario} onChange={e => onScenarioChange(e.target.value as Scenario)}>{Object.entries(scenarios).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
     {error && <p role="alert" className="notice error">{error}</p>}
     <form noValidate onSubmit={e => {

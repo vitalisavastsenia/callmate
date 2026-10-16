@@ -2,7 +2,8 @@ import { useEffect, useId, useRef, type ReactNode } from 'react';
 import { describeTime, money } from '../time';
 import { downloadCalendar } from '../calendar';
 import { callIsTerminal } from '../ws';
-import { requestLabels, type ApprovalRequest, type CallSnapshot, type ConnectionState, type HistoryEntry, type Offer, type ReviewPlan, type RequestDraft } from '../types';
+import { approvalReasons, type CallActivity } from '../callActivity';
+import { requestLabels, type CallSnapshot, type ConnectionState, type HistoryEntry, type Offer, type ReviewPlan, type RequestDraft } from '../types';
 
 export function PlanDetails({ plan }: { plan: ReviewPlan }) {
   return <RequestDetails request={plan.request} />;
@@ -42,7 +43,6 @@ export function OfferDetails({ offer }: { offer: Offer }) {
 export function Usage({ call }: { call: Pick<CallSnapshot, 'usage'> }) {
   return <div className="mt-5 border-t border-stone-700 pt-4 text-base"><p>Estimated call charge: {money(call.usage.estimate)}</p><p>Settled call charge: {call.usage.status === 'settled' ? money(call.usage.settledTotal) : 'Not available yet'}</p><p className="text-stone-400">Charge status: {call.usage.status}. Any service price is separate. Each amount shows its recorded currency.</p></div>;
 }
-const reasons: Record<ApprovalRequest['reason'], string> = { outside_availability: 'The proposed time is outside your approved availability.', above_price_limit: 'The service price exceeds your approved maximum.', unknown_price: 'The service price is unknown and needs your permission.', user_confirmation_required: 'You asked to approve every offer.' };
 export function ApprovalCard({ call, now, disabled, onDecision, compact = false, onVisibilityChange }: { call: CallSnapshot; now: number; disabled: boolean; onDecision: (decision: 'approve' | 'reject') => void; compact?: boolean; onVisibilityChange?: (visible: boolean) => void }) {
   const titleId = useId(); const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -59,7 +59,7 @@ export function ApprovalCard({ call, now, disabled, onDecision, compact = false,
   const forbidden = Object.values(a.offer.conditions).some(value => value !== 'none');
   return <section className={'approval' + (compact ? ' approval-compact' : ' mb-6')} aria-labelledby={titleId} key={a.id}>
     <p className="eyebrow">Approval required · Offer version {a.offer.version}</p><h3 id={titleId} className="section-title">Approve this exact alternative?</h3>
-    <p className="mb-3">{reasons[a.reason]}</p>
+    <p className="mb-3">{approvalReasons[a.reason]}</p>
     {!compact && call.messages.filter(m => m.speaker === 'business').slice(-1).map(m => <blockquote key={m.id} className="transcript-line mb-4"><p lang="es">{m.originalText}</p><p className="text-stone-300">{m.translationEn ?? 'English translation pending…'}</p></blockquote>)}
     {!compact && <div className="mb-5 rounded-lg border border-stone-600 p-4"><p className="mb-2 font-semibold">Changes from your plan</p><ul className="list-disc pl-6">
       {outside && <li>Time offered: {describeTime(a.offer.appointment)}. Approved: {r.availability.map(w => w.start.localDate + ', ' + w.start.localTime + '–' + w.end.localTime + ' ' + w.start.timeZone).join('; ')}.</li>}
@@ -77,7 +77,7 @@ export function ApprovalCard({ call, now, disabled, onDecision, compact = false,
 }
 const callLabels: Record<CallSnapshot['callState'], string> = { creating: 'Starting call', dialing: 'Dialing', ringing: 'Ringing', connected: 'Connected', ending: 'Ending call — awaiting acknowledgement', ended: 'Call ended', busy: 'Business is busy', no_answer: 'No answer', failed: 'Call failed', reconciliation_required: 'Call state unknown — checking with the provider' };
 const bookingLabels: Record<CallSnapshot['bookingState'], string> = { completed: 'Call completed', pending: 'No booking confirmed', offer_received: 'Offer received', awaiting_approval: 'Waiting for your approval', reading_back: 'Reading back the details', awaiting_business_confirmation: 'Waiting for the business to confirm', confirmed: 'Booking confirmed', not_booked: 'Not booked', uncertain: 'Uncertain — check before trying again' };
-export function LiveCall({ call, connection, now, busy, stopping, onStop, onDecision, onApprovalVisibility, approvalLines }: { call: CallSnapshot; connection: ConnectionState; now: number; busy: boolean; stopping: boolean; onStop: () => void; onDecision: (decision: 'approve' | 'reject') => void; onApprovalVisibility: (visible: boolean) => void; approvalLines: string[] }) {
+export function LiveCall({ call, connection, now, busy, stopping, onStop, onDecision, onApprovalVisibility, approvalLines, activity = [] }: { call: CallSnapshot; connection: ConnectionState; now: number; busy: boolean; stopping: boolean; onStop: () => void; onDecision: (decision: 'approve' | 'reject') => void; onApprovalVisibility: (visible: boolean) => void; approvalLines: string[]; activity?: CallActivity[] }) {
   const ended = callIsTerminal(call);
   const booking = (call.plan.request.requestType ?? 'book') === 'book';
   return <>
@@ -89,16 +89,22 @@ export function LiveCall({ call, connection, now, busy, stopping, onStop, onDeci
     {!ended && <p className="mb-5 text-base text-stone-300">Stop requests hangup; it does not cancel an appointment already made.</p>}
     <div className="grid items-start gap-6 lg:grid-cols-[2fr_1fr]">
       <Transcript call={call} approvalLines={approvalLines}>{!ended && <ApprovalCard call={call} now={now} disabled={busy || connection !== 'connected'} onDecision={onDecision} onVisibilityChange={onApprovalVisibility} />}</Transcript>
-      <aside className="panel"><h3 className="section-title">{booking ? 'Current offer' : 'Your request'}</h3>{booking ? <>{call.activeOffer ? <OfferDetails offer={call.activeOffer} /> : <p>No offer yet.</p>}<p className="mt-5 text-base text-stone-300">An offer, your approval, and an ended phone call are not business confirmation.</p></> : <PlanDetails plan={call.plan} />}<Usage call={call} /></aside>
+      <aside className="space-y-5"><section className="panel" aria-label="Agent decisions and actions"><h3 className="section-title">Agent decisions &amp; actions</h3>
+        <p className="mb-4 text-base text-stone-300">Observed workflow actions. Earlier history may be unavailable after reload.</p>
+        <ol className="space-y-4" aria-live="polite" aria-relevant="additions">{activity.map(item => <li key={item.id} className="agent-action"><p className="eyebrow"><time dateTime={item.at}>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</time></p><h4 className="font-semibold">{item.title}</h4><p>{item.detail}</p></li>)}</ol>
+        {!activity.length && <p>No agent decision has been reported yet.</p>}
+      </section><section className="panel"><h3 className="section-title">{booking ? 'Current offer' : 'Your request'}</h3>{booking ? <>{call.activeOffer ? <OfferDetails offer={call.activeOffer} /> : <p>No offer yet.</p>}<p className="mt-5 text-base text-stone-300">An offer, your approval, and an ended phone call are not business confirmation.</p></> : <PlanDetails plan={call.plan} />}<Usage call={call} /></section></aside>
     </div>
   </>;
 }
 export function Transcript({ call, children, approvalLines = [] }: { call: CallSnapshot; children?: ReactNode; approvalLines?: string[] }) {
   const booking = (call.plan.request.requestType ?? 'book') === 'book';
+  const log = useRef<HTMLDivElement>(null); const following = useRef(true);
+  useEffect(() => { if (log.current && following.current) log.current.scrollTop = log.current.scrollHeight; }, [call.messages]);
   return <section className="panel"><h3 className="section-title">Conversation</h3>
-        {call.conversationData === 'deleted' ? <p>{booking ? 'Conversation text was deleted. Booking details remain.' : 'Conversation text was deleted. Request details remain.'}</p> : <div className="transcript space-y-5" role="log" aria-label="Call transcript">
+        {call.conversationData === 'deleted' ? <p>{booking ? 'Conversation text was deleted. Booking details remain.' : 'Conversation text was deleted. Request details remain.'}</p> : <div ref={log} onScroll={() => { const el = log.current!; following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }} className="transcript space-y-5" role="log" aria-label="Call transcript" tabIndex={0}>
           {!call.messages.length && <p className="text-stone-300">Waiting for the business to answer…</p>}
-          {call.messages.map(m => <article key={m.id} className="transcript-line"><p className="eyebrow">{m.speaker === 'assistant' ? 'Zeus' : 'Business'} · {!m.final ? 'Provisional' : m.speaker === 'business' ? 'Final' : m.playback === 'played' ? 'Spoken' : m.playback}</p><p lang="es" className="mb-2">{m.originalText}</p><p className="text-stone-300">{m.translationEn ?? 'English translation pending…'}</p>{m.playback === 'interrupted' && <p className="mt-2 text-base text-amber-200">Interrupted — the business may not have heard the full reply.</p>}</article>)}
+          {call.messages.map(m => <article key={m.id} className={'transcript-line transcript-' + m.speaker}><p className="eyebrow">{m.speaker === 'assistant' ? 'Agent · Zeus' : 'Business · Other side'} · {!m.final ? 'Provisional' : m.speaker === 'business' ? 'Final' : m.playback === 'played' ? 'Spoken' : m.playback}</p><p lang={m.language} className="mb-2">{m.originalText}</p><p lang="en" className="text-stone-300">{m.translationEn ?? 'English translation pending…'}</p>{m.playback === 'interrupted' && <p className="mt-2 text-base text-amber-200">Interrupted — the business may not have heard the full reply.</p>}</article>)}
           {approvalLines.map((line, i) => <p key={i} className="transcript-line">{line}</p>)}
           {children}
         </div>}

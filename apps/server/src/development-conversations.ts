@@ -1,14 +1,14 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { FastifyInstance } from "fastify";
-import { ManualCallSnapshotSchema, DomainEventSchema } from "@callmate/contracts";
-import type { DomainEvent, ManualCallSnapshot } from "@callmate/contracts";
+import { ManualCallSnapshotSchema, CallSnapshotSchema, ApprovedPlanSchema, DomainEventSchema, TranscriptMessageSchema } from "@callmate/contracts";
+import type { DomainEvent, ManualCallSnapshot, CallSnapshot, ApprovalDecision, ReviewPlan } from "@callmate/contracts";
 import { z } from "zod";
 import twilio from "twilio";
 import type { Config } from "./config.js";
 import type { Store } from "./storage.js";
-import { isManualAttempt } from "./call-store.js";
-import type { ManualAttempt } from "./call-store.js";
+import { isMockAttempt } from "./call-store.js";
+import type { MockAttempt } from "./call-store.js";
 import { CommandError } from "./errors.js";
 import { MockCallsClient, MockCallsError } from "./mock-calls-client.js";
 import { mockRelayEnabled } from "./mock-relay.js";
@@ -17,18 +17,23 @@ import type { RelayInbound } from "./twilio/protocol.js";
 import { normalizeStatus, statusCallback, terminal as providerTerminal } from "./twilio/protocol.js";
 import type { CallStatus } from "./twilio/protocol.js";
 
+import { RelayDialogue } from "./relay-dialogue.js";
+import type { ModelClient } from "@callmate/dialogue";
+
 import { initialUsage, measureUsage, budgetExpired, usageSampleDue } from "./usage.js";
 
 const startInput = z.strictObject({ requestId: z.uuid(), initialMessage: z.string().min(1).max(8000).refine((text) => text.trim().length > 0),
   language: z.enum(["es-ES", "ru-RU", "pl-PL", "en-US"]) });
-const terminal = (call: ManualCallSnapshot) => ["ended", "busy", "no_answer", "failed"].includes(call.callState);
+const terminal = (call: ManualCallSnapshot | CallSnapshot) => ["ended", "busy", "no_answer", "failed"].includes(call.callState);
 type Emit = (type: DomainEvent["type"], payload: unknown) => void;
 const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
 const progress = (status: CallStatus) => status === "queued" ? 0 : status === "ringing" ? 1 : status === "in-progress" ? 2 : 3;
 
-/** Manual transport adapter for the shared persisted attempts, event log and active-call slot. */
-export type DevelopmentOptions = { now?: () => number; automatic?: boolean };
+/** Local mock transport for manual conversations and reviewed dialogue attempts. */
+export type DevelopmentOptions = { now?: () => number; automatic?: boolean; model?: ModelClient };
 export class DevelopmentConversations {
+  private readonly dialogue: RelayDialogue;
+  get dialogueEnabled() { return this.dialogue.enabled; }
   private readonly now: () => number;
   private closed = false;
   private pending = new Set<Promise<unknown>>();
@@ -41,8 +46,12 @@ export class DevelopmentConversations {
   constructor(private config: Config, private store: Store, options: DevelopmentOptions = {}) {
     this.now = options.now ?? Date.now;
     this.client = new MockCallsClient(config);
+    this.dialogue = new RelayDialogue(config, store, (id, work) => this.change(id, (a, emit) => {
+      if (!a.call.plan) return false;
+      work(a as MockAttempt & { call: CallSnapshot }, emit);
+    }), (id) => this.enforceLimits(id), options.model);
     const active = store.calls.active();
-    if (active && isManualAttempt(active)) this.change(active.call.id, (a, emit) => {
+    if (active && isMockAttempt(active)) this.change(active.call.id, (a, emit) => {
       if (a.internal.correlation?.creation === "prepared" && !a.internal.callSid) {
         this.finish(a, emit, "failed", "Backend restarted before the call was submitted. No call was redialed."); return;
       }
@@ -61,7 +70,8 @@ export class DevelopmentConversations {
   async tick() {
     if (this.closed || !mockRelayEnabled(this.config)) return;
     const active = this.store.calls.active();
-    if (!active || !isManualAttempt(active)) return;
+    if (!active || !isMockAttempt(active)) return;
+    if (active.call.plan && this.dialogue.expire(active.call.id)) this.requestStop(active.call.id, "user_stopped");
     this.enforceLimits(active.call.id);
     await this.refresh(active.call.id);
   }
@@ -69,6 +79,7 @@ export class DevelopmentConversations {
   private requestStop(id: string, reason: "user_stopped" | "duration_limit" | "silence_timeout" | "budget_limit") {
     this.change(id, (a, emit) => {
       if (terminal(a.call) || a.internal.stopRequested) return false;
+      this.dialogue.cancel(id);
       a.internal.stopRequested = true;
       if (a.internal.controls) a.internal.controls.stopReason = reason;
       if (reason !== "user_stopped") {
@@ -91,7 +102,7 @@ export class DevelopmentConversations {
     }
     return terminal(this.require(id).call) || this.require(id).internal.stopRequested;
   }
-  private beginSilence(a: ManualAttempt) {
+  private beginSilence(a: MockAttempt) {
     const controls = a.internal.controls;
     if (controls && !controls.silenceDeadlineAt) controls.silenceDeadlineAt = new Date(this.now() + controls.silenceTimeoutSeconds * 1000).toISOString();
   }
@@ -107,9 +118,9 @@ export class DevelopmentConversations {
   async recover() {
     if (!mockRelayEnabled(this.config) || this.closed) return;
     const active = this.store.calls.active();
-    if (active && isManualAttempt(active)) await this.refresh(active.call.id);
+    if (active && isMockAttempt(active)) await this.refresh(active.call.id);
   }
-  private sameProvider(a: ManualAttempt) {
+  private sameProvider(a: MockAttempt) {
     const correlation = a.internal.correlation;
     return !!correlation && correlation.apiOrigin === new URL(this.config.mockApiBase).origin
       && correlation.accountSid === this.config.mockAccountSid;
@@ -124,9 +135,9 @@ export class DevelopmentConversations {
   private enabled() {
     if (this.closed || !mockRelayEnabled(this.config)) throw new CommandError(503, "PROVIDER_NOT_READY", "Enable development mock mode to use this console");
   }
-  private require(id: string): ManualAttempt {
+  private require(id: string): MockAttempt {
     const a = this.store.calls.get(id);
-    if (!a || !isManualAttempt(a)) throw new CommandError(404, "NOT_FOUND", "Manual mock call not found");
+    if (!a || !isMockAttempt(a)) throw new CommandError(404, "NOT_FOUND", "Mock call not found");
     return a;
   }
   snapshot(id: string) { return this.require(id).call; }
@@ -134,7 +145,7 @@ export class DevelopmentConversations {
     const set = this.listeners.get(id) ?? new Set<() => void>(); set.add(listener); this.listeners.set(id, set);
     return () => { set.delete(listener); if (!set.size) this.listeners.delete(id); };
   }
-  private change(id: string, work: (a: ManualAttempt, emit: Emit) => void | boolean, sampleUsage = false) {
+  private change(id: string, work: (a: MockAttempt, emit: Emit) => void | boolean, sampleUsage = false) {
     const result = this.store.calls.transaction(() => {
       const a = this.require(id); const events: DomainEvent[] = [];
       const previousUpdatedAt = a.call.updatedAt;
@@ -153,16 +164,22 @@ export class DevelopmentConversations {
     if (result.publish) for (const listener of this.listeners.get(id) ?? []) listener();
     return result.call;
   }
-  private status(a: ManualAttempt, emit: Emit, state: ManualCallSnapshot["callState"]) {
+  private status(a: MockAttempt, emit: Emit, state: ManualCallSnapshot["callState"]) {
     if (a.call.callState === state) return;
     a.call.callState = state; emit("call.status", { callState: state });
   }
-  private finish(a: ManualAttempt, emit: Emit, state: "ended" | "busy" | "no_answer" | "failed", error: string | null = null, interrupted = false) {
+  private finish(a: MockAttempt, emit: Emit, state: "ended" | "busy" | "no_answer" | "failed", error: string | null = null, interrupted = false) {
     if (terminal(a.call)) return;
     const stopReason = a.internal.controls?.stopReason ?? (a.internal.stopRequested ? "user_stopped" : null);
     const limit = stopReason === "duration_limit" || stopReason === "silence_timeout" || stopReason === "budget_limit";
     a.internal.status = state === "ended" ? "completed" : "failed";
     a.internal.error = limit ? (stopReason === "budget_limit" ? "The call reached its test-rate budget." : stopReason === "duration_limit" ? "The call reached its duration limit." : "The call reached its silence deadline.") : error;
+    this.dialogue.cancel(a.call.id);
+    if (a.call.plan) {
+      this.dialogue.finish(a as MockAttempt & { call: CallSnapshot }, emit,
+        stopReason === "user_stopped" ? "user_stopped" : state === "busy" ? "busy" : state === "no_answer" ? "no_answer" : "technical_failure");
+      this.status(a, emit, state); return;
+    }
     a.call.bookingState = "not_booked";
     a.call.outcome = { status: "not_booked", reason: stopReason === "user_stopped" ? "user_stopped"
       : limit || state === "failed" || interrupted ? "technical_failure"
@@ -172,7 +189,7 @@ export class DevelopmentConversations {
     emit("booking.updated", { bookingState: a.call.bookingState, outcome: a.call.outcome });
     this.status(a, emit, state);
   }
-  private providerStatus(a: ManualAttempt, emit: Emit, status: CallStatus): boolean {
+  private providerStatus(a: MockAttempt, emit: Emit, status: CallStatus): boolean {
     if (terminal(a.call)) return false;
     const correlation = a.internal.correlation!;
     const prior = correlation.providerStatus ?? (correlation.sessionId || a.call.callState === "connected" ? "in-progress"
@@ -200,7 +217,7 @@ export class DevelopmentConversations {
     if (!mockRelayEnabled(this.config)) throw new CommandError(503, "PROVIDER_NOT_READY", "Mock callbacks are disabled");
     const stored = this.store.calls.get(id);
     const deny = () => { throw new CommandError(403, "INVALID_REQUEST", "Invalid or uncorrelated mock callback"); };
-    if (!stored || !isManualAttempt(stored)) return deny();
+    if (!stored || !isMockAttempt(stored)) return deny();
     const correlation = stored.internal.correlation;
     if (!correlation?.statusCallbackUrl || correlation.creation !== "submitted" || !this.sameProvider(stored)) return deny();
     const url = new URL(correlation.statusCallbackUrl);
@@ -226,13 +243,13 @@ export class DevelopmentConversations {
       void this.refresh(id).catch(() => {});
     }
   }
-  private view(a: ManualAttempt) {
+  private view(a: MockAttempt) {
     // This compatibility projection has no separate lifecycle or transcript storage.
     const responses = a.call.messages.filter((m) => m.speaker === "business").slice(-50)
       .map((m) => ({ text: m.originalText, language: m.language, at: m.createdAt }));
     while (responses.reduce((sum, m) => sum + m.text.length, 0) > 32_000) responses.shift();
     return { id: a.call.id, initialMessage: a.call.messages.find((m) => m.speaker === "assistant")?.originalText ?? "",
-      language: a.call.language, conversationData: a.call.conversationData, usage: a.call.usage, status: a.internal.status, callSid: a.internal.callSid,
+      language: "language" in a.call ? a.call.language : "es-ES", conversationData: a.call.conversationData, usage: a.call.usage, status: a.internal.status, callSid: a.internal.callSid,
       sessionId: a.internal.correlation?.sessionId ?? null, error: a.internal.error, responses,
       operatorUrl: a.internal.callSid ? `${new URL(this.config.mockOperatorOrigin).origin}/?callId=${encodeURIComponent(a.internal.callSid)}` : null };
   }
@@ -240,33 +257,54 @@ export class DevelopmentConversations {
     this.enabled(); const a = this.store.calls.latestManual();
     return { conversation: a ? await this.get(a.call.id) : null };
   }
-  async start(raw: unknown) {
-    const pending = this.startInternal(raw); this.pending.add(pending);
+  async startDialogue(request: z.infer<typeof import("@callmate/contracts").StartCallRequestSchema>, key: string, validate: (plan: ReviewPlan) => void) {
+    const command = this.store.calls.command(key);
+    if (command) {
+      const body = createHash("sha256").update(JSON.stringify(request)).digest("hex");
+      if (command.endpoint !== "dialogue-start" || command.body !== body) throw new CommandError(409, "IDEMPOTENCY_CONFLICT", "Start command differs");
+      return this.snapshot(command.attemptId) as CallSnapshot;
+    }
+    this.enabled();
+    if (!this.dialogueEnabled) throw new CommandError(503, "PROVIDER_NOT_READY", "Dialogue model is disabled");
+    const plan = this.store.calls.plan(request.planId);
+    if (!plan) throw new CommandError(404, "NOT_FOUND", "Review plan not found");
+    if (request.mode !== "simulator") throw new CommandError(409, "MODE_MISMATCH", "Dialogue supports local mock calls only");
+    if (request.planVersion !== plan.version) throw new CommandError(409, "PLAN_VERSION_MISMATCH", "Plan version differs");
+    validate(plan);
+    await this.start({ requestId: key, initialMessage: this.dialogue.greeting(plan), language: "es-ES" }, plan, JSON.stringify(request));
+    return this.snapshot(key) as CallSnapshot;
+  }
+  decide(id: string, decision: ApprovalDecision, key: string) { return this.dialogue.decide(id, decision, key); }
+  async start(raw: unknown, plan?: ReviewPlan, commandBody?: string) {
+    const pending = this.startInternal(raw, plan, commandBody); this.pending.add(pending);
     try { return await pending; } finally { this.pending.delete(pending); }
   }
-  private async startInternal(raw: unknown) {
+  private async startInternal(raw: unknown, plan?: ReviewPlan, commandBody?: string) {
     this.enabled(); const input = startInput.parse(raw);
     // Keep idempotency after transcript deletion without retaining the input in command records.
-    const body = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+    const body = createHash("sha256").update(commandBody ?? JSON.stringify(input)).digest("hex");
     const token = randomBytes(32).toString("hex");
     const existing = this.store.calls.transaction(() => {
       const command = this.store.calls.command(input.requestId);
       if (command) {
-        if (command.endpoint !== "manual-start" || command.body !== body) throw new CommandError(409, "IDEMPOTENCY_CONFLICT", "This request ID was already used for another command");
+        if (command.endpoint !== (plan ? "dialogue-start" : "manual-start") || command.body !== body) throw new CommandError(409, "IDEMPOTENCY_CONFLICT", "This request ID was already used for another command");
         return this.require(command.attemptId);
       }
       if (this.store.calls.get(input.requestId)) throw new CommandError(409, "IDEMPOTENCY_CONFLICT", "This ID already identifies another call");
       if (this.store.calls.active()) throw new CommandError(409, "CALL_ALREADY_ACTIVE", "Another call is still active");
       const now = this.timestamp();
       const limits = this.store.getSettings().defaultCallLimits;
-      const maxDurationSeconds = limits.maxDurationSeconds;
+      const maxDurationSeconds = plan?.request.callLimits.maxDurationSeconds ?? limits.maxDurationSeconds;
       const message = { id: randomUUID(), turnId: randomUUID(), speaker: "assistant" as const,
         originalText: input.initialMessage, language: input.language, translationEn: null,
         final: true as const, playback: "withheld" as const, createdAt: now };
-      const call = ManualCallSnapshotSchema.parse({ id: input.requestId, kind: "manual_mock", mode: "simulator", plan: null,
+      const manual = ManualCallSnapshotSchema.parse({ id: input.requestId, kind: "manual_mock", mode: "simulator", plan: null,
         language: input.language, revision: 1, lastEventSequence: 2, callState: "creating", bookingState: "pending", outcome: { status: "pending" },
         activeOffer: null, pendingApproval: null, conversationData: "retained", messages: [message],
-        usage: initialUsage(now, this.config.testRateMinorPerMinute, limits.maxEstimatedCost), createdAt: now, updatedAt: now });
+        usage: initialUsage(now, this.config.testRateMinorPerMinute, (plan?.request.callLimits.maxEstimatedCost ?? limits.maxEstimatedCost)), createdAt: now, updatedAt: now });
+      const { kind: _kind, language: _language, ...base } = manual;
+      const call = plan ? CallSnapshotSchema.parse({ ...base,
+        plan: ApprovedPlanSchema.parse({ ...plan, approvedAt: now }) }) : manual;
       const events = [{ type: "call.status", payload: { callState: "creating" } }, { type: "transcript.updated", payload: message }]
         .map((event, index) => DomainEventSchema.parse({ contractVersion: 1, id: randomUUID(), attemptId: call.id,
           sequence: index + 1, snapshotRevision: 1, occurredAt: now, ...event }));
@@ -276,7 +314,7 @@ export class DevelopmentConversations {
         correlation: { apiOrigin: new URL(this.config.mockApiBase).origin, accountSid: this.config.mockAccountSid,
           tokenHash: tokenHash(token), sessionId: null, creation: "prepared", recoveryRequired: false,
           statusCallbackUrl: this.client.callbackUrl(call.id) } } }, events);
-      this.store.calls.recordCommand(input.requestId, "manual-start", body, call.id);
+      this.store.calls.recordCommand(input.requestId, plan ? "dialogue-start" : "manual-start", body, call.id);
       return undefined;
     });
     if (existing) return this.view(existing);
@@ -437,20 +475,27 @@ export class DevelopmentConversations {
       this.status(a, emit, "connected");
       a.call.messages[0]!.playback = "generated"; emit("transcript.updated", a.call.messages[0]!);
     });
-    send({ type: "text", token: a.call.messages[0]!.originalText, lang: a.call.language, last: true, interruptible: true, preemptible: true });
+    send({ type: "text", token: a.call.messages[0]!.originalText, lang: "language" in a.call ? a.call.language : "es-ES", last: true, interruptible: true, preemptible: true });
     return {
       activity: () => this.activity(id),
+      speech: () => this.dialogue.speech(id),
+      interrupt: () => this.dialogue.speech(id),
       prompt: (text, language) => {
         if (this.closed || this.enforceLimits(id)) return;
         const a = this.require(id); if (a.internal.correlation?.recoveryRequired) return;
         if (a.call.messages.length >= 2000) { void this.stop(id).catch(() => {}); return; }
+        if (a.call.plan && language !== "es-ES") { this.dialogue.fail(id); return; }
         this.change(id, (a, emit) => {
           const message = { id: randomUUID(), turnId: randomUUID(), speaker: "business" as const, originalText: text,
             language, translationEn: null, final: true as const, playback: "not_applicable" as const, createdAt: a.call.updatedAt };
-          a.call.messages.push(message); emit("transcript.updated", message);
+          if (a.call.plan) a.call.messages.push(TranscriptMessageSchema.parse(message));
+          else a.call.messages.push(message);
+          emit("transcript.updated", message);
         });
+        if (a.call.plan) this.dialogue.prompt(id, send);
       },
       close: () => {
+        this.dialogue.cancel(id);
         delete session.disconnect;
         if (this.closed) return;
         const a = this.require(id); if (terminal(a.call) || a.internal.stopRequested || this.closed) return;
@@ -473,10 +518,11 @@ export class DevelopmentConversations {
     return { attemptId: id, deleted: true as const };
   }
   async close() {
+    this.dialogue.close();
     this.closed = true; if (this.timer) clearInterval(this.timer);
     await Promise.allSettled([...this.pending, ...this.refreshing.values(), ...this.stopping.values()]);
     const active = this.store.calls.active();
-    if (active && isManualAttempt(active) && mockRelayEnabled(this.config)) {
+    if (active && isMockAttempt(active) && mockRelayEnabled(this.config)) {
       if (active.internal.correlation) this.change(active.call.id, (a) => { a.internal.correlation!.recoveryRequired = true; });
       await this.end(active.call.id);
     }

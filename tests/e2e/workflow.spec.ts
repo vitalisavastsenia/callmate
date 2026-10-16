@@ -13,10 +13,11 @@ async function prepare(page: Page, scenario = 'within_plan') {
   await button(page, 'Request').click();
   await button(page, 'Review call plan').click();
 }
-async function start(page: Page) {
+async function start(page: Page, keepWindow = false) {
   if (await button(page, 'Review call plan').isVisible()) await button(page, 'Review call plan').click();
   await button(page, 'Call').click();
   await expect(button(page, 'Stop call')).toBeVisible();
+  if (!keepWindow) await page.getByRole('dialog').getByRole('button', { name: 'Minimize call', exact: true }).click();
 }
 async function advance(page: Page, count: number) {
   for (let i = 0; i < count; i++) await page.clock.runFor(2000);
@@ -26,6 +27,53 @@ async function historyDetail(page: Page) {
   await expect(page.getByRole('heading', { name: 'Call history', exact: true })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Call details', exact: true })).toBeVisible();
 }
+
+test('call popup follows both speakers and agent actions, minimizes and reopens without redial', async ({ page }) => {
+  await page.clock.install(); await prepare(page, 'above_price'); await start(page, true);
+  const popup = page.getByRole('dialog', { name: 'Call with Example barbershop', exact: true });
+  await expect(popup).toBeVisible();
+  await expect(popup.getByText('No agent decision has been reported yet.', { exact: true })).toBeVisible();
+  await advance(page, 5);
+  const transcript = popup.getByRole('log', { name: 'Call transcript', exact: true });
+  await expect(transcript.locator('.transcript-assistant')).toContainText(['Agent · Zeus']);
+  await expect(transcript.locator('.transcript-business').first()).toContainText('Good morning. How can I help?');
+  const actions = popup.getByRole('region', { name: 'Agent decisions and actions', exact: true });
+  await expect(actions).toContainText('Agent paused for your approval');
+  await expect(actions).toContainText('The service price exceeds your approved maximum.');
+  await expect(actions).not.toContainText('Business confirmation recorded');
+  expect(await popup.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await page.screenshot({ path: test.info().outputPath('call-popup.png') });
+  const id = await page.evaluate(() => localStorage.getItem('zeus-llama.active-attempt.v1'));
+  await page.keyboard.press('Escape');
+  await expect(popup).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'View call · In progress', exact: true })).toBeFocused();
+  await button(page, 'Settings').click();
+  await page.getByRole('button', { name: 'View call · In progress', exact: true }).click();
+  await popup.getByRole('button', { name: 'Approve this offer', exact: true }).click();
+  await expect(popup.getByRole('log')).toContainText('You answered: Approve this offer');
+  await expect(actions).not.toContainText('Business confirmation recorded');
+  await advance(page, 3);
+  await expect(actions).toContainText('Business confirmation recorded');
+  await expect(popup.getByRole('heading', { name: 'Confirmed', exact: true })).toBeVisible();
+  await expect(popup.getByRole('button', { name: 'Stop call', exact: true })).toHaveCount(0);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('zeus-llama.simulator.v1')!).sessions.map((s: { call: { id: string } }) => s.call.id))).toEqual([id]);
+  await popup.getByRole('button', { name: 'View in Summary', exact: true }).click();
+  await expect(popup).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Call details', exact: true })).toBeVisible();
+});
+
+test('call popup restores the same call after reload and Stop remains available', async ({ page }) => {
+  await page.clock.install(); await prepare(page, 'above_price'); await start(page, true); await advance(page, 5);
+  const id = await page.evaluate(() => localStorage.getItem('zeus-llama.active-attempt.v1'));
+  await page.reload();
+  const popup = page.getByRole('dialog');
+  await expect(popup).toBeVisible();
+  await expect(popup.getByRole('region', { name: 'Agent decisions and actions' })).toContainText('Agent paused for your approval');
+  expect(await page.evaluate(() => localStorage.getItem('zeus-llama.active-attempt.v1'))).toBe(id);
+  await popup.getByRole('button', { name: 'Stop call', exact: true }).click();
+  await expect(popup.getByRole('heading', { name: 'Not booked', exact: true })).toBeVisible();
+  await expect(popup.getByRole('button', { name: 'Approve this offer', exact: true })).toHaveCount(0);
+});
 
 test('inline request → exact approval → result → history, calendar, deletion, and Repeat', async ({ page }) => {
   const network: string[] = []; page.on('request', r => {
@@ -82,6 +130,7 @@ test('Stop and repeated Call cannot create a second attempt', async ({ page }) =
   await expect(button(page, 'Stop call')).toBeVisible();
   await button(page, 'Stop call').click();
   await expect(page.getByRole('heading', { name: 'Not booked', exact: true })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close call window', exact: true }).click();
   await button(page, 'Summary').click();
   await expect(page.getByRole('button', { name: /^View details/ })).toHaveCount(1);
 });
@@ -315,7 +364,7 @@ test('Summary surfaces a new approval live, returns to the exact offer, and remo
 test('global approval controls work on Settings and leave an acknowledged transcript receipt', async ({ page }) => {
   await page.clock.install(); await prepare(page, 'alternative'); await start(page);
   await button(page, 'Settings').click();
-  await expect(button(page, 'Live')).toBeDisabled();
+  await expect(button(page, 'Backend')).toBeDisabled();
   await advance(page, 5);
   const panel = page.getByRole('complementary', { name: 'Zeus needs your approval', exact: true });
   await expect(panel).toBeVisible();
@@ -328,7 +377,7 @@ test('global approval controls work on Settings and leave an acknowledged transc
   await expect(page.getByRole('log', { name: 'Call transcript' })).toContainText('You answered: Approve this offer');
   await advance(page, 3);
   await expect(page.getByRole('heading', { name: 'Confirmed', exact: true })).toBeVisible();
-  await button(page, 'Settings').click(); await expect(button(page, 'Live')).toBeEnabled();
+  await button(page, 'Settings').click(); await expect(button(page, 'Backend')).toBeEnabled();
 });
 
 test('offscreen approval offers direct controls and its countdown never approves on expiry', async ({ page }) => {
@@ -338,7 +387,8 @@ test('offscreen approval offers direct controls and its countdown never approves
   await expect(panel).toBeVisible();
   await expect(page.locator('.request-review-bar')).toBeHidden();
   await panel.getByRole('button', { name: 'Go to the conversation', exact: true }).click();
-  await expect(page.locator('#home-call-stage .approval-actions')).toBeInViewport();
+  await expect(page.getByRole('dialog').locator('.approval-actions')).toBeInViewport();
+  await page.getByRole('dialog').getByRole('button', { name: 'Minimize call', exact: true }).click();
   await button(page, 'Summary').click(); await expect(panel).toBeVisible();
   await page.clock.runFor(31_000);
   await expect(panel).toHaveCount(0);
@@ -358,14 +408,14 @@ test('mode changes keep the shared draft, isolate history, and persist the selec
   await page.getByLabel('Home goal', { exact: true }).fill('Ask the manager about opening hours.');
   await page.getByLabel('Name', { exact: true }).fill('Clinic Iris');
   await page.getByLabel('Phone number', { exact: true }).fill('612345678');
-  await button(page, 'Settings').click(); await button(page, 'Live').click();
-  await expect(button(page, 'Live')).toHaveAttribute('aria-pressed', 'true');
+  await button(page, 'Settings').click(); await button(page, 'Backend').click();
+  await expect(button(page, 'Backend')).toHaveAttribute('aria-pressed', 'true');
   await button(page, 'Request').click();
   await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Clinic Iris');
   await expect(page.getByLabel('Goal', { exact: true })).toHaveValue('Ask the manager about opening hours.');
   await expect(button(page, 'Fill details from goal')).toHaveCount(0);
   await page.reload(); await button(page, 'Settings').click();
-  await expect(button(page, 'Live')).toHaveAttribute('aria-pressed', 'true');
+  await expect(button(page, 'Backend')).toHaveAttribute('aria-pressed', 'true');
   await button(page, 'Simulator').click();
   await expect(button(page, 'Simulator')).toHaveAttribute('aria-pressed', 'true');
 });

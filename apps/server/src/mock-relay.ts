@@ -12,7 +12,7 @@ export function mockRelayEnabled(config: Config) {
     && ["development", "test"].includes(config.nodeEnv);
 }
 export type RelaySend = (message: RelayOutbound) => void;
-export type RelayConsumer = { activity?(): boolean; prompt(text: string, language: string): void; close(): void };
+export type RelayConsumer = { activity?(): boolean; speech?(): void; interrupt?(): void; prompt(text: string, language: string): void; close(): void };
 type AttachRelay = (setup: Extract<RelayInbound, { type: "setup" }>, send: RelaySend, disconnect: () => void) => RelayConsumer | undefined;
 
 /** Development transport in the existing backend. It cannot invoke booking or live providers. */
@@ -83,6 +83,7 @@ export function mountMockRelay(app: FastifyInstance, config: Config, maxDuration
           if (!/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(message.lang) || message.lang.length > 35
             || partial.length + message.voicePrompt.length > 8000) { stop(1007, "Invalid prompt or language"); return; }
           if (partial && message.lang !== language) { stop(1007, "Partial prompt language changed"); return; }
+          if (message.voicePrompt.trim()) consumer?.speech?.();
           if (message.voicePrompt.trim() && consumer?.activity?.() === false) { partial = ""; return; }
           partial += message.voicePrompt; language = message.lang;
           if (!message.last) return;
@@ -106,7 +107,8 @@ export function mountMockRelay(app: FastifyInstance, config: Config, maxDuration
           consumer?.activity?.();
         } else if (message.type === "interrupt") {
           if (message.utteranceUntilInterrupt.trim()) consumer?.activity?.();
-          partial = ""; // No asynchronous output is queued by the scripted adapter.
+          consumer?.interrupt?.();
+          partial = "";
         } else if (message.type === "error") {
           stop(1011, "Provider reported a relay error");
         } // DTMF is validated and accepted without inventing booking actions or replies.

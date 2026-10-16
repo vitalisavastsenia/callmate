@@ -8,10 +8,10 @@ export function ToneFields({ tone, notes, onChange, hideHeading = false }: { ton
     <label>Notes for Zeus<textarea data-gramm="false" aria-label="Notes for Zeus" value={notes} onChange={e => onChange(tone, e.target.value)} maxLength={2000} rows={2} placeholder="Grumpy guy, be extra polite and patient" /></label>
   </fieldset>;
 }
-export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+export function Modal({ title, onClose, children, className = '' }: { title: string; onClose: () => void; children: ReactNode; className?: string }) {
   const ref = useRef<HTMLDialogElement>(null); const titleId = useId();
   useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close(); }, []);
-  return createPortal(<dialog ref={ref} className="contact-dialog" aria-labelledby={titleId} onCancel={e => { e.preventDefault(); onClose(); }}>
+  return createPortal(<dialog ref={ref} className={'contact-dialog ' + className} aria-labelledby={titleId} onCancel={e => { e.preventDefault(); onClose(); }}>
     <div className="mb-5 flex items-start justify-between gap-3"><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" aria-label="Close dialog" onClick={onClose}>×</button></div>{children}
   </dialog>, document.body);
 }

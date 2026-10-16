@@ -12,6 +12,8 @@ import { readRequestDefaults, saveRequestDefaults } from './preferences';
 import { useApprovalAttention } from './useApprovalAttention';
 import CallHistory from './components/CallHistory';
 import { ApprovalCard, LiveCall, PlanDetails, Result, ShortResult, Transcript } from './components/CallViews';
+import { Modal } from './components/ContactFields';
+import { callActivityChanges, type CallActivity } from './callActivity';
 
 type Page = 'home' | 'request' | 'summary' | 'contacts' | 'settings';
 const activeKey = 'zeus-llama.active-attempt.v1';
@@ -31,6 +33,8 @@ export default function App() {
   const [requestInitial, setRequestInitial] = useState<RequestDraft | undefined>();
   const [initialPrepared, setInitialPrepared] = useState(false);
   const [showCall, setShowCall] = useState(false);
+  const [callWindowOpen, setCallWindowOpen] = useState(false);
+  const [callActivity, setCallActivity] = useState<CallActivity[]>([]);
   const [historyCall, setHistoryCall] = useState<CallSnapshot | null>(null);
   const [requestKey, setRequestKey] = useState(0);
   const [call, setCall] = useState<CallSnapshot | null>(null);
@@ -47,12 +51,20 @@ export default function App() {
   const startCommand = useRef<PendingStart | null>(null);
   const main = useRef<HTMLElement>(null);
   const active = !!call && !callIsTerminal(call);
+  function closeCallWindow() {
+    setCallWindowOpen(false);
+    requestAnimationFrame(() => document.getElementById('view-call')?.focus());
+  }
   const unresolved = !!localStorage.getItem(activeKey) && !call;
   const mayStart = !!readiness?.ready && !active && !loading && !unresolved;
 
   function acceptSnapshot(next: CallSnapshot) {
     const old = latestCall.current;
     if (old?.id === next.id && old.revision > next.revision) return;
+    const changes = callActivityChanges(next, old);
+    if (next.conversationData === 'deleted') setCallActivity([]);
+    else if (old?.id !== next.id || changes.length) setCallActivity(items => old?.id === next.id ? [...items, ...changes] : changes);
+    if (old?.id !== next.id && !callIsTerminal(next)) setCallWindowOpen(true);
     if (old?.id === next.id && old.pendingApproval && !next.pendingApproval && next.outcome.status === 'not_booked') {
       const id = old.pendingApproval.id;
       setApprovalRecords(records => records[id] ? records : { ...records, [id]: { callId: next.id, text: next.outcome.status === 'not_booked' ? next.outcome.summaryEn : '' } });
@@ -124,17 +136,19 @@ export default function App() {
   const requestDisabled = active || !!pending || loading || unresolved || busy;
   function newRequest(request?: RequestDraft, destination: 'home' | 'request' = request ? 'request' : 'home') {
     if (requestDisabled) return;
+    setCallWindowOpen(false);
     setNotice(''); setError(''); setPlan(null); setShowCall(false); setRequestInitial(request); setInitialPrepared(false);
     setRequestKey(old => old + 1); startCommand.current = null; setPage(destination);
     requestAnimationFrame(() => document.getElementById(destination === 'request' ? 'manual-request-title' : 'request-title')?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' }));
   }
   function openSummary(selected?: CallSnapshot) {
+    setCallWindowOpen(false);
     setHistoryCall(selected ?? null);
     setPage('summary'); void perform(refreshHistory);
   }
   async function openHistoryCall(id: string) {
     const selected = await api.getCall(id);
-    if (!callIsTerminal(selected)) { acceptSnapshot(selected); setShowCall(true); setPage('home'); }
+    if (!callIsTerminal(selected)) { acceptSnapshot(selected); setCallWindowOpen(true); setShowCall(true); setPage('home'); }
     else setHistoryCall(selected);
   }
   function repeatCall(selected: CallSnapshot) {
@@ -176,8 +190,8 @@ export default function App() {
     }
   }, [page, historyCall?.id]);
   function showApproval() {
-    setPage('home'); setShowCall(true);
-    requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector('#home-call-stage .approval-actions')?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'center' })));
+    setCallWindowOpen(true);
+    requestAnimationFrame(() => requestAnimationFrame(() => document.querySelector('.call-dialog .approval-actions')?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'center' })));
   }
   const prepareAttention = useApprovalAttention(call?.pendingApproval && Date.parse(call.pendingApproval.expiresAt) > now ? call.pendingApproval : null, showApproval);
   function decideApproval(decision: 'approve' | 'reject') {
@@ -197,6 +211,7 @@ export default function App() {
   async function switchMode(next: boolean) {
     if (active || pending || unresolved || loading || simulator === next) return;
     api.setMockMode(next); setSimulator(next); setCall(null); latestCall.current = null;
+    setCallWindowOpen(false); setCallActivity([]);
     setPlan(null); setShowCall(false); setHistoryCall(null); setHistory([]); setReadiness(null); setConnection('closed');
     const results = await Promise.allSettled([api.getReadiness(), api.getSettings(), api.getHistory()]);
     if (results[0].status === 'fulfilled') setReadiness(results[0].value);
@@ -210,18 +225,19 @@ export default function App() {
     if (failure?.status === 'rejected') throw failure.reason;
   }
   const approvalLines = Object.values(approvalRecords).filter(record => record.callId === call?.id).map(record => record.text);
-  const attentionPanel = !!call?.pendingApproval && !callIsTerminal(call) && (page === 'summary' || page === 'settings' || page === 'contacts' || !inlineApprovalVisible);
+  const attentionPanel = !callWindowOpen && !!call?.pendingApproval && !callIsTerminal(call) && (page === 'summary' || page === 'settings' || page === 'contacts' || !inlineApprovalVisible);
+  const liveCall = call && <LiveCall call={call} connection={connection} now={now} busy={busy} stopping={stopping} onStop={() => {
+    if (stopping) return; setStopping(true); setError('');
+    void api.stopCall(call.id).then(acceptSnapshot).catch(e => setError((e instanceof Error ? e.message : 'Stop response unavailable.') + ' Hangup is not confirmed; keep checking this attempt.')).finally(() => setStopping(false));
+  }} onDecision={decideApproval} onApprovalVisibility={setInlineApprovalVisible} approvalLines={approvalLines} activity={callActivity} />;
   const callFlow = pending && plan ? <section id="home-call-stage" tabIndex={-1} className="panel workflow-stage">
     <h2>Check the original call request</h2><p className="notice">The Start response may have been lost. Retrying uses the same command key and cannot create a second attempt.</p>
     <PlanDetails plan={plan} /><button className="primary mt-5" disabled={busy} onClick={() => void perform(() => executeStart(pending))}>{busy ? 'Checking…' : 'Check original Start request'}</button>
   </section> : showCall && call ? <div id="home-call-stage" tabIndex={-1} className="workflow-stage">
-    {callIsTerminal(call) ? <>
+    {callWindowOpen ? <section className="panel"><h2>{active ? 'Call in progress' : 'Call finished'}</h2><p>The conversation and agent actions are open in the call window.</p></section> : callIsTerminal(call) ? <>
       <ShortResult call={call} />
       <div className="flex flex-wrap gap-3"><button className="primary" onClick={() => openSummary(call)}>View in Summary</button><button className="secondary" disabled={requestDisabled} onClick={() => newRequest()}>New request</button></div>
-    </> : <LiveCall call={call} connection={connection} now={now} busy={busy} stopping={stopping} onStop={() => {
-      if (stopping) return; setStopping(true); setError('');
-      void api.stopCall(call.id).then(acceptSnapshot).catch(e => setError((e instanceof Error ? e.message : 'Stop response unavailable.') + ' Hangup is not confirmed; keep checking this attempt.')).finally(() => setStopping(false));
-    }} onDecision={decideApproval} onApprovalVisibility={setInlineApprovalVisible} approvalLines={approvalLines} />}
+    </> : liveCall}
   </div> : undefined;
   return <div className={'mx-auto max-w-7xl px-4 py-6 sm:px-8' + (attentionPanel ? ' has-attention-panel' : '')}>
     <header className="app-header mb-6 border-b border-stone-700 pb-6">
@@ -234,6 +250,7 @@ export default function App() {
       <button className="secondary" aria-current={page === 'settings' ? 'page' : undefined} onClick={() => setPage('settings')}>Settings</button>
       </nav>
     </header>
+    {call && <button id="view-call" type="button" className="secondary mb-5" onClick={() => setCallWindowOpen(true)}>View call{active ? ' · In progress' : ' · Finished'}</button>}
     {error && <div role="alert" className="notice error"><p>{error}</p>{backendUnreachable && <>
       <button type="button" className="secondary mt-3" disabled={busy || modeLocked} onClick={() => void perform(() => switchMode(true))}>Switch to Simulator</button>
       {modeLocked && <p className="mt-2 text-base">Finish or resolve the current call attempt before switching modes.</p>}
@@ -264,6 +281,13 @@ export default function App() {
         onModeChange={value => void perform(() => switchMode(value))} onRefresh={() => void perform(refreshReadiness)}
         onSave={(value, nextDefaults) => void perform(async () => { const saved = await api.updateSettings(value); setSettings(saved); saveRequestDefaults(nextDefaults); setDefaults(nextDefaults); setNotice('Settings saved. Defaults apply to new requests and untouched fields in your current draft.'); })} />}
     </main>
+    {callWindowOpen && call && <Modal className="call-dialog" title={'Call with ' + call.plan.request.business.name} onClose={closeCallWindow}>
+      <p className="mb-4 text-base text-stone-300">{call.plan.request.business.phone} · Closing this window does not stop the call.</p>
+      {error && <p role="alert" className="notice error">{error}</p>}
+      {callIsTerminal(call) && <ShortResult call={call} />}
+      {liveCall}
+      <div className="call-window-footer flex flex-wrap gap-3"><button type="button" className="secondary" onClick={closeCallWindow}>{active ? 'Minimize call' : 'Close call window'}</button>{callIsTerminal(call) && <button type="button" className="primary" onClick={() => openSummary(call)}>View in Summary</button>}</div>
+    </Modal>}
     {attentionPanel && call && <aside className="attention-panel" aria-label="Zeus needs your approval"><ApprovalCard compact call={call} now={now} disabled={busy || connection !== 'connected'} onDecision={decideApproval} /><button className="text-add" onClick={showApproval}>Go to the conversation</button></aside>}
     <footer className="mt-10 text-center text-base text-stone-400">Your intention. Zeus’s voice.</footer>
   </div>;

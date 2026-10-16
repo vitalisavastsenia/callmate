@@ -21,6 +21,8 @@ const manualInternal = z.object({
   status: z.enum(["creating", "ringing", "connected", "disconnected", "completed", "failed", "unknown"]),
   error: z.string().nullable(),
   stopRequested: z.boolean(),
+  grant: z.object({ approvalId: z.uuid(), attemptId: z.uuid(), planId: z.uuid(), planVersion: z.number().int().positive(),
+    offerId: z.uuid(), offerVersion: z.number().int().positive(), expiresAt: z.iso.datetime() }).nullable().optional(),
   controls: z.object({
     maxDurationSeconds: z.number().int().min(30).max(600),
     silenceTimeoutSeconds: z.number().int().min(5).max(600),
@@ -40,10 +42,10 @@ const manualInternal = z.object({
   }).optional(),
 });
 export type ManualInternal = z.infer<typeof manualInternal>;
-export type ManualAttempt = { call: ManualCallSnapshot; internal: ManualInternal; replayFloor: number };
-export type StoredAttempt = Attempt | ManualAttempt;
-export function isManualAttempt(attempt: StoredAttempt): attempt is ManualAttempt {
-  return "kind" in attempt.call && attempt.call.kind === "manual_mock";
+export type MockAttempt = { call: ManualCallSnapshot | CallSnapshot; internal: ManualInternal; replayFloor: number };
+export type StoredAttempt = Attempt | MockAttempt;
+export function isMockAttempt(attempt: StoredAttempt): attempt is MockAttempt {
+  return "kind" in attempt.internal && attempt.internal.kind === "manual_mock";
 }
 
 export function callStore(db: Database.Database) {
@@ -52,7 +54,7 @@ export function callStore(db: Database.Database) {
       { snapshot: string; internal: string; replay_floor: number } | undefined;
     if (!row) return;
     const call = StoredCallSnapshotSchema.parse(JSON.parse(row.snapshot));
-    return { call, internal: "kind" in call ? manualInternal.parse(JSON.parse(row.internal))
+    return { call, internal: JSON.parse(row.internal).kind === "manual_mock" ? manualInternal.parse(JSON.parse(row.internal))
       : JSON.parse(row.internal) as Internal, replayFloor: row.replay_floor } as StoredAttempt;
   };
   return {
@@ -65,11 +67,11 @@ export function callStore(db: Database.Database) {
       const row = db.prepare("SELECT value FROM review_plans WHERE id = ?").get(id) as { value: string } | undefined;
       return row && ReviewPlanSchema.parse(JSON.parse(row.value));
     },
-    latestManual(): ManualAttempt | undefined {
+    latestManual(): MockAttempt | undefined {
       const row = db.prepare("SELECT id FROM call_attempts WHERE json_extract(snapshot, '$.kind') = 'manual_mock' ORDER BY rowid DESC LIMIT 1")
         .get() as { id: string } | undefined;
       const attempt = row && get(row.id);
-      return attempt && isManualAttempt(attempt) ? attempt : undefined;
+      return attempt && isMockAttempt(attempt) ? attempt : undefined;
     },
     active(): StoredAttempt | undefined {
       const row = db.prepare("SELECT id FROM call_attempts WHERE active = 1").get() as { id: string } | undefined;
@@ -82,7 +84,7 @@ export function callStore(db: Database.Database) {
         ON CONFLICT(id) DO UPDATE SET snapshot=excluded.snapshot, internal=excluded.internal,
         active=excluded.active, replay_floor=excluded.replay_floor,
         terminal_at=CASE WHEN excluded.active = 0 THEN COALESCE(call_attempts.terminal_at, excluded.terminal_at) ELSE NULL END`)
-        .run(call.id, JSON.stringify(call), JSON.stringify(isManualAttempt(attempt) ? manualInternal.parse(attempt.internal) : attempt.internal), Number(active), attempt.replayFloor, active ? null : new Date(call.updatedAt).toISOString());
+        .run(call.id, JSON.stringify(call), JSON.stringify(isMockAttempt(attempt) ? manualInternal.parse(attempt.internal) : attempt.internal), Number(active), attempt.replayFloor, active ? null : new Date(call.updatedAt).toISOString());
       const insert = db.prepare("INSERT INTO call_events (attempt_id, sequence, value) VALUES (?, ?, ?)");
       for (const event of events) insert.run(call.id, event.sequence, JSON.stringify(DomainEventSchema.parse(event)));
     },

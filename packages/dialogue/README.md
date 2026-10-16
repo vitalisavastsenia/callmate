@@ -17,11 +17,11 @@ contracts package. There is currently no shared base TypeScript configuration.
 
 ## Integration with Engineer 2
 
+The integration branch now includes an optional mock-call controller using this library. See [runtime setup and limits](../../docs/docker-development.md#17-dialogue-driven-local-mock-calls). It processes finalized Spanish replies and sends policy-approved text; acceptance and confirmation still require the missing playback/verifier integration.
+
 The integration branch registers `packages/dialogue` alongside contracts, backend,
 and web. Root build/typecheck/test scripts include it, with contracts built first.
-Docker includes the library, tests, and shared dialogue fixtures. The server
-controller does not invoke the library yet; provider/controller wiring remains
-Engineer 2's next integration task under [the engineering agreement](../../docs/engineering-contract.md).
+Docker includes the library, tests, and shared dialogue fixtures. The mock controller invokes the library when enabled; real provider playback and confirmation remain integration tasks under [the engineering agreement](../../docs/engineering-contract.md).
 
 The shared request keeps the UI's list of tone preferences. Legacy dialogue
 values `formal`, `very_polite`, and `friendly` normalize to that list when parsed.

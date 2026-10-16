@@ -228,3 +228,17 @@ fieldset[data-auto-filled="true"] { border: 1px solid #dfbd7788; border-radius: 
 /* The application stays unmounted until the backend validates the owner session. */
 .auth-screen { max-width: 34rem; margin: 8vh auto; padding: 1rem; }
 .auth-account { display: flex; justify-content: flex-end; align-items: center; gap: 1rem; flex-wrap: wrap; max-width: 80rem; margin: 1rem auto 0; padding: 0 1rem; }
+.call-dialog { width: min(96vw, 1200px); max-height: 94dvh; padding: clamp(12px, 3vw, 28px); }
+.call-dialog > div:first-child { position: sticky; top: -1px; z-index: 20; background: #191a16; padding: 8px 0; }
+.call-dialog > div:first-child h2 { font-size: clamp(1.3rem, 3vw, 1.8rem); }
+.call-dialog .call-toolbar { position: static; background: transparent; padding: 6px 0; margin-bottom: 12px; }
+.call-dialog .call-toolbar h2 { font-size: 1.5rem; margin-bottom: 4px; }
+.call-dialog .call-toolbar .text-xl { font-size: 1rem; }
+.call-dialog .section-title { font-size: 1.1rem; margin-bottom: 12px; }
+.call-dialog .panel { padding: clamp(12px, 2vw, 20px); }
+.call-dialog .transcript-line { padding: 12px; }
+.call-dialog .panel { min-width: 0; }
+.call-dialog .details dd { overflow-wrap: anywhere; }
+.call-window-footer { margin-top: 24px; padding-top: 16px; border-top: 1px solid #514835; }
+.agent-action { border-left: 2px solid #dfbd77; padding-left: 12px; overflow-wrap: anywhere; }
+.transcript-business { border-left-color: #9dbeb1; background: #9dbeb10a; }

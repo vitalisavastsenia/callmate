@@ -21,7 +21,7 @@ export function callRoutes(app: FastifyInstance, controller: CallController) {
     plan: controller.createPlan(api.createPlan.request.parse(request.body)),
   })));
   app.post(api.startCall.path, async (request, reply) => reply.code(202).send(api.startCall.response.parse({
-    call: controller.start(api.startCall.request.parse(request.body), key(request.headers)),
+    call: await controller.start(api.startCall.request.parse(request.body), key(request.headers)),
   })));
   app.get(api.getCall.path, async (request) => api.getCall.response.parse({ call: controller.get(attemptId(request.params)) }));
   app.post(api.stopCall.path, async (request, reply) => {

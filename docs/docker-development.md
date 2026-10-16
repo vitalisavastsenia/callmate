@@ -487,3 +487,86 @@ docker compose exec server npm run auth:reset --workspace @callmate/server
 ```
 
 Then open either UI and create the owner again. There is no unauthenticated HTTP reset endpoint. The command is intentionally not exposed in the UI. Never delete the Docker volume to reset a password, and do not place passwords or cookie jars in Git.
+
+## 17. Dialogue-driven local mock calls
+
+The booking UI can now run the dialogue library against actual contact replies
+from the local ConversationRelay mock. This path uses the shared plan, Start,
+Stop, approval, snapshot/history and SSE endpoints. It supports **Spanish haircut
+appointment inquiries**. The manual console at port 3000 remains a separate,
+multilingual transport check; its initial-message calls do not run AI.
+
+Configure the optional model in your ignored local `.env`:
+
+```dotenv
+CALLMATE_DIALOGUE_PROVIDER=openai
+CALLMATE_DIALOGUE_MODEL=your-supported-model-id
+OPENAI_API_KEY=your-server-only-api-key
+CALLMATE_DIALOGUE_TIMEOUT_MS=10000
+```
+
+Choose an explicit model available to your API account with Responses and
+Structured Outputs support ([official guide](https://developers.openai.com/api/docs/guides/structured-outputs)). The server uses the existing dialogue package's
+[Responses adapter](../packages/dialogue/README.md#openai--codex-api-adapter),
+with a bounded, cancellable request per finalized contact utterance. Credentials
+are supplied only to the server container. The server does not install or invoke
+Codex CLI or reuse a host ChatGPT login. `disabled` is the default; no model
+requests occur on startup, readiness probes, manual console calls or offline tests.
+An enabled provider requires a key, model, simulator mode, mock transport and a
+development/test environment; invalid combinations fail startup without printing
+supplied values.
+
+1. Start the local mock and rebuild the backend/UI:
+
+   ```sh
+   docker compose -f mock-conversation-relay/compose.yaml up --build -d --wait mock-relay
+   docker compose --profile web up --build -d --wait server web
+   ```
+
+2. Sign in at `http://localhost:5173`. Select **Settings → Backend** and check
+   readiness: `dialogue_integration` must be enabled and ready. Readiness verifies
+   configuration and mock health, **not** API credentials, model access or quality.
+   If existing backend settings use USD, save an explicit EUR call budget in
+   Settings before submitting the UI's EUR requests. No currency conversion is done.
+3. Review a haircut request with a booking name, future availability, price cap
+   and authority boundaries. Start the call and answer it at `http://localhost:8080`.
+   The destination phone number in the plan is context only: the development
+   transport always uses its fixed synthetic numbers and cannot dial a telephone.
+4. Send Spanish replies from the operator window. Only a finalized utterance
+   starts model processing. The model receives the reviewed plan and current
+   conversation. The server validates its proposal, saves translations/offers,
+   checks booking policy, persists the permitted reply and then sends Spanish
+   relay text. Enable **Auto-play backend messages** to hear it with a browser voice.
+   The app popup receives transcripts and approval requests through persisted SSE.
+5. Offers outside the approved constraints require the owner's exact-offer
+   approval in the app. Approval permits a controlled readback, not acceptance.
+   Changed offers revoke prior grants; expired requests end without booking.
+   Business refusal/no availability can end the mock conversation automatically.
+
+Partial new speech, interruptions, Stop, disconnect and shutdown cancel pending
+model work. The controller discards obsolete or late results and rechecks limits
+and current call state immediately before releasing text. Generated output is
+never marked as `played`. Restart recovery reconciles/hangs up orphaned calls
+without redialing or replaying greetings, replies or model work. Retention removes
+transcripts and replay payloads through the existing shared lifecycle.
+
+**Current limits:** acceptance and confirmed outcomes remain unavailable. This
+relay integration has no attested full-readback playback or production Spanish
+confirmation verifier. Unsupported commitments, contact disclosure and add-on
+consent are withheld and surfaced as `call.error`; the owner can stop the call.
+Malformed output, provider errors and timeouts produce sanitized errors without
+retries or raw model output. Generic tasks, other services/languages and real
+Twilio calls remain unsupported on this dialogue path. Existing scripted booking
+simulations continue to work with the model provider disabled.
+
+OpenAI API calls incur separate provider charges when enabled. The existing
+elapsed-time test-rate budget is synthetic and does **not** measure or cap actual
+model-token charges; provider billing remains unavailable. Keep API account
+spending controls appropriate for personal development.
+
+The implementation keeps the existing shared message formats. `transcript.updated`
+contains business speech, translations and generated assistant text;
+`offer.updated`, `booking.updated`, `approval.requested` and `approval.resolved`
+carry the current offer/decision state. `call.error` reports withheld output and
+sanitized model failures. Tests inject a model while exercising real local REST
+and WebSocket traffic; they do not establish live-model language quality.

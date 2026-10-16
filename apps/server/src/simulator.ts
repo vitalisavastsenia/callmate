@@ -8,7 +8,7 @@ import type {
 } from "@callmate/contracts";
 import type { z } from "zod";
 import type { RequestDraftSchema, StartCallRequestSchema } from "@callmate/contracts";
-import { isManualAttempt } from "./call-store.js";
+import { isMockAttempt } from "./call-store.js";
 import type { Attempt, CallStore } from "./call-store.js";
 import type { Config } from "./config.js";
 import type { Store } from "./storage.js";
@@ -44,7 +44,7 @@ export class Simulator {
     });
     // Fake providers have no surviving external call. Never resume an old script or redial on restart.
     const interrupted = this.db.active();
-    if (interrupted && !isManualAttempt(interrupted) && interrupted.call.mode === "simulator") this.change(interrupted.call.id, (a, emit) => {
+    if (interrupted && !isMockAttempt(interrupted) && interrupted.call.mode === "simulator") this.change(interrupted.call.id, (a, emit) => {
       this.finish(a, emit, a.internal.accepted ? this.uncertain("provider_state_unknown")
         : this.notBooked("technical_failure", "Simulation interrupted by a server restart; no real call was made."));
     });
@@ -57,7 +57,7 @@ export class Simulator {
   private timestamp() { return new Date(this.now()).toISOString(); }
   private require(id: string): Attempt {
     const attempt = this.db.get(id);
-    if (!attempt || isManualAttempt(attempt)) throw new CommandError(404, "NOT_FOUND", "Call attempt not found");
+    if (!attempt || isMockAttempt(attempt)) throw new CommandError(404, "NOT_FOUND", "Call attempt not found");
     return attempt;
   }
   get(id: string) { return this.require(id).call; }
@@ -127,14 +127,14 @@ export class Simulator {
   private failActive() {
     if (this.closed) return;
     const active = this.db.active();
-    if (active && !isManualAttempt(active)) this.change(active.call.id, (a, emit) => {
+    if (active && !isMockAttempt(active)) this.change(active.call.id, (a, emit) => {
       emit("call.error", { code: "INTERNAL_ERROR", message: "The simulation could not continue", recoverable: false });
       this.finish(a, emit, a.internal.accepted ? this.uncertain("provider_state_unknown")
         : this.notBooked("technical_failure", "The simulation stopped after an internal error."), "failed");
     });
   }
 
-  private future(plan: ReviewPlan) {
+  validatePlan(plan: ReviewPlan) {
     if ((plan.request.requestType ?? "book") !== "book") {
       throw new CommandError(400, "INVALID_REQUEST", "The backend simulator currently supports appointment requests only");
     }
@@ -155,7 +155,7 @@ export class Simulator {
   }
   createPlan(request: z.infer<typeof RequestDraftSchema>) {
     const plan = ReviewPlanSchema.parse({ id: randomUUID(), version: 1, createdAt: this.timestamp(), request });
-    this.future(plan);
+    this.validatePlan(plan);
     this.db.putPlan(plan);
     return plan;
   }
@@ -177,7 +177,7 @@ export class Simulator {
       const plan = this.db.plan(request.planId);
       if (!plan) throw new CommandError(404, "NOT_FOUND", "Review plan not found");
       if (plan.version !== request.planVersion) throw new CommandError(409, "PLAN_VERSION_MISMATCH", "Review plan version does not match");
-      this.future(plan);
+      this.validatePlan(plan);
       if (this.db.active()) throw new CommandError(409, "CALL_ALREADY_ACTIVE", "Another call is still active");
       const call = CallSnapshotSchema.parse({ id: randomUUID(), revision: 1, lastEventSequence: 1,
         mode: "simulator", plan: ApprovedPlanSchema.parse({ ...plan, approvedAt: this.timestamp() }),
@@ -324,7 +324,7 @@ export class Simulator {
   async tick() {
     if (this.closed) return;
     let a = this.db.active();
-    if (!a || isManualAttempt(a) || a.call.mode !== "simulator") return;
+    if (!a || isMockAttempt(a) || a.call.mode !== "simulator") return;
     const id = a.call.id;
     if (this.enforceBudget(id)) return;
     // Do not invalidate an in-flight dialogue result solely for a usage sample.
