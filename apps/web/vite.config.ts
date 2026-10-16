@@ -5,7 +5,7 @@ import tailwindcss from '@tailwindcss/vite';
 const apiTarget = new URL(process.env.CALLMATE_DEV_API_TARGET || 'http://127.0.0.1:3000');
 const apiOrigin = new URL(apiTarget);
 // The private API accepts loopback hosts; Compose reaches it by service name.
-if (apiOrigin.hostname === 'server') apiOrigin.hostname = 'localhost';
+if (['server', 'zeus-llama'].includes(apiOrigin.hostname)) apiOrigin.hostname = 'localhost';
 function localUiOrigin(origin: string, host: string | undefined) {
   try {
     const from = new URL(origin); const ui = new URL(`http://${host}`);

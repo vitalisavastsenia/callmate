@@ -14,7 +14,7 @@ let loggedLiveBase = false;
 function logLiveBase() {
   if (isMockMode || loggedLiveBase) return;
   loggedLiveBase = true;
-  console.info('[Zeus API] Live API base:', apiBaseUrl || (typeof window === 'undefined' ? '' : window.location.origin) + '/api (same origin; Vite dev proxy → http://127.0.0.1:3000 in development)');
+  console.info('[Zeus API] Live API base:', apiBaseUrl || (typeof window === 'undefined' ? '' : window.location.origin) + '/api (same origin)');
 }
 logLiveBase();
 // Only Settings switches transports, with active and unresolved attempts locked by App.
@@ -125,7 +125,7 @@ export async function stopCall(id: string) {
 }
 function bookingSnapshot(call: import('./types').StoredCallSnapshot) {
   if ('kind' in call && call.kind === 'manual_mock') {
-    throw new ApiError('This is a manual mock call. Use the backend console at port 3000 to view or control it.', 'UNSUPPORTED_CALL_KIND');
+    throw new ApiError('This is a manual mock call. Use the backend console at /console/ to view or control it.', 'UNSUPPORTED_CALL_KIND');
   }
   return CallSnapshotSchema.parse(call);
 }
@@ -152,6 +152,11 @@ export async function getHistory() {
 }
 export async function deleteConversation(id: string) {
   return isMockMode ? mock.mockDelete(id) : request(api.deleteConversation.method, attemptPath(api.deleteConversation.path, id), { parse: value => value === null ? null : api.deleteConversation.response.parse(value) });
+}
+export async function deleteAgreement(id: string) {
+  const result = isMockMode ? mock.mockDeleteAgreement(id)
+    : await request(api.deleteAgreement.method, attemptPath(api.deleteAgreement.path, id), api.deleteAgreement.response);
+  return api.deleteAgreement.response.parse(result).call;
 }
 
 // SSE uses fetch so its initial cursor is sent as an actual Last-Event-ID header.

@@ -25,6 +25,28 @@ function decision(call: CallSnapshot, value: 'approve' | 'reject' = 'approve'): 
   return { approvalId: a.id, plan: a.plan, offer: { offerId: a.offer.id, offerVersion: a.offer.version }, decision: value };
 }
 describe('shared-contract simulator', () => {
+  it('persists agreement deletion across reload, rejects active calls, and retains the source call', async () => {
+    const { call } = begin();
+    expect(() => mock.mockDeleteAgreement(call.id)).toThrow('DATA_NOT_DELETABLE');
+    const finished = ticks(call.id, 8);
+    const storageFailure = vi.spyOn(localStorage, 'setItem').mockImplementationOnce(() => { throw new Error('Storage full'); });
+    expect(() => mock.mockDeleteAgreement(call.id)).toThrow('Storage full');
+    expect(mock.mockCall(call.id).call).toEqual(finished);
+    expect(mock.mockEvents(call.id).some(event => event.type === 'agreement.deleted')).toBe(false);
+    storageFailure.mockRestore();
+    const deleted = mock.mockDeleteAgreement(call.id).call;
+    expect(deleted.agreementDeletedAt).toBeTruthy();
+    expect(deleted.outcome).toEqual(finished.outcome); expect(deleted.messages).toEqual(finished.messages);
+    vi.advanceTimersByTime(1000);
+    expect(mock.mockDeleteAgreement(call.id).call).toEqual(deleted);
+    vi.resetModules(); mock = await import('../src/mock');
+    expect(mock.mockCall(call.id).call).toEqual(deleted);
+    expect(mock.mockHistory().items[0]?.agreementDeletedAt).toBe(deleted.agreementDeletedAt);
+    mock.mockDelete(call.id);
+    expect(mock.mockCall(call.id).call.agreementDeletedAt).toBe(deleted.agreementDeletedAt);
+    const stopped = begin().call; mock.mockStop(stopped.id);
+    expect(() => mock.mockDeleteAgreement(stopped.id)).toThrow('DATA_NOT_DELETABLE');
+  });
   it('saves the approved plan, starts once, and requires business evidence for confirmation', () => {
     const { call, body } = begin();
     expect(() => mock.mockStart(body, crypto.randomUUID())).toThrow('CALL_ALREADY_ACTIVE');

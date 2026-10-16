@@ -310,6 +310,34 @@ test("history pagination and deletion preserve booking metadata and purge transc
   assert.equal((await app.get(first.id)).conversationData, "deleted");
 });
 
+test("agreement deletion persists across restart without deleting call history or booking evidence", async (t) => {
+  const app = setup(t);
+  const first = await app.begin();
+  const path = `/api/v1/calls/${first.id}/agreement`;
+  assert.equal((await app.http("DELETE", path)).data.error.code, "DATA_NOT_DELETABLE");
+  const finished = await app.until(first.id, terminal);
+  const response = await app.http("DELETE", path);
+  assert.equal(response.status, 200);
+  const deleted = api.deleteAgreement.response.parse(response.data).call;
+  assert.equal(deleted.agreementDeletedAt, new Date(app.clock.ms).toISOString());
+  assert.equal(deleted.revision, finished.revision + 1);
+  assert.deepEqual(deleted.outcome, finished.outcome);
+  assert.deepEqual(deleted.messages, finished.messages);
+  assert.deepEqual(app.runtime.controller.replayEvents(first.id, finished.lastEventSequence).map(e => e.type), ["agreement.deleted"]);
+  assert.equal((await app.http("GET", "/api/v1/history")).data.items[0].agreementDeletedAt, deleted.agreementDeletedAt);
+  app.clock.ms += 1000;
+  assert.deepEqual((await app.http("DELETE", path)).data.call, deleted);
+  await app.restart();
+  assert.deepEqual(await app.get(first.id), deleted);
+  assert.deepEqual((await app.http("DELETE", path)).data.call, deleted);
+  await app.http("DELETE", `/api/v1/calls/${first.id}/conversation`);
+  assert.equal((await app.get(first.id)).agreementDeletedAt, deleted.agreementDeletedAt);
+  const stopped = await app.begin();
+  await app.http("POST", `/api/v1/calls/${stopped.id}/stop`, {});
+  assert.equal((await app.http("DELETE", `/api/v1/calls/${stopped.id}/agreement`)).status, 409);
+  assert.equal((await app.http("DELETE", `/api/v1/calls/${randomUUID()}/agreement`)).status, 404);
+});
+
 test("snapshot and event updates roll back as one transaction", async (t) => {
   const app = setup(t);
   const call = await app.begin();

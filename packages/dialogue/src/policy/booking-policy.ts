@@ -4,7 +4,7 @@ import {
 } from "@callmate/contracts";
 import { checkOfferEvidence, offersEqual } from "../booking/evidence.js";
 import {
-  renderAvailability, renderClarification, renderClosing, serviceKey,
+  renderAvailability, renderClosing, serviceKey,
 } from "../language/spanish.js";
 import { renderAction, renderAcceptance, renderReadback } from "../language/catalog.js";
 import { checkHardConstraints, offerException } from "./constraints.js";
@@ -60,7 +60,21 @@ export class BookingPolicy implements BookingPolicyPort {
       return deny("conversation_decision_pending");
     }
     switch (candidate.action) {
-      case "clarify": return allow(renderClarification(candidate.missing, snapshot.plan.request.tone));
+      case "clarify": {
+        const bookingDetails = templateForRequest(snapshot.plan.request)?.id === "haircut"
+          && (candidate.missing.includes("name") && snapshot.plan.request.bookingName.trim()
+            || candidate.missing.every(field => field === "conditions"));
+        if (bookingDetails) {
+          if (!progressStates.has(snapshot.bookingState)) return deny("commitment_in_progress");
+          if (snapshot.pendingApproval) return { decision: "ask_user", reason: snapshot.pendingApproval.reason };
+          if (snapshot.activeOffer && Object.values(snapshot.activeOffer.conditions).includes("required")) return deny("prohibited_conditions");
+          const exception = snapshot.activeOffer && offerException(snapshot, snapshot.activeOffer);
+          if (exception && checkExactOfferGrant(snapshot, snapshot.activeOffer!, now, input.grant).status !== "valid") {
+            return { decision: "ask_user", reason: exception };
+          }
+        }
+        return this.render(snapshot, () => renderAction(candidate, snapshot.plan, snapshot.activeOffer).text);
+      }
       case "end_call": return allow(renderClosing(candidate.reason));
       case "ask_requirements":
         if (!progressStates.has(snapshot.bookingState)) return deny("commitment_in_progress");

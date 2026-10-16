@@ -41,6 +41,16 @@ test("configuration rejects invalid ports, paths and modes without echoing value
   });
 });
 
+test('Compose service URLs remain local, bounded destinations', () => {
+  const config = loadConfig({ CALLMATE_MOCK_API_BASE: 'http://mock-relay:8080', CALLMATE_MOCK_RELAY_URL: 'ws://zeus-llama:13001/ws/voice' });
+  assert.equal(config.mockRelayUrl, 'ws://zeus-llama:13001/ws/voice');
+  assert.equal(loadConfig({ CALLMATE_MOCK_RELAY_URL: 'ws://server:13001/ws/voice' }).mockRelayUrl, 'ws://server:13001/ws/voice');
+  for (const url of ['ws://example.com:3001/ws/voice', 'ws://server.example.com:3001/ws/voice',
+    'ws://server:3001/other', 'ws://user:password@server:3001/ws/voice', 'ws://server:3001/ws/voice?token=example']) {
+    assert.throws(() => loadConfig({ CALLMATE_MOCK_RELAY_URL: url }));
+  }
+});
+
 test('Codex dialogue config needs local development mock mode and no API key', () => {
   const env = { NODE_ENV: 'development', TELEPHONY_PROVIDER: 'mock', CALLMATE_DIALOGUE_PROVIDER: 'codex' };
   assert.equal(loadConfig(env).dialogueProvider, 'codex');

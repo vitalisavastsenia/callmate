@@ -40,7 +40,7 @@ The [Docker backend](docker-development.md) implements these private HTTP/SSE ro
 | `RequestDraftSchema` | Generic request type, English goal, destination/timezone, boundaries, allowed contact details, and call limits. New UI plans also send `tone: string[]`, `tone_notes: string`, and optional `contact_id` (UUID); these fields are optional in the schema for older snapshots. Book requires service/availability; Ask requires questions; Change requires change instructions and permits a reference/new availability; Other needs no extra fields. Legacy drafts without `requestType` remain appointments. All availability windows use the destination timezone. |
 | `ReviewPlanSchema` | Backend-issued immutable plan ID/version, creation time, and normalized request. Ready for user review but not yet authorized to dial. |
 | `ApprovedPlanSchema` | The reviewed plan plus backend-recorded approval time. Created atomically when the user starts an attempt. |
-| `OfferSchema` | Complete proposed slot/service/name, nullable price/duration, deposit/fee/add-on conditions, offer version, and message evidence IDs. Unknown conditions are representable but are not permission to accept. |
+| `OfferSchema` | Complete proposed slot/service/name, nullable price/duration, deposit/fee/add-on conditions, offer version, and message evidence IDs. Base haircut bookings retain unstated conditions as unknown without a fee questionnaire; other templates require clarification. Explicit required charges remain excluded. |
 | `ApprovalRequestSchema` | One offer, attempt and approved-plan binding, primary reason, creation time, and backend-owned expiry. |
 | `ApprovalDecisionSchema` | Approve/reject with approval ID and exact plan/offer versions. The browser cannot replace an offer, set its expiry, or send arbitrary new booking constraints. |
 | `CallSnapshotSchema` | Authoritative current view: mode, approved plan, telephone state, separate booking state/outcome, active offer, pending approval, messages, usage, revision, and event cursor. |
@@ -67,6 +67,7 @@ All routes below use the loopback UI/API listener. They are never mounted on the
 | `GET /api/v1/calls/:attemptId/events` | Optional `Last-Event-ID` | `200 text/event-stream`. |
 | `GET /api/v1/history` | `limit` 1–100, default 20; optional UUID cursor | `200 { items: HistoryEntry[], nextCursor: string | null }`. |
 | `DELETE /api/v1/calls/:attemptId/conversation` | None | `200 { attemptId, deleted: true }`; removes local transcript/translation/event text, preserving booking metadata. |
+| `DELETE /api/v1/calls/:attemptId/agreement` | None | `200 { call: CallSnapshot }` with `agreementDeletedAt`; removes the entry from Agreements, preserving the source call. |
 | `GET /api/v1/settings` | None | `200 SettingsSchema`. |
 | `PUT /api/v1/settings` | `SettingsSchema` | `200 SettingsSchema`; affects future plans, never mutates an active approved plan. |
 | `GET /api/v1/contacts` | None | `200 { items: Contact[] }`; shared backend address book in either call mode. |
@@ -87,6 +88,7 @@ Contacts persist across backend/browser restarts and are independent of simulato
 - Approval checks are atomic: active call, current pending approval, identical attempt/plan/offer versions, and `now < expiresAt`, using the backend clock. A changed offer invalidates the pending approval. Only already-permitted service/time/price exceptions may be approved; deposits, payments, add-ons, and cancellation fees remain excluded.
 - Valid approval is a grant for that specific offer. A rejected, expired, invalidated, or already-consumed conflicting decision is never treated as acceptance. Check authority again immediately before playback. Do not expire an appointment merely because the user-approval deadline later passes after authorized speech.
 - Conversation deletion is allowed only for a terminal call; repeated deletion succeeds. Purge text from local event replay storage as well as messages, and invalidate any replay range affected by deletion.
+- `DELETE /api/v1/calls/:attemptId/agreement` returns `200 { call: CallSnapshot }` with persisted `agreementDeletedAt`. Only terminal booking/task calls with a confirmed appointment or at least one answered finding qualify; others return `409 DATA_NOT_DELETABLE`. The optional timestamp is projected in history and removes the entry from Agreements/list/calendar. It preserves the source call, outcome, transcript, and command tombstones; it never cancels an appointment or contacts a provider. Repeated deletion returns the unchanged snapshot. SQLite snapshot and `agreement.deleted` event commit atomically; no relational migration is required for the additive JSON field.
 - History order is descending `(createdAt, id)`. The cursor is the last returned attempt ID; backend resolves its ordering tuple. Unknown cursors return `400 INVALID_REQUEST`. Empty history returns `items: []`, `nextCursor: null`.
 - Keep local mutating routes protected against cross-origin requests/CSRF even when bound to loopback. Missing signature or unrecognized provider session on the separate callback listener is rejected before it can touch these interfaces.
 
@@ -108,7 +110,7 @@ Use `ApiErrorSchema`: `{ error: { code, message, requestId, details: [{ path, me
 
 `DomainEventSchema` uses `{ contractVersion: 1, id, attemptId, sequence, snapshotRevision, occurredAt, type, payload }`. Sequence starts at 1 per attempt, increases monotonically, and is persisted with the snapshot update in one transaction. Multiple events can belong to one snapshot revision. The backend serializes all updates to an attempt.
 
-Event types: `call.status`, `transcript.updated`, `offer.updated`, `approval.requested`, `approval.resolved`, `booking.updated`, `usage.updated`, `conversation.deleted`, and `call.error`. Consumers use the exported discriminated union; no raw Twilio/OpenAI events cross into the UI.
+Event types: `call.status`, `transcript.updated`, `offer.updated`, `approval.requested`, `approval.resolved`, `booking.updated`, `usage.updated`, `conversation.deleted`, `agreement.deleted`, and `call.error`. Consumers use the exported discriminated union; no raw Twilio/OpenAI events cross into the UI.
 
 ```text
 id: 1

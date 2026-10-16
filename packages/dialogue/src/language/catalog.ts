@@ -132,17 +132,39 @@ const genericAvailabilityV3 = [
   "Is there availability for {service} within these windows: {windows}? Request details: {scope}.",
   "Czy są wolne terminy na {service} w następujących przedziałach: {windows}? Szczegóły: {scope}.",
 ];
-const phraseVersion = (key: string) => key === "greeting" || key === "availability" ? 3 : 1;
+const haircutBooking = {
+  booking_details: ["Por favor, reserve una cita para un corte de pelo{contact}.", "Запишите, пожалуйста, на стрижку{contact}.", "Please book a haircut appointment{contact}.", "Proszę zarezerwować strzyżenie{contact}."],
+  booking_name: [" a nombre de {name}", " на имя {name}", " under the name {name}", " na nazwisko {name}"],
+  booking_phone: [", teléfono de contacto: {phone}", ", телефон для связи: {phone}", ", contact phone: {phone}", ", telefon kontaktowy: {phone}"],
+};
+const haircutDetailsV3 = ["{details}",
+  "стрижка {date} в {time}, имя для записи: {name}{staff}{duration}, {price}",
+  "a haircut on {date} at {time}, under the name {name}{staff}{duration}, {price}",
+  "strzyżenie dnia {date} o {time}, na nazwisko {name}{staff}{duration}, {price}"];
+const clarifyTimeV2 = ["¿{can} confirmar la hora exacta de la cita?", "Уточните, пожалуйста, точное время записи?",
+  "Could you confirm the exact time of the appointment?", "Czy można potwierdzić dokładną godzinę wizyty?"];
+const phraseVersion = (key: string, namespace?: string) => key === "greeting" || key === "availability" || key === "details" && namespace === "haircut" ? 3 : key === "window" || key === "details" || key === "clarify_time" ? 2 : 1;
 export const dialoguePhraseCatalog: readonly PhraseEntry[] = conversationTemplates.flatMap(profile => {
-  const entries: Record<string, readonly string[]> = { ...templates, ...(profile.id === "haircut" ? {} : generic), requirements: [...profile.requirements], clarify_details: clarifyDetails };
+  const entries: Record<string, readonly string[]> = { ...templates, ...(profile.id === "haircut" ? haircutBooking : generic), requirements: [...profile.requirements], clarify_details: clarifyDetails };
   for (const field of profile.fields) entries[`field_${field.key.toLowerCase()}`] = fieldLabels[field.key]!;
   const legacy = Object.entries(entries).filter(([key]) => profile.id === "haircut" || key !== "clean_dry_hair").flatMap(([key, texts]) =>
     languages.map((language, i) => ({ id: `${profile.id}.${key}`, version: 1, language, template: texts[i]!.replaceAll("{service}", profile.service[i]!) })));
+  // Keep published templates intact; ordinary speech uses business-local dates/times without zone labels.
+  const localTimes = ["window", "details"].flatMap(key => languages.map((language, i) => ({
+    id: `${profile.id}.${key}`, version: 2, language,
+    template: entries[key]![i]!.replaceAll("{service}", profile.service[i]!)
+      .replaceAll(", {zone}", "").replaceAll(", {startZone}", "").replaceAll(", {endZone}", ""),
+  })));
+  // Haircut replies no longer assert absent fees or ask a conditions questionnaire.
+  const haircutDetails = profile.id === "haircut" ? languages.map((language, i) => ({
+    id: "haircut.details", version: 3, language, template: haircutDetailsV3[i]!,
+  })) : [];
   const greetings = profile.id === "haircut" ? greetingV2 : genericGreetingV2;
-  return [...legacy, ...languages.flatMap((language, i) => {
+  return [...legacy, ...localTimes, ...haircutDetails, ...languages.flatMap((language, i) => {
     const greeting = greetings[i]!.replaceAll("{service}", profile.service[i]!);
     const availability = entries.availability![i]!.replaceAll("{service}", profile.service[i]!);
     return [
+      { id: `${profile.id}.clarify_time`, version: 2, language, template: clarifyTimeV2[i]! },
       { id: `${profile.id}.greeting`, version: 2, language, template: greeting },
       { id: `${profile.id}.greeting`, version: 3, language, template: withoutAssistantName(greeting) },
       { id: `${profile.id}.availability`, version: 2, language, template: withoutAssistantName(availability) },
@@ -168,17 +190,11 @@ const moneyAmount = (minor: number) => { const digits = String(minor).padStart(3
 function date(value: string, language: DialogueLanguage): string {
   return language === "es-ES" ? spanish.dateSpanish(value) : new Intl.DateTimeFormat(language, { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" }).format(new Date(`${value}T12:00:00Z`));
 }
-function zone(value: Offer["appointment"], language: DialogueLanguage) {
-  if (language === "es-ES") return spanish.zoneSpanish(value);
-  const offset = (Date.parse(`${value.localDate}T${value.localTime}:00Z`) - Date.parse(value.instant)) / 60000;
-  const absolute = Math.abs(offset);
-  return `${value.timeZone} (UTC${offset < 0 ? "-" : "+"}${String(Math.floor(absolute / 60)).padStart(2, "0")}:${String(absolute % 60).padStart(2, "0")})`;
-}
 export function renderReply(key: string, plan: Plan, slots: Record<string, string> = {}, lookup: PhraseLookup = defaultPhraseLookup): RenderedReply {
   const language = dialogueLanguage(plan);
   const namespace = templateForRequest(plan.request)?.id ?? "haircut";
   const id = `${namespace}.${key}`;
-  const version = phraseVersion(key);
+  const version = phraseVersion(key, namespace);
   const render = (locale: DialogueLanguage) => {
     const name = plan.request.bookingName.trim();
     const values = key === "greeting" ? { onBehalf: name
@@ -194,7 +210,7 @@ export function renderAction(candidate: CandidateAction, plan: Plan, offer: Offe
   const render = (key: string, slots: Record<string, string> = {}) => renderReply(key, plan, slots, lookup);
   const profile = templateForRequest(plan.request);
   const namespace = profile?.id ?? "haircut";
-  const localized = (key: string, locale: DialogueLanguage, slots: Record<string, string> = {}) => interpolate(lookup(`${namespace}.${key}`, phraseVersion(key), locale), slots);
+  const localized = (key: string, locale: DialogueLanguage, slots: Record<string, string> = {}) => interpolate(lookup(`${namespace}.${key}`, phraseVersion(key, namespace), locale), slots);
   const name = plan.request.bookingName;
   const scope = (values: Offer["templateDetails"], locale: DialogueLanguage) => {
     const languageIndex = languages.indexOf(locale);
@@ -211,24 +227,30 @@ export function renderAction(candidate: CandidateAction, plan: Plan, offer: Offe
     if (!offer) throw new Error("Offer required for dialogue phrase");
     if (locale === "es-ES" && namespace === "haircut") return spanish.offerDetails(plan as ApprovedPlan, offer);
     return localized("details", locale, { date: date(offer.appointment.localDate, locale), time: offer.appointment.localTime,
-      zone: zone(offer.appointment, locale), name: speechSlot(name), scope: scope(offer.templateDetails, locale),
+      name: speechSlot(name), scope: scope(offer.templateDetails, locale),
       staff: offer.staffName ? localized("staff", locale, { name: speechSlot(offer.staffName) }) : "",
       duration: offer.durationMinutes === null ? "" : localized("duration", locale, { minutes: String(offer.durationMinutes) }),
       price: offer.price ? localized("price", locale, { amount: moneyAmount(offer.price.amountMinor) }) : localized("price_unknown", locale) });
   };
   // Some slot values also require localization. Render each language independently for faithful English UI text.
   const bilingual = (key: string, slots: (locale: DialogueLanguage) => Record<string, string>): RenderedReply => ({
-    phrase: { id: `${namespace}.${key}`, version: phraseVersion(key), language }, text: localized(key, language, slots(language)), translationEn: localized(key, "en-US", slots("en-US")),
+    phrase: { id: `${namespace}.${key}`, version: phraseVersion(key, namespace), language }, text: localized(key, language, slots(language)), translationEn: localized(key, "en-US", slots("en-US")),
   });
   switch (candidate.action) {
     case "ask_availability": return bilingual("availability", locale => ({ name: speechSlot(name), scope: scope(plan.request.templateDetails, locale), can: tu ? "Tienes" : "Tiene", windows: plan.request.availability.map(w => localized("window", locale, {
-      start: date(w.start.localDate, locale), startTime: w.start.localTime, startZone: zone(w.start, locale),
-      end: date(w.end.localDate, locale), endTime: w.end.localTime, endZone: zone(w.end, locale),
+      start: date(w.start.localDate, locale), startTime: w.start.localTime,
+      end: date(w.end.localDate, locale), endTime: w.end.localTime,
     })).join(locale === "es-ES" ? "; o bien " : "; ") }));
     case "ask_requirements": return render("requirements");
     case "read_back": case "accept_offer": return bilingual(candidate.action === "read_back" ? "readback" : "acceptance", locale => ({ details: details(locale), can: tu ? "Puedes" : "Puede" }));
     case "clarify": {
-      const fields = [...new Set(candidate.missing)];
+      const fields = [...new Set(candidate.missing)].filter(field => namespace !== "haircut" || field !== "conditions");
+      if (namespace === "haircut" && (fields.includes("name") && name.trim() || !fields.length)) {
+        return bilingual("booking_details", locale => ({ contact:
+          (name.trim() ? " " + localized("booking_name", locale, { name: speechSlot(name.trim()) }) : "")
+          + (plan.request.shareableContact.phone ? localized("booking_phone", locale, { phone: speechSlot(plan.request.shareableContact.phone) }) : ""),
+        }));
+      }
       return bilingual("clarification", locale => ({ questions: fields.map(field => localized(`clarify_${field}`, locale, { can: tu ? "Puedes" : "Puede", scope: scope(plan.request.templateDetails, locale) })).join(" ") }));
     }
     case "end_call": return render(confirmed ? "closing_confirmed" : candidate.reason === "unresolved" ? "closing_unresolved" : "closing");
@@ -241,7 +263,7 @@ export function renderAction(candidate: CandidateAction, plan: Plan, offer: Offe
       let detail: string;
       switch (candidate.field) {
         case "date": detail = offer.appointment.localDate; break;
-        case "time": detail = `${offer.appointment.localDate}, ${offer.appointment.localTime}, ${offer.appointment.timeZone}`; break;
+        case "time": detail = `${offer.appointment.localDate}, ${offer.appointment.localTime}`; break;
         case "name": detail = speechSlot(offer.bookingName); break;
         case "staff": if (!offer.staffName) throw new Error("Missing staff"); detail = locale === "es-ES" ? `con ${speechSlot(offer.staffName)}` : speechSlot(offer.staffName); break;
         case "price": if (!offer.price) throw new Error("Missing price"); detail = `${moneyAmount(offer.price.amountMinor)}${locale === "es-ES" ? " euros" : " EUR"}`; break;

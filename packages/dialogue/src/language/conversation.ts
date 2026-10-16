@@ -59,7 +59,7 @@ export function echoPhrase(plan: ApprovedPlan, offer: Offer, field: "date" | "ti
   let es: string, en: string;
   switch (field) {
     case "date": es = offer.appointment.localDate; en = es; break;
-    case "time": es = `${offer.appointment.localDate}, ${offer.appointment.localTime}, ${offer.appointment.timeZone}`; en = es; break;
+    case "time": es = `${offer.appointment.localDate}, ${offer.appointment.localTime}`; en = es; break;
     case "price": {
       if (!offer.price) return null;
       const digits = String(offer.price.amountMinor).padStart(3, "0");

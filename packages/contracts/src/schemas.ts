@@ -288,11 +288,15 @@ export const CallSnapshotSchema = z.strictObject({
   activeOffer: OfferSchema.nullable(), pendingApproval: ApprovalRequestSchema.nullable(),
   conversation: ConversationStateSchema.optional(),
   conversationData: z.enum(["retained", "deleted"]),
+  agreementDeletedAt: InstantSchema.optional(),
   messages: z.array(TranscriptMessageSchema).max(2000), usage: UsageSchema,
   createdAt: InstantSchema, updatedAt: InstantSchema,
 }).superRefine((value, ctx) => {
   const issue = (message: string) => ctx.addIssue({ code: "custom", message });
   const terminalCall = ["ended", "busy", "no_answer", "failed"].includes(value.callState);
+  if (value.agreementDeletedAt && (!terminalCall || !(value.outcome.status === "confirmed"
+    || (value.outcome.status === "completed" && value.outcome.findings.some(finding => finding.answered)))))
+    issue("Agreement deletion requires a terminal call with a saved agreement");
   if (value.conversationData === "deleted" && (!terminalCall || value.messages.length > 0))
     issue("Deleted conversation data requires a terminal call and an empty transcript");
   if (value.conversationData === "deleted" && value.conversation?.decisions.some(item => item.answer !== null))
@@ -415,6 +419,7 @@ export const DomainEventSchema = z.discriminatedUnion("type", [
   event("conversation.updated", ConversationStateSchema),
   event("usage.updated", UsageSchema),
   event("conversation.deleted", z.strictObject({ conversationData: z.literal("deleted") })),
+  event("agreement.deleted", z.strictObject({ agreementDeletedAt: InstantSchema })),
   event("call.error", z.strictObject({ code: ErrorCodeSchema, message: TextSchema, recoverable: z.boolean() })),
 ]);
 
@@ -437,6 +442,7 @@ export const HistoryEntrySchema = z.strictObject({
   id: IdSchema, mode: z.enum(["simulator", "live"]), kind: z.literal("manual_mock").optional(),
   businessName: TextSchema, requestType: RequestTypeSchema.optional(),
   callState: CallStateSchema, outcome: OutcomeSchema, createdAt: InstantSchema, usage: UsageSchema,
+  agreementDeletedAt: InstantSchema.optional(),
 });
 
 export type ApprovedPlan = z.infer<typeof ApprovedPlanSchema>;

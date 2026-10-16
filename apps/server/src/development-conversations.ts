@@ -13,6 +13,7 @@ import type { Store } from "./storage.js";
 import { isMockAttempt } from "./call-store.js";
 import type { MockAttempt } from "./call-store.js";
 import { CommandError } from "./errors.js";
+import { assertDeletableAgreement } from "./agreements.js";
 import { MockCallsClient, MockCallsError } from "./mock-calls-client.js";
 import { mockRelayEnabled } from "./mock-relay.js";
 import type { RelayConsumer, RelaySend } from "./mock-relay.js";
@@ -522,6 +523,16 @@ export class DevelopmentConversations {
       },
     };
   }
+  deleteAgreement(id: string) {
+    const a = this.require(id);
+    assertDeletableAgreement(a.call);
+    if (!a.call.agreementDeletedAt) this.change(id, (a, emit) => {
+      assertDeletableAgreement(a.call);
+      a.call.agreementDeletedAt = this.timestamp();
+      emit("agreement.deleted", { agreementDeletedAt: a.call.agreementDeletedAt });
+    });
+    return this.snapshot(id);
+  }
   deleteConversation(id: string) {
     const a = this.require(id);
     if (!terminal(a.call)) throw new CommandError(409, "DATA_NOT_DELETABLE", "Conversation deletion requires a terminal call");
@@ -546,13 +557,14 @@ export class DevelopmentConversations {
 }
 
 export function mountDevelopmentConsole(app: FastifyInstance, conversations: DevelopmentConversations) {
-  const files: Record<string, [string, string]> = { "/": ["index.html", "text/html"],
+  const files: Record<string, [string, string]> = { "/console/": ["index.html", "text/html"],
     "/console/app.js": ["app.js", "text/javascript"], "/console/auth.js": ["auth.js", "text/javascript"], "/console/styles.css": ["styles.css", "text/css"] };
   for (const [route, [file, contentType]] of Object.entries(files)) app.get(route, async (_request, reply) => {
     reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'")
       .header("Referrer-Policy", "no-referrer").type(contentType);
     return readFile(new URL(`../src/web/${file}`, import.meta.url), "utf8");
   });
+  app.get("/console", async (_request, reply) => reply.redirect("/console/"));
   const id = (params: unknown) => z.object({ id: z.uuid() }).parse(params).id;
   app.get("/api/dev/conversations", async () => conversations.latest());
   app.post("/api/dev/conversations", async (request, reply) => reply.code(202).send({ conversation: await conversations.start(request.body) }));

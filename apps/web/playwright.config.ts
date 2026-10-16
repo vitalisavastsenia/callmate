@@ -1,5 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const deployedAppUrl = process.env.CALLMATE_E2E_APP_URL;
+
 export default defineConfig({
   testDir: '../../tests/e2e',
   fullyParallel: false,
@@ -11,8 +13,10 @@ export default defineConfig({
     { name: 'desktop', testMatch: ['**/auth.spec.ts', '**/workflow.spec.ts', '**/contacts.spec.ts', '**/history.spec.ts'], use: { ...devices['Desktop Chrome'] } },
     { name: 'narrow', testMatch: ['**/auth.spec.ts', '**/workflow.spec.ts', '**/contacts.spec.ts', '**/history.spec.ts'], use: { viewport: { width: 390, height: 844 }, isMobile: false } },
     { name: 'http-sse', testMatch: '**/reconnect.spec.ts', use: { ...devices['Desktop Chrome'], baseURL: 'http://127.0.0.1:5175' } },
+    { name: 'production', testMatch: '**/production.spec.ts', use: { ...devices['Desktop Chrome'], baseURL: deployedAppUrl || 'http://127.0.0.1:3000' } },
+    { name: 'production-narrow', testMatch: '**/production.spec.ts', use: { viewport: { width: 390, height: 844 }, baseURL: deployedAppUrl || 'http://127.0.0.1:3000' } },
   ],
-  webServer: [{
+  webServer: deployedAppUrl ? undefined : [{
     command: 'CALLMATE_DATA_DIR=/tmp/callmate-contacts-e2e NODE_ENV=test TELEPHONY_PROVIDER=fake CALLMATE_LOG_LEVEL=silent node ../server/dist/main.js',
     url: 'http://127.0.0.1:3000/health',
     reuseExistingServer: false,

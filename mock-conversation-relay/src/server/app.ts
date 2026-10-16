@@ -176,6 +176,7 @@ export function createApp(config: Config, controller = new Controller(config)) {
     "/": ["../../src/web/index.html", "text/html"], "/assets/styles.css": ["../../src/web/styles.css", "text/css"],
     "/assets/app.js": ["../web/app.js", "text/javascript"], "/assets/operator.js": ["../web/operator.js", "text/javascript"],
     "/assets/speech.js": ["../web/speech.js", "text/javascript"],
+    "/assets/favicon.svg": ["../../src/web/favicon.svg", "image/svg+xml"],
   };
   for (const [path, [file, mime]] of Object.entries(assets)) app.get(path, async (_req, reply) => reply.type(mime).send(await readFile(new URL(file, import.meta.url), "utf8")));
   const sweepTimer = setInterval(() => controller.sweep(), 500); sweepTimer.unref();

@@ -23,7 +23,7 @@ for (const profile of conversationTemplates) for (const language of ['es-ES', 'r
   assert.doesNotMatch(greeting.text + greeting.translationEn, /Zeus|Зевс|CallMate/i);
   assert.ok(greeting.text.includes(snapshot.plan.request.bookingName));
   assert.ok(greeting.translationEn.includes('on behalf of ' + snapshot.plan.request.bookingName));
-  for (const candidate of [{ action: 'ask_availability' }, { action: 'ask_requirements' }, { action: 'clarify', missing: ['price', 'conditions'] }, { action: 'read_back', ...ref }]) {
+  for (const candidate of [{ action: 'ask_availability' }, { action: 'ask_requirements' }, { action: 'clarify', missing: ['price', 'conditions'] }, { action: 'clarify', missing: ['time'] }, { action: 'read_back', ...ref }]) {
     const decision = evaluate(candidate), reply = renderAction(candidate, snapshot.plan, offer);
     assert.equal(decision.decision, 'allow', JSON.stringify({ candidate, decision })); assert.equal(decision.approvedSpanishText, reply.text);
     assert.doesNotMatch(reply.text + reply.translationEn, /Zeus|Зевс|CallMate/i);
@@ -31,14 +31,31 @@ for (const profile of conversationTemplates) for (const language of ['es-ES', 'r
     if (candidate.action === 'ask_availability') {
       assert.equal(reply.phrase.version, 3);
       assert.doesNotMatch(reply.text + reply.translationEn, /Hola|Здравствуйте|Hello|Dzień dobry|AI assistant|искусственного интеллекта|inteligencia artificial|sztucznej inteligencji/);
-      assert.match(reply.translationEn, /availability.*UTC\+02:00/);
+      assert.match(reply.translationEn, /availability.*17:00.*19:00/);
+      assert.doesNotMatch(reply.text + reply.translationEn, /Europe\/Madrid|UTC[+-]/);
       if (profile.fields.length) assert.ok(reply.translationEn.includes('Request details:'));
+    }
+    if (candidate.action === 'clarify' && candidate.missing.includes('time')) {
+      const expected = {
+        'es-ES': '¿Puede confirmar la hora exacta de la cita?',
+        'ru-RU': 'Уточните, пожалуйста, точное время записи?',
+        'en-US': 'Could you confirm the exact time of the appointment?',
+        'pl-PL': 'Czy można potwierdzić dokładną godzinę wizyty?',
+      };
+      assert.equal(reply.text, expected[language]);
+      assert.equal(reply.translationEn, expected['en-US']);
     }
     if (profile.id !== 'haircut') assert.doesNotMatch(reply.text + reply.translationEn, /haircut|стрижк|strzyż|corte de pelo/i);
     assert.doesNotMatch(reply.text, /\{(?:scope|name|date|windows|service|questions)\}/);
   }
   const readback = renderAction({ action: 'read_back', ...ref }, snapshot.plan, offer);
-  assert.match(readback.translationEn, /not accepting/); assert.match(readback.translationEn, /Alex Example/); assert.match(readback.translationEn, /UTC\+02:00/);
+  assert.match(readback.translationEn, /not accepting/); assert.match(readback.translationEn, /Alex Example/); assert.match(readback.translationEn, /18:00/);
+  assert.doesNotMatch(readback.text + readback.translationEn, /Europe\/Madrid|UTC[+-]/);
+  offer.conditions.deposit = 'unknown';
+  const unstatedConditions = evaluate({ action: 'read_back', ...ref });
+  if (profile.id === 'haircut') assert.equal(unstatedConditions.decision, 'allow');
+  else assert.deepEqual(unstatedConditions, { decision: 'clarify', field: 'conditions' });
+  offer.conditions.deposit = 'none';
   snapshot.bookingState = 'reading_back';
   const output = buildMessage({ id: '50000000-0000-4000-8000-000000000001', speaker: 'assistant', language, originalText: readback.text, playback: 'generated', createdAt: '2026-10-15T10:01:10Z' });
   snapshot.messages.push(output);

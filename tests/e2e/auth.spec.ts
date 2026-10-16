@@ -46,7 +46,7 @@ test('development console requires the same owner and can sign in and out', asyn
   const state = await (await request.get('http://127.0.0.1:3000/api/auth/session')).json();
   if (state.setupRequired) expect((await request.post('http://127.0.0.1:3000/api/auth/setup', { data: credentials })).ok()).toBe(true);
   await page.context().clearCookies();
-  await page.goto('http://127.0.0.1:3000/');
+  await page.goto('http://127.0.0.1:3000/console/');
   await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Start conversation', exact: true })).toBeHidden();
   await page.getByLabel('Username', { exact: true }).fill(credentials.username);

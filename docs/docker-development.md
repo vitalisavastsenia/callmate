@@ -9,13 +9,19 @@ For provider-format checks, use the separate [offline Twilio protocol harness](t
 From the repository root, with the Docker engine running:
 
 ```sh
-docker compose up --build -d --wait server
+docker compose up --build -d --wait
 docker compose ps
 curl http://127.0.0.1:3000/health
-docker compose logs -f server
+docker compose logs -f zeus-llama
 ```
 
+The root `compose.yaml` starts two services, `mock-relay` and `zeus-llama`, waiting for dependency health checks. Zeus Llama serves both the built web UI and API from one Node.js process. Open Zeus Llama at `http://localhost:3000`, the operator at `http://localhost:8080`, and the technical console at `http://localhost:3000/console/`. `docker compose down` stops both and preserves SQLite. The separate mock-only Compose file remains available for standalone emulator development; do not run both mock containers on the same host port. See the [one-time migration note](../README.md#getting-started) if the standalone mock is already running.
+
 The image uses a build stage with development dependencies/compilers and a separate runtime stage without those tools. The server runs as the unprivileged `node` user with a read-only image filesystem. A writable SQLite volume and temporary `/tmp` filesystem are mounted separately.
+
+The image copies only the frontend’s built `dist` files into the runtime, alongside the API. The HTML uses `no-store`; hashed JS/CSS/images under `/assets/` use immutable caching. Static files share the app’s loopback Host/Origin checks; `/api` remains authenticated and unknown API/asset paths never fall back to HTML. The callback listener does not serve UI or static assets. The technical console uses the same owner session.
+
+For an optional frontend dev server, use `docker compose --profile dev up --build -d --wait`: Vite runs at `http://localhost:5173` and proxies API/SSE to `zeus-llama`. `VITE_MOCK` is a public build argument for the compiled UI; changing its default requires rebuilding. The Codex override sets it to `false`; existing browser Settings selections take precedence. See the root README for upgrade steps and browser-origin storage differences.
 
 The Docker health check tests `/health`, which reads the SQLite application tables without checking the mock service. `/api/v1/readiness` reports database/configuration checks, mock connectivity and per-capability enabled/ready flags. Overall readiness requires valid local prerequisites and simulator mode; it also requires a healthy mock when the manual transport is enabled. A mock outage can leave scripted calls ready while overall readiness is false. `voiceEngine` remains `null`; in live mode readiness is false and live Start returns `503 PROVIDER_NOT_READY`. Switching to `live` never falls back to a simulated or real call. See [readiness diagnostics](#15-readiness-diagnostics).
 
@@ -30,14 +36,16 @@ Defaults work without `.env`. For overrides, copy `.env.example` to ignored `.en
 | `CALLMATE_MODE` | `simulator` | `simulator` needs no provider credentials; `live` remains unavailable. |
 | `NODE_ENV` | `development` in Compose; `production` in standalone image | Only `development` or `test` permits the unsigned mock relay. |
 | `TELEPHONY_PROVIDER` | `mock` in Compose; `fake` without Compose | `mock` enables the development relay gate; `fake` disables it. The automatic API/SSE simulator continues to use fake telephony. Neither choice enables live calls. |
-| `CALLMATE_MOCK_API_BASE` | `http://host.docker.internal:8080` | Backend-to-emulator HTTP origin. Local hosts only, no credentials/query/path. |
-| `CALLMATE_MOCK_OPERATOR_ORIGIN` | `http://localhost:8080` | Browser-facing operator origin; change alongside the emulator's published port. |
-| `CALLMATE_MOCK_RELAY_URL` | `ws://host.docker.internal:3001/ws/voice` | Emulator-to-backend WS destination; Compose follows `CALLMATE_CALLBACK_PORT` unless explicitly overridden. |
+| `CALLMATE_MOCK_API_BASE` | `http://mock-relay:8080` in Compose | Backend-to-emulator HTTP origin. Local hosts only, no credentials/query/path. |
+| `CALLMATE_MOCK_OPERATOR_ORIGIN` | `http://localhost:8080` | Browser-facing operator origin; follows `CALLMATE_MOCK_PORT` unless explicitly overridden. |
+| `CALLMATE_MOCK_RELAY_URL` | `ws://zeus-llama:3001/ws/voice` in Compose | Emulator-to-backend WS destination; Compose follows `CALLMATE_CALLBACK_PORT` unless explicitly overridden. |
 | `MOCK_ACCOUNT_SID` | `AC` + 32 zeroes | Synthetic account SID, matching the emulator. |
 | `MOCK_API_USERNAME`, `MOCK_API_PASSWORD` | `mock`, `mock-local-only` | Synthetic local Calls credentials, matching the emulator. Never use real provider credentials. |
 | `MOCK_AUTH_TOKEN` | `mock-auth-token-local-only` | Synthetic status-callback signing token; must match the standalone emulator. This does not enable a production verifier or WS signature validation. |
 | `CALLMATE_API_PORT` | `3000` | Integer 1–65535; same port inside the container and on host loopback. |
 | `CALLMATE_CALLBACK_PORT` | `3001` | Integer 1–65535; different from the API port. |
+| `CALLMATE_WEB_PORT` | `5173` | Optional `dev` profile only: Vite host port; the normal built UI uses `CALLMATE_API_PORT`. |
+| `CALLMATE_MOCK_PORT` | `8080` | Host loopback port for the operator; backend-to-mock HTTP remains `mock-relay:8080`. |
 | `CALLMATE_SILENCE_TIMEOUT_SECONDS` | `60` | Integer 5–600; caller inactivity after connection. Frozen per new call; see section 12. |
 | `CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE` | Unset | Optional integer 1–60000, USD cents per elapsed minute; empty disables pricing for new calls. Synthetic development rate only; see section 14. |
 | `CALLMATE_LOG_LEVEL` | `info` | `silent`, `error`, `warn`, `info`, or `debug`. |
@@ -56,7 +64,7 @@ Both Fastify listeners bind `0.0.0.0` **inside the container** so Docker forward
 
 | Listener | Implemented routes |
 | --- | --- |
-| Private API, default host port 3000 | `GET /health`, the development UI at `/`, its `/console/` assets and `/api/dev/conversations` controls, plus all [shared HTTP/SSE routes](interfaces.md#4-private-http-api) operating on persisted simulator attempts. |
+| Private API, default host port 3000 | `GET /health`, the built Zeus Llama UI at `/`, hashed `/assets/`, the technical console at `/console/`, its assets and `/api/dev/conversations` controls, plus all [shared HTTP/SSE routes](interfaces.md#4-private-http-api) operating on persisted simulator attempts. |
 | Callback listener, default host port 3001 | Development-only WS upgrade `/ws/voice` and signed form POST `/callbacks/mock/status/:id`, gated by simulator mode, development/test environment, mock provider, and `X-CallMate-Mock: true`. Other HTTP and production provider callback routes return 404. See section 11 for callback authentication and ordering. |
 
 Settings use the existing shared schemas. Example update:
@@ -67,7 +75,7 @@ curl --request PUT http://127.0.0.1:3000/api/v1/settings \
   --data '{"defaultCallLimits":{"maxDurationSeconds":300,"maxEstimatedCost":{"amountMinor":200,"currency":"USD"}},"transcriptRetentionDays":14}'
 ```
 
-The web UI at port 5173 includes **Contacts** for creating, editing, and deleting the backend address book. Start it with `docker compose --profile web up --build -d --wait server web`. Contacts use the private `/api/v1/contacts` CRUD/import endpoints in both Simulator and Live modes. See the [contact API contract](interfaces.md#4-private-http-api) for required fields and responses. No provider credentials or real calls are involved.
+The web UI at the app port (3000 by default) includes **Contacts** for creating, editing, and deleting the backend address book. Start it with `docker compose up --build -d --wait`. Contacts use the private `/api/v1/contacts` CRUD/import endpoints in both Simulator and Live modes. See the [contact API contract](interfaces.md#4-private-http-api) for required fields and responses. No provider credentials or real calls are involved.
 
 Private requests require a recognized loopback Host and, when present, a same-app Origin. Cross-site browser requests are rejected. POST/PUT commands require JSON; DELETE conversation requests have no body. Use a same-origin UI or a future development proxy; cross-origin CORS access is not enabled. Error bodies use `ApiErrorSchema`; validation errors do not echo supplied values. Settings cannot include provider credentials.
 
@@ -90,7 +98,7 @@ On restart, interrupted simulator attempts are finalized without resuming a scri
 ## 5. Build and checks inside Docker
 
 ```sh
-docker compose build server
+docker compose build zeus-llama
 docker compose --profile checks run --build --rm checks
 ```
 
@@ -112,7 +120,7 @@ This updates `package-lock.json` through the mounted workspace; actual dependenc
 ## 6. Stop
 
 ```sh
-docker compose stop server
+docker compose stop zeus-llama
 ```
 
 Compose forwards SIGTERM; the application closes both HTTP listeners before closing SQLite. A failed second listener startup also closes the first listener and database. Use `docker compose down` when you also want to remove the stopped containers/network while retaining data.
@@ -122,13 +130,13 @@ Compose forwards SIGTERM; the application closes both HTTP listeners before clos
 Start the default scenario:
 
 ```sh
-CALLMATE_MODE=simulator docker compose up --build -d --wait server
+CALLMATE_MODE=simulator docker compose up --build -d --wait zeus-llama
 ```
 
 The following example runs its client inside the server container too. It creates a future appointment window in Europe/Madrid, reviews a synthetic request, then explicitly starts it. The example phone is never dialed.
 
 ```sh
-docker compose exec -T server node --input-type=module <<'JS'
+docker compose exec -T zeus-llama node --input-type=module <<'JS'
 import { randomUUID } from 'node:crypto';
 const base = `http://127.0.0.1:${process.env.CALLMATE_API_PORT || 3000}`;
 const zoned = (date) => {
@@ -183,7 +191,7 @@ curl --request POST http://127.0.0.1:3000/api/v1/calls/ATTEMPT_ID/stop \
   --header 'Content-Type: application/json' --data '{}'
 ```
 
-To select a different script, set `CALLMATE_SIMULATOR_SCENARIO` in `.env` or prefix the startup command, for example `CALLMATE_MODE=simulator CALLMATE_SIMULATOR_SCENARIO=approval_required docker compose up --build -d --wait server`. Recreating the server interrupts any active simulation; changing configuration never changes an existing attempt's stored scenario.
+To select a different script, set `CALLMATE_SIMULATOR_SCENARIO` in `.env` or prefix the startup command, for example `CALLMATE_MODE=simulator CALLMATE_SIMULATOR_SCENARIO=approval_required docker compose up --build -d --wait zeus-llama`. Recreating the server interrupts any active simulation; changing configuration never changes an existing attempt's stored scenario.
 
 | Scenario | Expected behavior |
 | --- | --- |
@@ -204,7 +212,7 @@ The fake adapters implement the shared telephony/dialogue/text-voice ports. Thei
 
 ## 8. Manual ConversationRelay development transport
 
-The existing backend's callback listener accepts the emulator's outgoing WebSocket at `ws://host.docker.internal:3001/ws/voice`. Start/rebuild the root backend and the standalone emulator as described in the [emulator README](../mock-conversation-relay/README.md#point-callmate-at-the-emulator). In its UI, create a call, answer it, and type a caller utterance. A successful answer displays a development greeting; final prompts receive two `text` frames whose concatenation preserves Unicode and whitespace. The reply is explicitly labelled as development echo, using Russian, Spanish, Polish, or English wording according to the prompt locale. Other locale tags preserve the original input with an English prefix. No translation or natural-language understanding is performed. `/end` returns an `end` message with string `handoffData` declaring `bookingStatus: "not_booked"`; the emulator then closes the socket. Ordinary Hang up closes the transport from the provider side.
+The callback listener accepts the emulator’s outgoing WebSocket at `ws://zeus-llama:3001/ws/voice` in the combined stack (`ws://host.docker.internal:3001/ws/voice` for a standalone emulator). Start/rebuild Zeus Llama and the emulator as described in the [emulator README](../mock-conversation-relay/README.md#point-callmate-at-the-emulator). In its UI, create a call, answer it, and type a caller utterance. A successful answer displays a development greeting; final prompts receive two `text` frames whose concatenation preserves Unicode and whitespace. The reply is explicitly labelled as development echo, using Russian, Spanish, Polish, or English wording according to the prompt locale. Other locale tags preserve the original input with an English prefix. No translation or natural-language understanding is performed. `/end` returns an `end` message with string `handoffData` declaring `bookingStatus: "not_booked"`; the emulator then closes the socket. Ordinary Hang up closes the transport from the provider side.
 
 The callback listener reuses the ConversationRelay parser. Direct operator-created calls without console correlation remain ephemeral scripted echo checks. Backend-started calls from section 9 correlate only to persisted `manual_mock` attempts; they never authorize an existing booking attempt. Manual calls share the call controller, database reservation, snapshots, history, Stop and SSE with the booking simulator. They do not issue booking playback permits, evaluate offers, translate text or invoke dialogue/policy modules. Production provider correlation and signature validation remain separate work; section 10 describes implemented local mock recovery.
 
@@ -217,7 +225,7 @@ The root Docker checks exercise actual WebSocket connections to this handler, in
 
 ## 9. Simple backend conversation UI
 
-Start both services using the commands in the root README, then open **http://localhost:3000/**:
+Start both services using the commands in the root README, then open **http://localhost:3000/console/**:
 
 1. Enter the initial message and choose its language (Spanish, Russian, English, or Polish).
 2. Click **Start conversation**. The backend creates one ringing call via the emulator's Calls API using inline ConversationRelay TwiML.
@@ -359,7 +367,7 @@ Docker checks cover exact expiry boundaries, completion versus update time, conf
 
 ## 14. Test-rate usage and budgets
 
-Usage remains `unavailable` by default. To exercise metering and budget stops without any billable service, set `CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE=60` in ignored `.env` and recreate the backend with `docker compose up --build -d --wait server`. This explicit rate means **60 USD cents per elapsed minute**, not a Twilio or model price. An empty/unset value disables pricing for new attempts; zero, fractional, negative and out-of-range rates fail startup. No pricing endpoint or provider billing request is made.
+Usage remains `unavailable` by default. To exercise metering and budget stops without any billable service, set `CALLMATE_TEST_RATE_USD_MINOR_PER_MINUTE=60` in ignored `.env` and recreate the backend with `docker compose up --build -d --wait zeus-llama`. This explicit rate means **60 USD cents per elapsed minute**, not a Twilio or model price. An empty/unset value disables pricing for new attempts; zero, fractional, negative and out-of-range rates fail startup. No pricing endpoint or provider billing request is made.
 
 At Start, the backend captures the rate, its `elapsed-minute-v1` version, capture time and per-call USD budget. Scripted calls use the approved plan's `callLimits.maxEstimatedCost`; manual calls use the current settings' `defaultCallLimits.maxEstimatedCost`. Changing the rate or defaults cannot reprice an existing attempt. Existing attempts without a test meter stay unavailable even after rates are enabled. With a configured rate, a zero budget returns `409 BUDGET_EXCEEDED` before a call, idempotency record or provider request is created. With no rate, the backend cannot estimate spending and does not invent a zero cost or budget guarantee; duration and silence controls still apply.
 
@@ -465,7 +473,7 @@ Docker checks cover healthy/failed/recovered and disabled mocks, bounded/unrespo
 
 ## 16. Owner login and sessions
 
-Open `http://localhost:5173` (web UI) or `http://localhost:3000` (development console). On a fresh SQLite volume, create the single owner account. Usernames contain 3–64 ASCII letters/numbers/dots/underscores/hyphens and are stored lowercase. Passwords contain 12–128 characters; whitespace is significant. There are no default credentials, public signup after setup, email flows, or external identity providers. Existing contacts, calls, and settings become accessible to the owner without moving or deleting them.
+Open `http://localhost:3000` (web UI) or `http://localhost:3000/console/` (technical console). On a fresh SQLite volume, create the single owner account. Usernames contain 3–64 ASCII letters/numbers/dots/underscores/hyphens and are stored lowercase. Passwords contain 12–128 characters; whitespace is significant. There are no default credentials, public signup after setup, email flows, or external identity providers. Existing contacts, calls, and settings become accessible to the owner without moving or deleting them.
 
 Authentication is always required for `/api/v1/*` and `/api/dev/*`, including reads, Stop, and SSE. `/health`, static login assets, and the four `/api/auth/*` endpoints are public on the private listener. Provider callbacks stay on the separate listener and retain their provider signature/relay checks; browser sessions do not authorize those callbacks.
 
@@ -485,7 +493,7 @@ This configuration serves HTTP only on loopback and therefore omits the cookie's
 If you forget the password, use local Docker access to remove only the owner and sessions, preserving contacts/calls/settings:
 
 ```sh
-docker compose exec server npm run auth:reset --workspace @callmate/server
+docker compose exec zeus-llama npm run auth:reset --workspace @callmate/server
 ```
 
 Then open either UI and create the owner again. There is no unauthenticated HTTP reset endpoint. The command is intentionally not exposed in the UI. Never delete the Docker volume to reset a password, and do not place passwords or cookie jars in Git.
@@ -501,10 +509,9 @@ Choose one engine. **Codex CLI with your existing ChatGPT login** runs entirely
 inside Docker; no host Node/npm install or API key is needed:
 
 ```sh
-docker compose -f compose.yaml -f compose.codex.yaml build server
+docker compose -f compose.yaml -f compose.codex.yaml build zeus-llama
 sh scripts/setup-codex-login.sh
-docker compose -f mock-conversation-relay/compose.yaml up -d --wait mock-relay
-docker compose -f compose.yaml -f compose.codex.yaml --profile web up --build -d --wait server web
+docker compose -f compose.yaml -f compose.codex.yaml up --build -d --wait
 ```
 
 The optional image pins `@openai/codex` to 0.163.0. The setup script copies only
@@ -518,7 +525,7 @@ both the database and container login. Treat volume backups as credentials.
 For keyring-only or missing file credentials, sign in directly inside Docker:
 
 ```sh
-docker compose -f compose.yaml -f compose.codex.yaml run --rm --no-deps server codex login --device-auth
+docker compose -f compose.yaml -f compose.codex.yaml run --rm --no-deps zeus-llama codex login --device-auth
 ```
 
 Follow the device-login instructions locally; never share the login code. This
@@ -561,11 +568,10 @@ supplied values.
 1. Start the local mock and rebuild the backend/UI:
 
    ```sh
-   docker compose -f mock-conversation-relay/compose.yaml up --build -d --wait mock-relay
-   docker compose --profile web up --build -d --wait server web
+   docker compose up --build -d --wait
    ```
 
-2. Sign in at `http://localhost:5173`. Select **Settings → Backend** and check
+2. Sign in at `http://localhost:3000`. Select **Settings → Backend** and check
    readiness: `dialogue_integration` must be enabled and ready. Readiness verifies
    configuration and mock health, **not** API credentials, model access or quality.
    The UI reads the backend's call-budget currency (USD or EUR) and uses it for

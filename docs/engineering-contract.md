@@ -57,7 +57,7 @@ Engineer 2 prepares a shared foundation change; Engineers 1 and 3 review the bou
 
 All engineers branch from the same foundation commit after it is integrated through the repository's normal authorized workflow. Record that commit and contract version in each handoff. Follow `AGENTS.md` for branches, commits, reviews, and remote publication; this agreement does not authorize Git pushes or merges.
 
-Run `docker compose up --build -d --wait server` for the backend/simulator and `docker compose --profile checks run --build --rm checks` for contracts/server checks inside Docker. The root workspace commands build/type-check/test both packages within that environment. UI and real dialogue workspaces, and their combined browser flow, remain deliverables.
+Run `docker compose up --build -d --wait zeus-llama` for the backend/simulator and `docker compose --profile checks run --build --rm checks` for contracts/server checks inside Docker. The root workspace commands build/type-check/test both packages within that environment. UI and real dialogue workspaces, and their combined browser flow, remain deliverables.
 
 ## 5. Independent development and substitutes
 

@@ -37,6 +37,8 @@ export function callRoutes(app: FastifyInstance, controller: CallController) {
   });
   app.delete(api.deleteConversation.path, async (request) =>
     api.deleteConversation.response.parse(controller.deleteConversation(attemptId(request.params))));
+  app.delete(api.deleteAgreement.path, async (request) =>
+    api.deleteAgreement.response.parse({ call: controller.deleteAgreement(attemptId(request.params)) }));
   app.get(api.events.path, async (request, reply) => {
     const id = attemptId(request.params);
     controller.get(id); // Return structured errors before opening the stream.

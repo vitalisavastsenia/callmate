@@ -74,7 +74,7 @@ Keep actual values in ignored local environment configuration or a local secret 
 
 ## 7. Connect the local callback listener
 
-The backend scaffold starts with `docker compose up --build -d --wait server`; see [Docker development](docker-development.md). Its callback listener currently rejects all routes. This phase additionally requires the Twilio HTTP/WSS adapters and signature/session validation.
+The backend scaffold starts with `docker compose up --build -d --wait zeus-llama`; see [Docker development](docker-development.md). Its callback listener currently rejects all routes. This phase additionally requires the Twilio HTTP/WSS adapters and signature/session validation.
 
 1. Implement the provider routes on the dedicated callback listener, published by Docker on host `127.0.0.1:3001`. Keep the UI/private API on its separate listener. Inside the container both listeners bind `0.0.0.0`; Compose limits host exposure to loopback.
 2. Set up an ngrok account/local agent using the official [local tunnel instructions](https://ngrok.com/docs/start). Forward only the callback listener and confirm HTTPS and WebSocket support for the selected setup.

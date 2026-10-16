@@ -13,6 +13,7 @@ import type { Attempt, CallStore } from "./call-store.js";
 import type { Config } from "./config.js";
 import type { Store } from "./storage.js";
 import { CommandError } from "./errors.js";
+import { assertDeletableAgreement } from "./agreements.js";
 import { FakeDialogue, FakeTelephony, FakeVoice, scriptedOffer, simulatorPolicy } from "./simulator-adapters.js";
 
 import { initialUsage, measureUsage, budgetExpired, usageSampleDue, terminalUsage } from "./usage.js";
@@ -262,7 +263,17 @@ export class Simulator {
     const calls = this.db.list(limit + 1, cursor);
     return { items: calls.slice(0, limit).map((call) => ({ id: call.id, mode: call.mode,
       businessName: call.plan?.request.business.name ?? "Manual mock call", callState: call.callState, outcome: call.outcome, ...("kind" in call ? { kind: call.kind } : {}),
+      ...("agreementDeletedAt" in call ? { agreementDeletedAt: call.agreementDeletedAt } : {}),
       createdAt: call.createdAt, usage: call.usage })), nextCursor: calls.length > limit ? calls[limit - 1]!.id : null };
+  }
+  deleteAgreement(id: string) {
+    const a = this.require(id);
+    assertDeletableAgreement(a.call);
+    if (!a.call.agreementDeletedAt) this.change(id, (a, emit) => {
+      a.call.agreementDeletedAt = this.timestamp();
+      emit("agreement.deleted", { agreementDeletedAt: a.call.agreementDeletedAt });
+    });
+    return this.require(id).call;
   }
   deleteConversation(id: string) {
     const a = this.require(id);

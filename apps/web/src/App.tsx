@@ -11,11 +11,12 @@ import SettingsView from './components/SettingsView';
 import { readRequestDefaults, saveRequestDefaults } from './preferences';
 import { useApprovalAttention } from './useApprovalAttention';
 import CallHistory from './components/CallHistory';
+import AgreementsView from './components/AgreementsView';
 import { ApprovalCard, LiveCall, PlanDetails, Result, ShortResult, Transcript } from './components/CallViews';
 import { Modal } from './components/ContactFields';
 import { callActivityChanges, type CallActivity } from './callActivity';
 
-type Page = 'home' | 'request' | 'summary' | 'contacts' | 'settings';
+type Page = 'home' | 'request' | 'summary' | 'agreements' | 'contacts' | 'settings';
 const activeKey = 'zeus-llama.active-attempt.v1';
 const pendingKey = 'zeus-llama.pending-start.v1';
 interface PendingStart { plan: ReviewPlan; mode: 'simulator' | 'live'; key: string; scenario: Scenario }
@@ -151,7 +152,7 @@ export default function App() {
   async function openHistoryCall(id: string) {
     const selected = await api.getCall(id);
     if (!callIsTerminal(selected)) { acceptSnapshot(selected); setCallWindowOpen(true); setShowCall(true); setPage('home'); }
-    else setHistoryCall(selected);
+    else { setHistoryCall(selected); setPage('summary'); }
   }
   function repeatCall(selected: CallSnapshot) {
     if (!callIsTerminal(selected)) { acceptSnapshot(selected); setShowCall(true); setPage('home'); return; }
@@ -164,6 +165,12 @@ export default function App() {
     if (next.id === call?.id) acceptSnapshot(next);
     setHistoryCall(old => old?.id === next.id ? next : old);
     await refreshHistory();
+  }
+  async function deleteAgreement(id: string) {
+    const next = await api.deleteAgreement(id);
+    if (next.id === call?.id) acceptSnapshot(next);
+    setHistoryCall(old => old?.id === next.id ? next : old);
+    setHistory(old => old.map(item => item.id === next.id ? { ...item, agreementDeletedAt: next.agreementDeletedAt } : item));
   }
   async function callRequest(request: RequestDraft) {
     if (!mayStart || pending) return;
@@ -228,7 +235,7 @@ export default function App() {
     if (failure?.status === 'rejected') throw failure.reason;
   }
   const approvalLines = Object.values(approvalRecords).filter(record => record.callId === call?.id).map(record => record.text);
-  const attentionPanel = !callWindowOpen && !!call?.pendingApproval && !callIsTerminal(call) && (page === 'summary' || page === 'settings' || page === 'contacts' || !inlineApprovalVisible);
+  const attentionPanel = !callWindowOpen && !!call?.pendingApproval && !callIsTerminal(call) && (page === 'summary' || page === 'agreements' || page === 'settings' || page === 'contacts' || !inlineApprovalVisible);
   const liveCall = call && <LiveCall call={call} connection={connection} now={now} busy={busy} stopping={stopping} onStop={() => {
     if (stopping) return; setStopping(true); setError('');
     void api.stopCall(call.id).then(acceptSnapshot).catch(e => setError((e instanceof Error ? e.message : 'Stop response unavailable.') + ' Hangup is not confirmed; keep checking this attempt.')).finally(() => setStopping(false));
@@ -249,6 +256,7 @@ export default function App() {
       <button className="secondary" aria-current={page === 'home' ? 'page' : undefined} onClick={() => setPage('home')}>Home</button>
       <button className="secondary" aria-current={page === 'request' ? 'page' : undefined} onClick={() => setPage('request')}>Request</button>
       <button className="secondary" aria-current={page === 'summary' ? 'page' : undefined} onClick={() => openSummary()}>Summary</button>
+      <button className="secondary" aria-current={page === 'agreements' ? 'page' : undefined} onClick={() => { setPage('agreements'); void perform(refreshHistory); }}>Agreements</button>
       <button className="secondary" aria-current={page === 'contacts' ? 'page' : undefined} onClick={() => setPage('contacts')}>Contacts</button>
       <button className="secondary" aria-current={page === 'settings' ? 'page' : undefined} onClick={() => setPage('settings')}>Settings</button>
       </nav>
@@ -260,7 +268,7 @@ export default function App() {
     </>}</div>}{notice && <p role="status" className="notice">{notice}</p>}
     <main ref={main} tabIndex={-1} className="outline-none">
       {loading && <p role="status" className="notice">Checking readiness and restoring local state…</p>}
-      <div hidden={page === 'summary' || page === 'settings' || page === 'contacts'}>
+      <div hidden={page !== 'home' && page !== 'request'}>
         <div hidden={page !== 'home'}><Home onRequest={() => { setNotice(''); setPage('request'); }} /></div>
         {!loading && <RequestForm key={requestKey} initial={requestInitial} initialPrepared={initialPrepared} view={page === 'request' ? 'request' : 'home'} onRequest={message => { setNotice(message ?? ''); setPage('request'); }} settings={settings} defaults={defaults} approvalPending={!!call?.pendingApproval} busy={busy} locked={requestDisabled || showCall} callDisabled={!mayStart}
           callHelp={<>{mockNeedsDialogue && <p className="notice">Mock calls need a ready dialogue engine. Check Settings → Provider readiness after configuring the backend Codex login.</p>}{(!readiness?.ready || mockNeedsDialogue) && <div className="notice"><p>Calling requires confirmed backend readiness.</p><button type="button" className="secondary mt-3" disabled={busy} onClick={() => void perform(refreshReadiness)}>Check readiness again</button></div>}{!simulator && !mockNeedsDialogue && readiness?.capabilities.some(c => c.name === 'mock_relay' && c.ready) && <p className="notice">Local mock call: open localhost:8080 and click Answer when it rings. No real phone number is dialed.</p>}{api.isMockMode && <p className="text-base text-stone-300">No number will be dialed. Custom simulator requests use scripted answers and may need follow-up.</p>}</>}
@@ -279,6 +287,7 @@ export default function App() {
           <button className="primary mt-5" disabled={requestDisabled} onClick={() => repeatCall(historyCall)}>Repeat</button>
         </section>}
       </div>}
+      {page === 'agreements' && <AgreementsView history={history} currentCall={call} now={now} loading={loading} busy={busy} onRefresh={() => void perform(refreshHistory)} onOpen={id => void perform(() => openHistoryCall(id))} onDelete={deleteAgreement} />}
       {page === 'contacts' && <ContactsView />}
       {page === 'settings' && <SettingsView key={String(simulator)} readiness={readiness} settings={settings} defaults={defaults} busy={busy || loading} simulator={simulator} modeLocked={active || !!pending || unresolved || loading} scenario={scenario} onScenarioChange={setScenario}
         onModeChange={value => void perform(() => switchMode(value))} onRefresh={() => void perform(refreshReadiness)}

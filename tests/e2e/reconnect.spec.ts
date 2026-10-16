@@ -1,6 +1,38 @@
 import { expect, test } from './fixtures';
 import { awaitingApprovalFixture, confirmedCallFixture, reviewPlanFixture, transcriptEventFixture } from '@callmate/contracts/fixtures';
 
+test('failed agreement deletion preserves the entry and allows retry after backend acknowledgement', async ({ page }) => {
+  let deletes = 0;
+  const call = structuredClone(confirmedCallFixture);
+  await page.route('**/api/v1/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.startsWith('/api/v1/contacts')) return route.continue();
+    if (path.endsWith('/readiness')) return route.fulfill({ json: { mode: 'simulator', ready: true, voiceEngine: null, capabilities: [], checks: [] } });
+    if (path.endsWith('/settings')) return route.fulfill({ json: { defaultCallLimits: reviewPlanFixture.request.callLimits, transcriptRetentionDays: 30 } });
+    if (path.endsWith('/history')) return route.fulfill({ json: { items: [{ id: call.id, mode: call.mode, businessName: call.plan.request.business.name,
+      callState: call.callState, outcome: call.outcome, createdAt: call.createdAt, usage: call.usage, agreementDeletedAt: call.agreementDeletedAt }], nextCursor: null } });
+    if (path.endsWith('/agreement')) {
+      expect(route.request().method()).toBe('DELETE'); deletes++;
+      if (deletes === 1) return route.fulfill({ status: 503, json: { error: { code: 'PROVIDER_UNAVAILABLE', message: 'Storage is temporarily unavailable. Try again.', requestId: crypto.randomUUID(), details: [] } } });
+      call.agreementDeletedAt = new Date().toISOString(); call.revision++;
+      return route.fulfill({ json: { call } });
+    }
+    return route.fulfill({ json: { call } });
+  });
+  await page.goto('/'); await page.getByRole('button', { name: 'Agreements', exact: true }).click();
+  await page.getByRole('button', { name: /^Delete entry for / }).click();
+  const dialog = page.getByRole('dialog', { name: 'Delete agreement?', exact: true });
+  const confirm = dialog.getByRole('button', { name: 'Delete entry', exact: true });
+  await confirm.click();
+  await expect(dialog.getByRole('alert')).toContainText('Storage is temporarily unavailable. Try again.');
+  await expect(page.locator('.agreement-card')).toHaveCount(1);
+  await confirm.click(); await expect(dialog).toHaveCount(0);
+  await expect(page.locator('.agreement-card')).toHaveCount(0);
+  await page.reload(); await page.getByRole('button', { name: 'Agreements', exact: true }).click();
+  await expect(page.getByText('No agreements yet.', { exact: false })).toBeVisible();
+  expect(deletes).toBe(2);
+});
+
 test('HTTP/SSE reconnect disables old decisions and resynchronizes without a new Start', async ({ page }) => {
   let starts = 0; let snapshots = 0; let streams = 0;
   const waiting = structuredClone(awaitingApprovalFixture);

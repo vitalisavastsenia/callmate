@@ -39,6 +39,8 @@ export const api = {
     response: z.strictObject({ items: z.array(HistoryEntrySchema), nextCursor: IdSchema.nullable() }) },
   deleteConversation: { method: "DELETE", path: "/api/v1/calls/:attemptId/conversation",
     response: z.strictObject({ attemptId: IdSchema, deleted: z.literal(true) }) },
+  deleteAgreement: { method: "DELETE", path: "/api/v1/calls/:attemptId/agreement",
+    response: z.strictObject({ call: CallSnapshotSchema.refine(call => !!call.agreementDeletedAt, "Deletion must include its persisted timestamp") }) },
   getSettings: { method: "GET", path: "/api/v1/settings", response: SettingsSchema },
   updateSettings: { method: "PUT", path: "/api/v1/settings", request: SettingsSchema, response: SettingsSchema },
   events: { method: "GET", path: "/api/v1/calls/:attemptId/events", contentType: "text/event-stream" },

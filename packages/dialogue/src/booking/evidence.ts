@@ -1,5 +1,5 @@
 import {
-  CallSnapshotSchema, IdSchema, InstantSchema, OfferSchema, PlaybackPermitSchema, TranscriptMessageSchema,
+  templateForRequest, CallSnapshotSchema, IdSchema, InstantSchema, OfferSchema, PlaybackPermitSchema, TranscriptMessageSchema,
   type CallSnapshot, type Offer, type PlaybackPermit, type TranscriptMessage,
 } from "@callmate/contracts";
 import { renderAcceptance } from "../language/catalog.js";
@@ -77,7 +77,8 @@ export function checkAcceptancePlayback(snapshot: CallSnapshot, receipt: Accepta
     || observed < start || observed > Date.parse(now)) return invalid("invalid_playback_time");
   const offerEvidence = checkOfferEvidence(offer, current.messages);
   if (!offerEvidence.valid) return offerEvidence;
-  if (Object.values(offer.conditions).some((condition) => condition !== "none")) return invalid("unresolved_conditions");
+  if (Object.values(offer.conditions).some(condition => condition === "required"
+    || condition === "unknown" && templateForRequest(current.plan.request)?.id !== "haircut")) return invalid("unresolved_conditions");
   const readbackIndex = current.messages.findIndex((message) => message.id === receipt.readbackMessageId);
   const acceptanceIndex = current.messages.findIndex((message) => message.id === receipt.acceptanceMessageId);
   const readback = current.messages[readbackIndex];

@@ -85,6 +85,7 @@ This block describes a format, not literal JSON. `sequence` increases per attemp
 | `booking.updated` | `{ bookingState: BookingState, outcome: Outcome }` | Appointment/task progress or result changed. Generic completion uses `bookingState: "completed"`. Only `outcome.status: "confirmed"` permits a confirmed result/calendar export. |
 | `usage.updated` | `{ estimate, settledTotal, status, measuredAt, testUsage? }` | Show unavailable, estimated, partial, or settled costs in the recorded currency. Test-rate estimates remain separate from unavailable provider charges. |
 | `conversation.deleted` | `{ conversationData: "deleted" }` | Immediately clear cached transcript/translation text, then refetch the snapshot. |
+| `agreement.deleted` | `{ agreementDeletedAt: ISO timestamp }` | Refetch the snapshot and hide its saved entry from Agreements/list/calendar; retain the call in Summary. This does not cancel a business appointment. |
 | `call.error` | `{ code: ErrorCode, message: string, recoverable: boolean }` | Show a safe error notice. `recoverable` does not authorize retrying a dial or deciding the booking outcome. |
 
 `CallState`, `BookingState`, and all reason/code enums are fixed by the shared schemas. Do not add ad hoc event names such as `booking_success` or `new_message` in an individual scope.

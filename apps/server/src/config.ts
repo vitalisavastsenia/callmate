@@ -6,7 +6,7 @@ const port = z.coerce.number().int().min(1).max(65535);
 const localUrl = (transport: "http" | "ws", path: string) => z.string().refine((value) => {
   try {
     const url = new URL(value);
-    return url.protocol === `${transport}:` && ["localhost", "127.0.0.1", "host.docker.internal", "mock-relay"].includes(url.hostname)
+    return url.protocol === `${transport}:` && ["localhost", "127.0.0.1", "host.docker.internal", "mock-relay", "server", "zeus-llama"].includes(url.hostname)
       && url.pathname === path && !url.username && !url.password && !url.search && !url.hash;
   } catch { return false; }
 });

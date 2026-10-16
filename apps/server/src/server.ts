@@ -21,6 +21,7 @@ import { Readiness } from "./readiness.js";
 import { mountMockStatus } from "./mock-status.js";
 import { contactRoutes } from "./contacts.js";
 import { mountAuth } from "./auth.js";
+import { mountWebApp } from "./web-app.js";
 
 type ErrorCode = z.infer<typeof ApiErrorSchema>["error"]["code"];
 function fail(reply: FastifyReply, request: FastifyRequest, status: number, code: ErrorCode, message: string,
@@ -117,6 +118,7 @@ export function createRuntime(config: Config, logStream?: Writable, simulatorOpt
     (setup, send, disconnect) => development.attach(setup, send, disconnect));
   privateRoutes(privateApi, config, store, controller, retention, development.dialogueEnabled);
   mountDevelopmentConsole(privateApi, development);
+  mountWebApp(privateApi);
   let closing: Promise<void> | undefined;
   const close = () => closing ??= (async () => {
     try { retention.close(); await development.close(); await simulator.close(); await Promise.all([privateApi.close(), callbacks.close()]); }

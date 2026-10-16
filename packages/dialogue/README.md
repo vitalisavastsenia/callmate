@@ -37,9 +37,13 @@ This affects phrasing, never booking authority.
 
 Set the reviewed `plan.request.language` to `es-ES`, `ru-RU`, `en-US`, or `pl-PL`. Missing language means Spanish for existing v1 plans. The model analyzes the selected language and translates business speech into English; all spoken replies remain controlled policy output. Availability, clarifications, readbacks, repeat/echo replies, the clean/dry-hair acknowledgement, approval waiting, blocked replies, and closings are localized. Exact readback/acceptance text checks use the selected language and preserve playback/authority gates. EUR prices and the plan's time zone do not change with language.
 
+Availability windows, readbacks, acceptance and time echoes speak the reviewed business-local dates and times without IANA time-zone names or UTC offsets, including in English translations. Time clarification asks for the exact local appointment time in all four languages; the reviewed zone/instant and their validation stay in structured data. The catalog retains the original templates, uses `window`/`clarify_time` v2 and domain `details` v2, and uses `haircut.details` v3 without the fee-absence recital. Clarification replies share one multilingual renderer, including Spanish.
+
+For haircut booking details, the assistant supplies the reviewed `bookingName` and, when present, the approved callback number in `shareableContact.phone`: “Please book a haircut appointment under the name …, contact phone: …”. It never substitutes the destination/business number or includes email. A missing callback number is omitted. Name requests are answered before separately asking about an unknown price. Haircut replies skip the deposit/prepayment/cancellation/extras questionnaire and do not claim those charges are absent. Unstated conditions stay `unknown` without blocking a base haircut booking; explicit required charges still block it, and budget, time, approval, playback and business-confirmation checks still apply. Other appointment templates retain their conditions checks.
+
 `dialoguePhraseCatalog` supplies immutable `{ id, version, language, template }` entries. `renderReply` and `renderAction` accept a `PhraseLookup`; the backend supplies SQLite lookup and checks that rendered output exactly matches policy-approved text. The standalone library uses the bundled catalog without a database dependency. Templates use named, literal, single-pass slots; user/model strings cannot become templates. The backend persists phrase references alongside rendered text and English translations. See [storage and wire examples](../../docs/interfaces.md#localized-haircut-dialogue).
 
-New calls use greeting version 3 and availability version 2 across all 15 templates and four languages: the caller introduces itself as an AI assistant without mentioning the app name and includes the reviewed `bookingName` when supplied. Blank names are omitted from the opening. Names are literal speech data; greetings never take the owner login or infer a name from conversation text. Previous phrase versions remain in the catalog for historical references.
+New calls use greeting and availability version 3 across all 15 templates and four languages: the caller introduces itself as an AI assistant without mentioning the app name and includes the reviewed `bookingName` when supplied. Blank names are omitted from the opening. Names are literal speech data; greetings never take the owner login or infer a name from conversation text. Previous phrase versions remain in the catalog for historical references.
 
 The legacy v1 field `approvedSpanishText` now contains the policy-approved text in the selected conversation language. Its name is retained for wire compatibility. Existing Spanish scenario evaluations and the standalone Spanish pacing/post-booking consent companion remain Spanish-specific; they are not connected to the multilingual mock-call controller. Contact/add-on consent remains unavailable on that controller; mock final booking acceptance uses the server receipt and confirmation path described above.
 
@@ -395,9 +399,9 @@ controller responsibilities; the haircut price limit is independent of USD call 
   require clarification; a different offered service cannot be approved by a grant.
 - Booking names must match the reviewed plan after Unicode, case, and whitespace
   normalization. The response uses the plan's name, never arbitrary model prose.
-  Name changes require clarification. No phone or email is included in responses,
-  even when sharing one would be permitted; there is no contact-sharing candidate
-  in the current contracts.
+  Name changes require clarification. Haircut booking-detail replies supply the
+  reviewed name and optional approved callback number; they never include email
+  or the business's phone number. Other contact requests use separate consent.
 - Appointment instants must be in the future and retain the reviewed business
   timezone. Availability starts are inclusive and ends exclusive. A known duration
   must fit completely within one window. An unknown duration stays unknown.
@@ -407,7 +411,7 @@ controller responsibilities; the haircut price limit is independent of USD call 
   grant covers the offer. This order determines the primary reason when several
   exceptions apply; approval must show the complete offer.
 - Required deposits, cancellation fees, or paid add-ons always produce `deny`,
-  including with a grant. Unknown conditions require clarification. The planner
+  including with a grant. Unknown conditions require clarification outside the base haircut flow; haircut conditions remain unknown without a questionnaire. The planner
   must correctly extract payment requirements into the supported conditions;
   policy does not infer the truth of facts from Spanish text.
 
@@ -429,8 +433,8 @@ invalidate older authority before asking for grant-based readback of that offer.
 
 1. `evaluate_offer` checks facts/authority but can return only a neutral reply,
    never spoken acceptance.
-2. `read_back` renders the exact date, local time, timezone/UTC offset, approved
-   service/name, price, and excluded conditions. It explicitly says the proposal
+2. `read_back` renders the exact date, local time, approved
+   service/name and price. Other templates also render excluded conditions; haircut replies omit that recital. It explicitly says the proposal
    has not yet been accepted. The controller records actual playback.
 3. `accept_offer` requires `reading_back` state and the latest exact matching
    controlled readback after the offer evidence to be finalized and fully played,
@@ -478,7 +482,8 @@ fluent-speaker review before live acceptance testing.
 - `checkAcceptancePlayback(snapshot, receipt, now)` checks exact attempt/plan/offer
   binding, completed assistant playback, equality with both the permitted text and
   the controlled acceptance template for the current plan and offer, readback and
-  offer-evidence ordering, and playback timing. Unknown/prohibited conditions fail.
+  offer-evidence ordering, and playback timing. Explicit prohibited conditions fail;
+  unknown conditions also fail outside the base haircut flow.
 - `checkConfirmationEvidence(...)` additionally checks final business speech
   after acceptance and a synchronous semantic verifier. Missing, stale,
   provisional, future, contradictory, or unverified evidence cannot confirm.

@@ -6,7 +6,15 @@ There is no AI agent, appointment logic, real phone call, paid speech provider, 
 
 ## Start and stop
 
-From this directory:
+To start the **whole app** from the repository root, use one Compose file and command:
+
+```sh
+docker compose up --build -d --wait
+```
+
+This starts two containers: `zeus-llama` serves both the built UI and API at `localhost:3000`, and `mock-relay` serves this operator at `localhost:8080`. The shared network uses `mock-relay:8080` for the backend’s Calls API and `zeus-llama:3001` for callbacks/relay. The backend service hostname is explicitly allowed. The root `.env` supplies shared mock credentials. Finish active calls and stop an existing standalone mock container before switching to the combined stack; do not bind two mocks to port 8080.
+
+For **standalone emulator development**, from this directory:
 
 ```sh
 docker compose up --build
@@ -31,20 +39,19 @@ All state is in memory. Restarting deletes sessions. SIGTERM marks active calls 
 
 ## Point CallMate at the emulator
 
-The existing CallMate backend now includes a development relay handler. From the repository root, start both Docker services:
+The existing CallMate backend now includes a development relay handler. From the repository root, start all Docker services:
 
 ```sh
-docker compose up --build -d --wait server
-docker compose -f mock-conversation-relay/compose.yaml up --build -d --wait mock-relay
+docker compose up --build -d --wait
 ```
 
-The root Compose defaults select `NODE_ENV=development`, `TELEPHONY_PROVIDER=mock`, and `CALLMATE_MODE=simulator`. For the simple two-window flow, open **http://localhost:3000/**, enter an initial message and click **Start conversation**. Follow **Open operator window**, answer, and type a reply. The initial message appears here with a **Listen** button: click it after answering to hear the message using your browser/OS voice. The operator's reply appears on the backend page. Stop on the backend page ends the mock call. See the [backend UI guide](../docs/docker-development.md#9-simple-backend-conversation-ui) for configuration and lifecycle details.
+The root Compose defaults select `NODE_ENV=development`, `TELEPHONY_PROVIDER=mock`, and `CALLMATE_MODE=simulator`. For the simple two-window flow, open **http://localhost:3000/console/**, enter an initial message and click **Start conversation**. Follow **Open operator window**, answer, and type a reply. The initial message appears here with a **Listen** button: click it after answering to hear the message using your browser/OS voice. The operator's reply appears on the backend page. Stop on the backend page ends the mock call. See the [backend UI guide](../docs/docker-development.md#9-simple-backend-conversation-ui) for configuration and lifecycle details.
 
-For the independent echo flow, create a call at `localhost:8080` using `ws://host.docker.internal:3001/ws/voice`, answer it, and send text. You receive a development greeting and streamed echo replies in the caller's language (Russian, Spanish, Polish, or English). Type `/end` to test backend hangup, or use **Hang up**. For a changed callback port, update the relay URL accordingly.
+For the independent echo flow, create a call at `localhost:8080` using the prefilled relay URL (`ws://zeus-llama:3001/ws/voice` in the combined stack), answer it, and send text. You receive a development greeting and streamed echo replies in the caller's language (Russian, Spanish, Polish, or English). Type `/end` to test backend hangup, or use **Hang up**. For a changed callback port, update the relay URL accordingly.
 
 This verifies the actual emulator-to-backend transport. Backend-started console calls now use `conversationId` and an opaque token verified against a persisted hash to attach to a persisted `manual_mock` attempt. They share SQLite transcripts, history, Stop, the active-call reservation and SSE with the scripted simulator. Their snapshots have no booking plan/authority, and completion never confirms a booking. Direct operator-created echo calls remain ephemeral; `taskId` and other custom parameters cannot authorize booking actions. The earlier signed loopback harness remains an independent test tool. Backend restart/relay-loss recovery reconciles stored IDs and ends active orphans without redial; ambiguous or missing provider records retain the backend reservation. See the [backend recovery rules](../docs/docker-development.md#10-persistent-correlation-and-recovery). Production provider/dialogue integration remains subsequent work. No AI agent runs inside the emulator.
 
-The root backend uses `CALLMATE_MOCK_API_BASE`, `CALLMATE_MOCK_OPERATOR_ORIGIN`, `CALLMATE_MOCK_RELAY_URL`, and `MOCK_ACCOUNT_SID` / `MOCK_API_USERNAME` / `MOCK_API_PASSWORD` / `MOCK_AUTH_TOKEN` from the root `.env.example`. Its Compose defaults connect the separate containers through the host gateway. The `MOCK_TWILIO_*` names below belong only to the reusable adapter example, not the root backend.
+The root backend uses `CALLMATE_MOCK_API_BASE`, `CALLMATE_MOCK_OPERATOR_ORIGIN`, `CALLMATE_MOCK_RELAY_URL`, and `MOCK_ACCOUNT_SID` / `MOCK_API_USERNAME` / `MOCK_API_PASSWORD` / `MOCK_AUTH_TOKEN` from the root `.env.example`. The root Compose defaults connect containers through service DNS; the standalone emulator Compose retains host-gateway defaults for a separately running backend. The `MOCK_TWILIO_*` names below belong only to the reusable adapter example, not the root backend.
 
 For another consuming backend, adapt this example configuration:
 

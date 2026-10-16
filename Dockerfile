@@ -15,7 +15,8 @@ COPY apps/server/ ./apps/server/
 COPY apps/web/ ./apps/web/
 COPY tests/e2e/ ./tests/e2e/
 COPY tests/dialogue-fixtures/ ./tests/dialogue-fixtures/
-RUN npm run build
+ARG VITE_MOCK=true
+RUN VITE_MOCK=${VITE_MOCK} npm run build
 
 FROM build AS production
 RUN npm prune --omit=dev --offline --ignore-scripts --no-audit --no-fund && npm cache clean --force
@@ -27,6 +28,7 @@ COPY --from=production /app/node_modules/ ./node_modules/
 COPY --from=production /app/packages/contracts/ ./packages/contracts/
 COPY --from=production /app/packages/dialogue/ ./packages/dialogue/
 COPY --from=production /app/apps/server/ ./apps/server/
+COPY --from=build /app/apps/web/dist/ ./apps/web/dist/
 RUN mkdir /data && chown node:node /data && chmod 700 /data
 USER node
 EXPOSE 3000 3001

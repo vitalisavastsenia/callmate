@@ -1,6 +1,6 @@
 import { templateForService } from "@callmate/contracts";
 import type { ApprovedPlan, CandidateAction, Offer } from "@callmate/contracts";
-import { friendly, speechSlot, type Tone } from "./conversation.js";
+import { friendly, speechSlot } from "./conversation.js";
 
 const normalize = (value: string) => value.normalize("NFC").trim().replace(/\s+/gu, " ").toLocaleLowerCase("es-ES");
 
@@ -15,16 +15,6 @@ export const dateSpanish = (date: string) => {
   const [year, month, day] = date.split("-");
   return `${Number(day)} de ${months[Number(month) - 1]} de ${year}`;
 };
-export function zoneSpanish(appointment: Offer["appointment"]): string {
-  const friendly: Record<string, string> = {
-    "Europe/Madrid": "Madrid", "Atlantic/Canary": "Canarias", "Africa/Ceuta": "Ceuta",
-  };
-  const offset = (Date.parse(`${appointment.localDate}T${appointment.localTime}:00Z`) - Date.parse(appointment.instant)) / 60000;
-  const absolute = Math.abs(offset);
-  const hours = String(Math.floor(absolute / 60)).padStart(2, "0");
-  const minutes = String(absolute % 60).padStart(2, "0");
-  return `hora de ${friendly[appointment.timeZone] ?? appointment.timeZone} (UTC${offset < 0 ? "-" : "+"}${hours}:${minutes})`;
-}
 function priceSpanish(offer: Offer): string {
   if (offer.price === null) return "con el precio todavía sin determinar";
   const digits = String(offer.price.amountMinor).padStart(3, "0");
@@ -36,7 +26,7 @@ export function offerDetails(plan: ApprovedPlan, offer: Offer): string {
   // Service and name come from the reviewed plan, never arbitrary business/model text.
   const duration = offer.durationMinutes === null ? "" : `, con una duración de ${offer.durationMinutes} ${offer.durationMinutes === 1 ? "minuto" : "minutos"}`;
   const staff = offer.staffName ? `, con ${speechSlot(offer.staffName)}` : "";
-  return `un corte de pelo el ${dateSpanish(offer.appointment.localDate)} a las ${offer.appointment.localTime}, ${zoneSpanish(offer.appointment)}, a nombre de ${plan.request.bookingName}${staff}${duration}, ${priceSpanish(offer)}, sin depósito, sin gastos de cancelación y sin extras de pago obligatorios`;
+  return `un corte de pelo el ${dateSpanish(offer.appointment.localDate)} a las ${offer.appointment.localTime}, a nombre de ${plan.request.bookingName}${staff}${duration}, ${priceSpanish(offer)}`;
 }
 
 export function renderReadback(plan: ApprovedPlan, offer: Offer): string {
@@ -47,25 +37,11 @@ export function renderAcceptance(plan: ApprovedPlan, offer: Offer): string {
 }
 export function renderAvailability(plan: ApprovedPlan): string {
   const windows = plan.request.availability.map(({ start, end }) => {
-    return `desde el ${dateSpanish(start.localDate)} a las ${start.localTime}, ${zoneSpanish(start)}, hasta el ${dateSpanish(end.localDate)} a las ${end.localTime}, ${zoneSpanish(end)}`;
+    return `desde el ${dateSpanish(start.localDate)} a las ${start.localTime}, hasta el ${dateSpanish(end.localDate)} a las ${end.localTime}`;
   }).join("; o bien ");
   return `¿${friendly(plan.request.tone ?? "formal") ? "Tienes" : "Tiene"} disponibilidad para un corte de pelo ${windows}?`;
 }
 
-type ClarificationField = Extract<CandidateAction, { action: "clarify" }>["missing"][number];
-const questions: Record<ClarificationField, string> = {
-  service: "¿Puede confirmar qué servicio se ofrece?",
-  details: "¿Puede confirmar los detalles del servicio solicitado?",
-  name: "¿Puede confirmar el nombre de la persona para la cita?",
-  date: "¿Puede indicar el día, el mes y el año de la cita?",
-  time: "¿Puede confirmar la hora exacta y la zona horaria de la cita?",
-  price: "¿Puede confirmar el precio total del corte de pelo?",
-  conditions: "¿Puede confirmar que no se exige depósito, pago anticipado, gastos de cancelación ni extras de pago?",
-};
-export function renderClarification(fields: ClarificationField[], tone: Tone = "formal"): string {
-  const text = [...new Set(fields)].map((field) => questions[field]).join(" ");
-  return friendly(tone) ? text.replaceAll("¿Puede", "¿Puedes") : text;
-}
 export function renderClosing(reason: Extract<CandidateAction, { action: "end_call" }>["reason"]): string {
   if (reason === "unresolved") return "Lo siento, no he podido aclarar los detalles y no puedo aceptar la propuesta. Gracias por su tiempo. Hasta luego.";
   return "Entendido. Muchas gracias por su tiempo. Hasta luego.";

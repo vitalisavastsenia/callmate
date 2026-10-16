@@ -32,6 +32,9 @@ export class CallController {
   deleteConversation(id: string) {
     return isMockAttempt(this.require(id)) ? this.manual.deleteConversation(id) : this.simulator.deleteConversation(id);
   }
+  deleteAgreement(id: string) {
+    return isMockAttempt(this.require(id)) ? this.manual.deleteAgreement(id) : this.simulator.deleteAgreement(id);
+  }
   replayEvents(id: string, after: number) {
     const a = this.require(id);
     return after < a.replayFloor || after > a.call.lastEventSequence ? null : this.store.calls.events(id, after);

@@ -302,7 +302,7 @@ export function mockStop(attemptId: string): { call: CallSnapshot } {
 export function mockHistory() {
   return { items: read().sessions.map(s => {
     const { call } = mockCall(s.call.id);
-    return { id: call.id, mode: call.mode, businessName: call.plan.request.business.name, requestType: call.plan.request.requestType, callState: call.callState, outcome: call.outcome, createdAt: call.createdAt, usage: call.usage };
+    return { id: call.id, mode: call.mode, businessName: call.plan.request.business.name, requestType: call.plan.request.requestType, callState: call.callState, outcome: call.outcome, createdAt: call.createdAt, usage: call.usage, agreementDeletedAt: call.agreementDeletedAt };
   }), nextCursor: null };
 }
 export function mockDelete(attemptId: string) {
@@ -311,5 +311,19 @@ export function mockDelete(attemptId: string) {
   s.call.messages = []; s.call.conversationData = 'deleted'; s.events = [];
   commit(s, [{ type: 'conversation.deleted', payload: { conversationData: 'deleted' } }]);
   return { attemptId, deleted: true as const };
+}
+export function mockDeleteAgreement(attemptId: string) {
+  const s = find(attemptId);
+  if (!terminal(s.call) || !(s.call.outcome.status === 'confirmed'
+    || (s.call.outcome.status === 'completed' && s.call.outcome.findings.some(finding => finding.answered))))
+    throw new Error('DATA_NOT_DELETABLE: only a saved agreement from a finished call can be deleted.');
+  if (!s.call.agreementDeletedAt) {
+    const previous = copy(s.call); const eventCount = s.events.length;
+    try {
+      s.call.agreementDeletedAt = now();
+      commit(s, [{ type: 'agreement.deleted', payload: { agreementDeletedAt: s.call.agreementDeletedAt } }]);
+    } catch (error) { s.call = previous; s.events.splice(eventCount); throw error; }
+  }
+  return { call: copy(s.call) };
 }
 export function mockEvents(attemptId: string): DomainEvent[] { return structuredClone(find(attemptId).events); }

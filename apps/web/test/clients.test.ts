@@ -5,6 +5,20 @@ import { parseFrame } from '../src/ws';
 beforeEach(() => { vi.spyOn(console, 'info').mockImplementation(() => {}); vi.spyOn(console, 'error').mockImplementation(() => {}); });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers(); vi.resetModules(); });
 describe('HTTP and SSE boundary', () => {
+  it('deletes an agreement through the shared endpoint and requires an authoritative snapshot', async () => {
+    vi.stubEnv('VITE_MOCK', 'false');
+    const deleted = { ...confirmedCallFixture, agreementDeletedAt: '2026-10-15T12:00:00Z' };
+    const fetchMock = vi.fn().mockResolvedValueOnce(Response.json({ call: deleted }))
+      .mockResolvedValueOnce(Response.json({ deleted: true }))
+      .mockResolvedValueOnce(Response.json({ error: { code: 'DATA_NOT_DELETABLE', message: 'Finish the call.', requestId: crypto.randomUUID(), details: [] } }, { status: 409 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const api = await import('../src/api');
+    expect(await api.deleteAgreement(deleted.id)).toEqual(deleted);
+    expect(fetchMock.mock.calls[0]![0]).toBe(`/api/v1/calls/${deleted.id}/agreement`);
+    expect(fetchMock.mock.calls[0]![1].method).toBe('DELETE');
+    await expect(api.deleteAgreement(deleted.id)).rejects.toThrow();
+    await expect(api.deleteAgreement(deleted.id)).rejects.toMatchObject({ code: 'DATA_NOT_DELETABLE' });
+  });
   it('recognizes manual mock history snapshots without treating them as booking plans', async () => {
     vi.stubEnv('VITE_MOCK', 'false');
     const manual = { ...connectedCallFixture, kind: 'manual_mock', mode: 'simulator', plan: null,
@@ -146,13 +160,13 @@ describe('robust backend responses', () => {
     expect(console.info).toHaveBeenCalledOnce();
     expect(console.info).toHaveBeenCalledWith('[Zeus API] Live API base:', 'https://backend.example/zeus');
   });
-  it('logs the proxy base on the first switch to Live, without requesting anything in Simulator', async () => {
+  it('logs the same-origin base on the first switch to Live, without requesting anything in Simulator', async () => {
     vi.stubEnv('VITE_MOCK', 'true'); vi.stubEnv('VITE_API_URL', '');
     vi.stubGlobal('fetch', vi.fn()); const api = await import('../src/api');
     expect(console.info).not.toHaveBeenCalled(); expect(fetch).not.toHaveBeenCalled();
     api.setMockMode(false); api.setMockMode(true); api.setMockMode(false);
     expect(console.info).toHaveBeenCalledOnce();
-    expect(vi.mocked(console.info).mock.calls[0]![1]).toContain('Vite dev proxy');
+    expect(vi.mocked(console.info).mock.calls[0]![1]).toContain('/api (same origin)');
   });
   it('handles SSE HTTP errors without parsing the successful event stream as JSON', async () => {
     vi.stubEnv('VITE_MOCK', 'false');

@@ -42,7 +42,7 @@ test('private contacts, calls, settings, readiness and console APIs require a se
     }
     if (i === 0) await app.setup();
   }
-  for (const path of ['/health', '/', '/console/auth.js']) assert.equal((await app.http('GET', path)).statusCode, 200);
+  for (const path of ['/health', '/console/', '/console/auth.js']) assert.equal((await app.http('GET', path)).statusCode, 200);
   for (const [method, path, body] of [
     ['POST', '/api/v1/contacts', { name: 'Private', phone: '+34612345678', timeZone: 'Europe/Madrid' }],
     ['PUT', '/api/v1/settings', {}], ['DELETE', `/api/v1/contacts/${crypto.randomUUID()}`, undefined],

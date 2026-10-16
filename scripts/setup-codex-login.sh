@@ -9,6 +9,6 @@ if [ ! -f "$callmate_auth_file" ]; then
 fi
 docker compose -f compose.yaml -f compose.codex.yaml run --rm --no-deps --user root \
   --cap-add CHOWN --cap-add FOWNER --cap-add DAC_OVERRIDE \
-  -v "$callmate_auth_file:/run/callmate-auth.json:ro" server \
+  -v "$callmate_auth_file:/run/callmate-auth.json:ro" zeus-llama \
   node --input-type=module -e 'import {copyFileSync,chmodSync,chownSync} from "node:fs"; chmodSync("/codex",0o700); chownSync("/codex",1000,1000); copyFileSync("/run/callmate-auth.json","/codex/auth.json"); chmodSync("/codex/auth.json",0o600); chownSync("/codex/auth.json",1000,1000);'
-docker compose -f compose.yaml -f compose.codex.yaml run --rm --no-deps server codex login status
+docker compose -f compose.yaml -f compose.codex.yaml run --rm --no-deps zeus-llama codex login status

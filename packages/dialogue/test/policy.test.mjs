@@ -41,8 +41,7 @@ test("policy implements the shared port and authorizes separate neutral evaluati
   const accepted = evaluate(ready());
   assert.equal(accepted.decision, "allow");
   assert.ok(accepted.approvedSpanishText.startsWith("Acepto la cita para un corte de pelo"));
-  for (const fact of ["20 de octubre de 2026", "18:00", "Madrid", "UTC+02:00", "Alex Example", "25 euros",
-    "sin depósito", "sin gastos de cancelación", "sin extras de pago obligatorios"]) {
+  for (const fact of ["20 de octubre de 2026", "18:00", "Alex Example", "25 euros"]) {
     assert.ok(accepted.approvedSpanishText.includes(fact), fact);
   }
   assert.ok(accepted.approvedSpanishText.endsWith("¿Puede confirmar que queda reservada con esos datos?"));
@@ -96,7 +95,7 @@ test("a grant for the previous offer cannot authorize a changed offer", () => {
   assert.deepEqual(evaluate(original, candidate, grant), { decision: "deny", reason: "grant_mismatch" });
 });
 
-test("forbidden and unknown conditions cannot be overridden by any grant", () => {
+test("haircut rejects explicit payment conditions and leaves unstated conditions unknown without a questionnaire", () => {
   for (const deposit of ["none", "required", "unknown"]) {
     for (const cancellationFee of ["none", "required", "unknown"]) {
       for (const paidAddOn of ["none", "required", "unknown"]) {
@@ -105,7 +104,6 @@ test("forbidden and unknown conditions cannot be overridden by any grant", () =>
         for (const grant of [null, grantFor(snapshot)]) {
           const result = evaluate(snapshot, ref(snapshot, "read_back"), grant);
           if (Object.values(conditions).includes("required")) assert.deepEqual(result, { decision: "deny", reason: "prohibited_conditions" });
-          else if (Object.values(conditions).includes("unknown")) assert.deepEqual(result, { decision: "clarify", field: "conditions" });
           else assert.equal(result.decision, "allow");
         }
       }
@@ -194,17 +192,25 @@ test("timezone changes, impossible times, and past appointments are never grant 
   assert.deepEqual(evaluate(impossible, ref(impossible, "read_back")), { decision: "deny", reason: "invalid_input" });
 });
 
-test("Canary and repeated DST times retain the reviewed zone and explicit UTC offset", () => {
+test("Canary and repeated DST times use local speech while preserving the reviewed zone and instant", () => {
   let snapshot = buildSnapshot();
   const canary = (time, instant) => ({ localDate: "2026-10-20", localTime: time, timeZone: "Atlantic/Canary", instant });
   snapshot = withPlan(snapshot, { availability: [{ start: canary("17:00", "2026-10-20T16:00:00Z"), end: canary("19:00", "2026-10-20T18:00:00Z") }] });
   snapshot = withOffer({ appointment: canary("18:00", "2026-10-20T17:00:00Z") }, snapshot);
-  assert.ok(evaluate(ready(snapshot)).approvedSpanishText.includes("Canarias (UTC+01:00)"));
+  const canaryBefore = structuredClone(snapshot);
+  const canaryText = evaluate(ready(snapshot)).approvedSpanishText;
+  assert.match(canaryText, /18:00/);
+  assert.doesNotMatch(canaryText, /Canarias|Atlantic\/Canary|UTC[+-]/);
+  assert.deepEqual(snapshot, canaryBefore);
   const repeated = (time, instant) => ({ localDate: "2026-10-25", localTime: time, timeZone: "Europe/Madrid", instant });
-  for (const [instant, offset] of [["2026-10-25T00:30:00Z", "UTC+02:00"], ["2026-10-25T01:30:00Z", "UTC+01:00"]]) {
+  for (const instant of ["2026-10-25T00:30:00Z", "2026-10-25T01:30:00Z"]) {
     let autumn = withPlan(buildSnapshot(), { availability: [{ start: repeated("02:00", "2026-10-25T00:00:00Z"), end: repeated("03:00", "2026-10-25T02:00:00Z") }] });
     autumn = withOffer({ appointment: repeated("02:30", instant) }, autumn);
-    assert.ok(evaluate(ready(autumn)).approvedSpanishText.includes(offset));
+    const before = structuredClone(autumn);
+    const text = evaluate(ready(autumn)).approvedSpanishText;
+    assert.match(text, /02:30/);
+    assert.doesNotMatch(text, /Madrid|UTC[+-]/);
+    assert.deepEqual(autumn, before);
   }
 });
 
@@ -366,7 +372,9 @@ test("Spanish availability follow-up, clarification, waiting, decline and closin
   for (const field of ["service", "name", "date", "time", "price", "conditions"]) {
     const clarification = evaluate(snapshot, { action: "clarify", missing: [field] });
     assert.equal(clarification.decision, "allow");
-    assert.ok(clarification.approvedSpanishText.startsWith("¿Puede"));
+    if (["name", "conditions"].includes(field)) {
+      assert.match(clarification.approvedSpanishText, /^Por favor, reserve.*Alex Example/);
+    } else assert.ok(clarification.approvedSpanishText.startsWith("¿Puede"));
   }
   for (const reason of ["business_declined", "unresolved", "no_availability"]) {
     assert.ok(evaluate(snapshot, { action: "end_call", reason }).approvedSpanishText.endsWith("Hasta luego."));

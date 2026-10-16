@@ -12,7 +12,7 @@ export function checkHardConstraints(snapshot: CallSnapshot, offer: Offer, now: 
   if (Object.values(offer.conditions).some((condition) => condition === "required")) {
     return { decision: "deny", reason: "prohibited_conditions" };
   }
-  if (Object.values(offer.conditions).some((condition) => condition === "unknown")) {
+  if (templateForRequest(request)?.id !== "haircut" && Object.values(offer.conditions).some((condition) => condition === "unknown")) {
     return { decision: "clarify", field: "conditions" };
   }
   const profile = templateForRequest(request);

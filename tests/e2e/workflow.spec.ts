@@ -182,7 +182,7 @@ test('changed offers require a fresh exact decision', async ({ page }) => {
 
 test('Home keeps natural-language flow and incomplete parsing opens the manual Request', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button')).toHaveText(['Home', 'Request', 'Summary', 'Contacts', 'Settings']);
+  await expect(page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button')).toHaveText(['Home', 'Request', 'Summary', 'Agreements', 'Contacts', 'Settings']);
   await expect(page.locator('header .mode-badge')).toHaveCount(0);
   const hero = page.getByRole('region', { name: 'Leave the call to Zeus.', exact: true });
   await expect(hero.locator('.eyebrow')).toHaveText('No drama. Zeus will llama.');

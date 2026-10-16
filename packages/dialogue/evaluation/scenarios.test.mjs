@@ -103,8 +103,7 @@ async function accepted(trace, playback = "played") {
   const acceptance = decide(snapshot, candidate, trace, null, at(20));
   assert.equal(acceptance.decision, "allow");
   assert.match(acceptance.approvedSpanishText, /^Acepto la cita/);
-  for (const fact of ["20 de octubre de 2026", "18:00", "Madrid", "UTC+02:00", "Alex Example", "25 euros",
-    "sin depósito", "sin gastos de cancelación", "sin extras de pago obligatorios"]) {
+  for (const fact of ["20 de octubre de 2026", "18:00", "Alex Example", "25 euros"]) {
     assert.ok(acceptance.approvedSpanishText.includes(fact), fact);
   }
   snapshot = buildSnapshot({ ...snapshot, messages: [...snapshot.messages, buildMessage({
@@ -186,7 +185,7 @@ for (const scenario of scenarios) test(`${scenario.id} [${scenario.category}]`, 
       assert.deepEqual(candidate.missing, scenario.expected.missing);
       const result = decide(snapshot, candidate, trace);
       assert.equal(result.decision, "allow");
-      assert.match(result.approvedSpanishText, /¿/);
+      assert.match(result.approvedSpanishText, scenario.variant === "name" ? /reserve.*Alex Example/ : /¿/);
       assert.doesNotMatch(result.approvedSpanishText, /^Acepto/);
       assert.equal(snapshot.outcome.status, "pending");
       break;

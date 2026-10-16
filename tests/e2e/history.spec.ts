@@ -39,12 +39,12 @@ function examples(): CallSnapshot[] {
 }
 async function seed(page: Page, calls: CallSnapshot[]) {
   await page.clock.install({ time: new Date('2026-10-15T12:00:00Z') });
-  await page.addInitScript(calls => localStorage.setItem('zeus-llama.simulator.v1', JSON.stringify({
+  await page.addInitScript(calls => { if (localStorage.getItem('zeus-llama.simulator.v1')) return; localStorage.setItem('zeus-llama.simulator.v1', JSON.stringify({
     plans: calls.map(({ plan }) => ({ id: plan.id, version: plan.version, createdAt: plan.createdAt, request: plan.request })),
     settings: { defaultCallLimits: { maxDurationSeconds: 300, maxEstimatedCost: { amountMinor: 200, currency: 'EUR' } }, transcriptRetentionDays: 30 },
     sessions: calls.map(call => ({ call, scenario: 'within_plan', step: 8, nextAt: 0, changed: false, startKey: call.id,
       startBody: JSON.stringify({ planId: call.plan.id, planVersion: call.plan.version, mode: 'simulator' }), decisions: {}, events: [] })),
-  })), calls);
+  })); }, calls);
   await page.goto('/'); await button(page, 'Summary').click();
 }
 
@@ -118,4 +118,89 @@ test('Repeat from an uncertain card preserves the warning and creates no new att
   await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Vet Hermes');
   await expect(button(page, 'Call')).toHaveCount(0);
   expect(await page.evaluate(() => JSON.parse(localStorage.getItem('zeus-llama.simulator.v1')!).sessions.length)).toBe(6);
+});
+
+test('Agreements lists appointments and answered findings and opens their calendar dates and source calls', async ({ page }) => {
+  const calls = examples();
+  const partial = calls.at(-1)!;
+  if (partial.outcome.status !== 'completed') throw new Error();
+  partial.outcome.findings.push({ question: 'Opening hours?', answerEn: 'The desk opens at 9 am.', answered: true });
+  await seed(page, calls);
+  await button(page, 'Agreements').click();
+  await expect(button(page, 'Agreements')).toHaveAttribute('aria-current', 'page');
+  const view = page.getByRole('region', { name: 'Agreements', exact: true });
+  await expect(view.getByRole('article')).toHaveCount(3);
+  await expect(view.getByRole('article', { name: 'Barber Apollo', exact: true })).toContainText('20 Oct 2026');
+  await expect(view.getByRole('article', { name: 'Clinic Sol', exact: true })).toContainText('Recorded on 15 October 2026');
+  const followUp = view.getByRole('article', { name: 'Pharmacy Iris', exact: true });
+  await expect(followUp).toContainText('The desk opens at 9 am.');
+  await expect(followUp).toContainText('Follow-up needed');
+  await expect(followUp).not.toContainText('The clinic could not confirm.');
+  await expect(view).not.toContainText('Vet Hermes');
+  await expect(view).not.toContainText('Garage Atlas');
+  await expect(view.getByRole('article', { name: 'Barber Apollo', exact: true })).toContainText('Simulated appointment');
+  await view.getByLabel('Search agreements', { exact: true }).fill('CLINIC');
+  await expect(view.getByRole('article')).toHaveCount(1);
+  await view.getByLabel('Search agreements', { exact: true }).fill('');
+  await view.getByRole('combobox', { name: 'Agreement type', exact: true }).selectOption('appointment');
+  await expect(view.getByRole('article')).toHaveCount(1);
+  await view.getByRole('combobox', { name: 'Agreement type', exact: true }).selectOption('');
+  await button(page, 'Show in calendar for Barber Apollo').click();
+  await expect(view.getByRole('button', { name: '20 October 2026, 1 agreement', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(view.getByRole('article')).toHaveCount(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: test.info().outputPath('agreements-calendar.png'), fullPage: true });
+  await button(page, '15 October 2026, 2 agreements').click();
+  await expect(view.getByRole('article')).toHaveCount(2);
+  await button(page, 'Next month').click(); await expect(view.getByText('No agreements this month.', { exact: true })).toBeVisible();
+  await button(page, 'Previous month').click(); await button(page, 'Today').click();
+  await expect(view.getByRole('article')).toHaveCount(2);
+  await button(page, 'List').click(); await expect(view.getByRole('article')).toHaveCount(3);
+  await page.screenshot({ path: test.info().outputPath('agreements-list.png'), fullPage: true });
+  await button(page, 'View call details for Barber Apollo').click();
+  await expect(button(page, 'Summary')).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('region', { name: 'Call details', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem('zeus-llama.simulator.v1')!).sessions.length)).toBe(6);
+});
+
+test('empty Agreements still offers a usable calendar and survives navigation', async ({ page }) => {
+  await page.goto('/'); await button(page, 'Agreements').click();
+  const view = page.getByRole('region', { name: 'Agreements', exact: true });
+  await expect(view.getByText('No agreements yet.', { exact: false })).toBeVisible();
+  await button(page, 'Calendar').click(); await button(page, 'Today').click();
+  await expect(view.getByText('No agreements on this date.', { exact: true })).toBeVisible();
+  await expect(view.getByRole('button', { name: 'Today', exact: true })).toBeEnabled();
+  await button(page, 'Home').click(); await expect(page.getByLabel('Home goal', { exact: true })).toBeVisible();
+});
+
+test('Agreements deletion confirms intent, updates calendar counts and persists while preserving Summary', async ({ page }) => {
+  const calls = examples();
+  await page.addInitScript(id => localStorage.setItem('zeus-llama.active-attempt.v1', id), calls[0]!.id);
+  await seed(page, calls);
+  await button(page, 'Agreements').click();
+  const view = page.getByRole('region', { name: 'Agreements', exact: true });
+  await button(page, 'Delete entry for Barber Apollo').click();
+  const dialog = page.getByRole('dialog', { name: 'Delete agreement?', exact: true });
+  await expect(dialog).toContainText('This does not cancel an appointment');
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(view.getByRole('article')).toHaveCount(2);
+  await button(page, 'Show in calendar for Barber Apollo').click();
+  await button(page, 'Delete entry for Barber Apollo').click();
+  await page.screenshot({ path: test.info().outputPath('agreement-delete-confirmation.png'), fullPage: true });
+  await dialog.getByRole('button', { name: 'Delete entry', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(button(page, '20 October 2026, 0 agreements')).toBeVisible();
+  await expect(view.getByText('No agreements on this date.', { exact: true })).toBeVisible();
+  await page.reload(); await button(page, 'Agreements').click();
+  await expect(view.getByRole('article')).toHaveCount(1);
+  await expect(view.getByRole('article', { name: 'Clinic Sol', exact: true })).toBeVisible();
+  await button(page, 'Delete entry for Clinic Sol').click();
+  await dialog.getByRole('button', { name: 'Delete entry', exact: true }).click();
+  await expect(view.getByText('No agreements yet.', { exact: false })).toBeVisible();
+  await button(page, 'Refresh agreements').click();
+  await expect(view.getByRole('article')).toHaveCount(0);
+  await button(page, 'Summary').click();
+  await expect(page.locator('.history-card')).toHaveCount(6);
+  await page.getByRole('button', { name: 'View details for Barber Apollo', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Call details', exact: true })).toBeVisible();
 });

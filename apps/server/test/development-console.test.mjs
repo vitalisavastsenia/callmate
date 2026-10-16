@@ -1276,7 +1276,8 @@ for (const [language, hello, price, repeat, waiting, readback, unavailable, affi
   assert.ok(call.messages[0].translationEn.includes('on behalf of ' + f.plan.request.bookingName));
   f.prompt(hello); await until(() => f.peer.messages.length === 2);
   assert.match(f.peer.messages[1].token, price);
-  assert.match((await f.snapshot()).messages.at(-1).translationEn, /total price.*deposit/);
+  assert.match((await f.snapshot()).messages.at(-1).translationEn, /total price/);
+  assert.doesNotMatch((await f.snapshot()).messages.at(-1).translationEn, /deposit|prepayment|cancellation|extras/);
   f.prompt(hello); await until(() => f.peer.messages.length === 3);
   assert.match(f.peer.messages[2].token, repeat);
   f.prompt(hello); await until(async () => (await f.snapshot()).pendingApproval !== null);
@@ -1297,6 +1298,8 @@ for (const [language, hello, price, repeat, waiting, readback, unavailable, affi
   assert.ok(call.messages.filter(m => /\.(acceptance|readback)$/.test(m.phrase?.id ?? '')).every(m => m.playback === 'played'));
   const messages = call.messages.filter(m => m.speaker === 'assistant');
   assert.ok(messages.every(m => m.language === language && m.phrase.language === language && m.phrase.version === (m.phrase.id.endsWith('.greeting') ? 3 : m.phrase.id.endsWith('.availability') ? 3 : 1) && m.translationEn));
+  assert.ok(messages.every(m => !/Europe\/Madrid|UTC[+-]/.test(m.originalText + m.translationEn)));
+  assert.equal(call.activeOffer.appointment.timeZone, f.plan.request.availability[0].start.timeZone);
   assert.ok(f.peer.messages.every(m => m.lang === language));
   assert.ok(inputs.every(i => i.plan.request.language === language && i.messages.find(m => m.id === i.triggerMessageId).language === language));
   await f.app.restart();
@@ -1347,6 +1350,8 @@ for (const [index, profile] of domainProfiles.entries()) test(`domain mock: ${pr
   assert.equal(call.messages.at(-1).translationEn, profile.requirements[2]);
   f.prompt(profile.service[index % 4]); await until(() => f.peer.messages.length === 3);
   assert.equal((await f.snapshot()).messages.at(-1).phrase.id, `${profile.id}.availability`);
+  const availabilityReply = (await f.snapshot()).messages.at(-1);
+  assert.doesNotMatch(availabilityReply.originalText + availabilityReply.translationEn, /Europe\/Madrid|UTC[+-]/);
   f.prompt('Details still unknown'); await until(() => f.peer.messages.length === 4);
   call = await f.snapshot(); assert.equal(call.messages.at(-1).phrase.id, `${profile.id}.clarification`);
   assert.match(call.messages.at(-1).translationEn, /confirm.*details/); assert.equal(call.bookingState, 'offer_received');
@@ -1375,6 +1380,55 @@ async function autoApprovalCall(t, extra = {}) {
   } }, { language: 'ru-RU', playbackReceipts: true, ...extra,
     request: { pricePolicy: { maximum: { amountMinor: 5000, currency: 'EUR' }, allowUnknownPrice: false }, ...extra.request } });
 }
+
+for (const [language, assent, confirmation] of [
+  ['ru-RU', 'Да всё верно', 'Да подтверждаю'],
+  ['es-ES', 'Sí, todo correcto', 'Sí, confirmo'],
+  ['en-US', 'Yes, that is correct', 'Yes, I confirm'],
+  ['pl-PL', 'Tak, wszystko się zgadza', 'Tak, potwierdzam'],
+]) test(`haircut booking details/${language}: name and approved phone, no conditions questionnaire, separate confirmation`, async t => {
+  const { offerFixture } = await import('@callmate/contracts/fixtures');
+  const ownPhone = '+12025550199';
+  let supplied = false, clarifiedTime = false;
+  const f = await dialogueCall(t, { async generate(input) {
+    let candidate;
+    if (!supplied) { supplied = true; candidate = { action: 'clarify', missing: ['name', 'price', 'conditions'] }; }
+    else if (!clarifiedTime) { clarifiedTime = true; candidate = { action: 'clarify', missing: ['time'] }; }
+    else if (input.bookingState === 'reading_back') candidate = { action: 'accept_offer', offerId: input.offer.id, offerVersion: input.offer.version };
+    else if (input.bookingState === 'awaiting_business_confirmation') candidate = { action: 'record_business_confirmation', offerId: input.offer.id, offerVersion: input.offer.version, evidenceMessageIds: [input.triggerMessageId] };
+    else candidate = { action: 'evaluate_offer', offer: { ...structuredClone(offerFixture),
+      appointment: input.plan.request.availability[0].start, evidenceMessageIds: [input.triggerMessageId],
+      conditions: { deposit: 'unknown', cancellationFee: 'unknown', paidAddOn: 'unknown' } } };
+    return dialogueProposal(input, candidate);
+  } }, { language, playbackReceipts: true, request: { shareableContact: { phone: ownPhone, email: null } } });
+  f.prompt('What name and phone number should I use for the haircut?');
+  await until(() => f.peer.messages.length === 2);
+  let call = await f.snapshot();
+  const details = call.messages.at(-1);
+  assert.equal(details.phrase.id, 'haircut.booking_details');
+  assert.ok(details.originalText.includes(f.plan.request.bookingName));
+  assert.ok(details.originalText.includes(ownPhone));
+  assert.doesNotMatch(details.translationEn, /\?|deposit|cancellation|extras/);
+  assert.equal(call.outcome.status, 'pending');
+  assert.equal(call.activeOffer, null);
+  f.prompt('Which exact appointment time do you mean?');
+  await until(() => f.peer.messages.length === 3);
+  const timeReply = (await f.snapshot()).messages.at(-1);
+  assert.equal(timeReply.translationEn, 'Could you confirm the exact time of the appointment?');
+  assert.doesNotMatch(timeReply.originalText + timeReply.translationEn, /zona horaria|часовой пояс|time zone|strefę czasową|UTC|Europe\//);
+  f.prompt('A haircut for Alex Example at the agreed time costs 25 euros.');
+  await until(async () => (await f.snapshot()).messages.some(m => m.phrase?.id.endsWith('.readback') && m.playback === 'played'));
+  f.prompt(assent);
+  await until(async () => (await f.snapshot()).bookingState === 'awaiting_business_confirmation');
+  f.prompt(confirmation);
+  await until(() => f.peer.messages.some(m => m.type === 'end'));
+  call = await f.snapshot();
+  assert.equal(call.outcome.status, 'confirmed');
+  assert.deepEqual(call.outcome.offer.conditions, { deposit: 'unknown', cancellationFee: 'unknown', paidAddOn: 'unknown' });
+  assert.ok(call.messages.filter(m => m.speaker === 'assistant').every(m => !/deposit|prepayment|cancellation fee|paid extras/.test(m.translationEn)));
+  await f.app.restart();
+  assert.equal((await f.snapshot()).outcome.status, 'confirmed');
+});
 
 for (const [language, assent, confirmation] of [
   ['ru-RU', 'Да всё так спасибо', 'Да, записал вас'],
@@ -1417,6 +1471,29 @@ for (const [language, assent, confirmation] of [
   const db = new Database(join(f.app.dataDir, 'callmate.sqlite'), { readonly: true });
   try { assert.equal(JSON.parse(db.prepare('SELECT internal FROM call_attempts WHERE id=?').get(f.id).internal).dialoguePlayback, undefined); }
   finally { db.close(); }
+});
+
+test('dialogue agreement deletion uses persistent snapshots without contacting the provider', async t => {
+  const f = await autoApprovalCall(t);
+  const path = `/api/v1/calls/${f.id}/agreement`;
+  assert.equal((await f.app.api(path, 'DELETE')).status, 409);
+  f.prompt('Synthetic complete offer');
+  await until(async () => (await f.snapshot()).messages.some(m => m.phrase?.id.endsWith('.readback') && m.playback === 'played'));
+  f.prompt('Да всё так спасибо');
+  await until(async () => (await f.snapshot()).bookingState === 'awaiting_business_confirmation');
+  f.prompt('Да подтверждаю');
+  await until(() => f.peer.messages.some(m => m.type === 'end'));
+  await f.app.callback([...f.app.calls.keys()][0], 'completed', 1);
+  const before = await f.snapshot(); const hungUp = f.app.hungUp; const creates = f.app.creates;
+  const deleted = await f.app.api(path, 'DELETE');
+  assert.equal(deleted.status, 200); assert.ok(deleted.body.call.agreementDeletedAt);
+  assert.deepEqual(deleted.body.call.outcome, before.outcome);
+  assert.deepEqual(deleted.body.call.messages, before.messages);
+  assert.equal(f.app.hungUp, hungUp); assert.equal(f.app.creates, creates);
+  await f.app.restart();
+  assert.equal((await f.snapshot()).agreementDeletedAt, deleted.body.call.agreementDeletedAt);
+  assert.deepEqual((await f.app.api(path, 'DELETE')).body.call, deleted.body.call);
+  assert.equal((await f.app.api('/api/v1/history')).body.items[0].agreementDeletedAt, deleted.body.call.agreementDeletedAt);
 });
 
 for (const [name, extra] of [

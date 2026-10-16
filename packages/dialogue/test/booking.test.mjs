@@ -166,12 +166,16 @@ test("permit expiry is checked at playback start, not retroactively at confirmat
   assert.equal(confirmationCheck(snapshot, receipt).valid, false);
 });
 
-test("unknown or forbidden conditions cannot produce confirmation", () => {
+test("haircut confirmation rejects explicit payment conditions but retains unstated conditions", () => {
   for (const field of ["deposit", "cancellationFee", "paidAddOn"]) {
     for (const condition of ["unknown", "required"]) {
       const snapshot = structuredClone(waiting());
       snapshot.activeOffer.conditions[field] = condition;
-      assert.equal(confirmationCheck(snapshot, receiptFor(snapshot)).reason, "unresolved_conditions");
+      const before = structuredClone(snapshot);
+      const result = confirmationCheck(snapshot, receiptFor(snapshot));
+      if (condition === "required") assert.equal(result.reason, "unresolved_conditions");
+      else assert.equal(result.valid, true);
+      assert.deepEqual(snapshot, before);
     }
   }
 });
