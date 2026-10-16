@@ -102,6 +102,8 @@ test('call popup starts a new attempt from the same reviewed request after Stop'
 test('inline request → exact approval → result → history, calendar, deletion, and Repeat', async ({ page }) => {
   const network: string[] = []; page.on('request', r => {
     const path = new URL(r.url()).pathname;
+    // Server settings and contacts are shared even in browser Simulator mode.
+    if (r.method() === 'GET' && ['/api/v1/settings/call-engine', '/api/v1/settings/llm'].includes(path)) return;
     if (path.startsWith('/api/') && !path.startsWith('/api/v1/contacts') && !path.startsWith('/api/auth/')) network.push(r.url());
   });
   await page.clock.install(); await prepare(page, 'above_price'); await start(page); await advance(page, 5);
@@ -335,11 +337,13 @@ test('Settings owns remembered share defaults and preserves request-only edits',
   await page.getByLabel('Default name', { exact: true }).fill('Sam Example');
   await page.getByLabel('Default callback number', { exact: true }).fill('+34612345678');
   await page.getByLabel('Default email', { exact: true }).fill('sam@example.test');
+  await button(page, 'Save personal details').click();
+  await expect(page.getByText('Settings saved. Personal details apply to new requests and untouched fields.')).toBeVisible();
   await page.getByLabel('Default timezone', { exact: true }).fill('Atlantic/Canary');
   await page.getByLabel('Default maximum call duration (minutes)', { exact: true }).fill('2.5');
   await page.getByLabel('Default maximum call cost (EUR)', { exact: true }).fill('1.50');
   await button(page, 'Save settings').click();
-  await expect(page.getByText('Settings saved.', { exact: false })).toBeVisible();
+  await expect(page.getByText('Settings saved. Limits apply to new requests and untouched fields.')).toBeVisible();
   await button(page, 'Request').click();
   await expect(page.getByLabel('Name', { exact: true })).toHaveValue('');
   await expect(page.getByLabel('Phone number', { exact: true })).toHaveValue('');
@@ -356,7 +360,8 @@ test('Settings owns remembered share defaults and preserves request-only edits',
   await page.getByLabel('Default name', { exact: true }).fill('');
   await page.getByLabel('Default callback number', { exact: true }).fill('');
   await page.getByLabel('Default email', { exact: true }).fill('');
-  await button(page, 'Save settings').click();
+  await button(page, 'Save personal details').click();
+  await expect(page.getByText('Settings saved. Personal details apply to new requests and untouched fields.')).toBeVisible();
   await page.reload(); await button(page, 'Request').click();
   await expect(page.getByLabel('Approved name', { exact: true })).toHaveValue('');
   await expect(page.getByLabel('Approved callback number', { exact: true })).toHaveValue('');
@@ -665,7 +670,7 @@ test('reviewed mock calls require a ready engine and explain where to answer', a
   } }));
   page.on('request', request => { if (new URL(request.url()).pathname === '/api/v1/calls' && request.method() === 'POST') starts++; });
   await button(page, 'Settings').click(); await button(page, 'Backend').click();
-  await expect(page.getByText('Reviewed mock calls are unavailable until a dialogue engine is ready. Check Provider readiness below.')).toBeVisible();
+  await expect(page.getByText('Reviewed mock calls need a ready dialogue engine. Check Provider readiness below.')).toBeVisible();
   await button(page, 'Request').click(); await button(page, 'Review call plan').click();
   await expect(button(page, 'Call')).toBeDisabled();
   await expect(page.getByText(/Mock calls need a ready dialogue engine/)).toBeVisible();

@@ -1,5 +1,6 @@
 import { browserStorage } from './browserStorage';
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { OwnerAccountContext } from './components/AuthGate';
 import { activeKey, pendingKey, readActiveAttempt, savedAttemptTransport } from './attemptStorage';
 import zeusLlamaLogo from './assets/zeus-llama.png';
 import * as api from './api';
@@ -22,6 +23,7 @@ import { callActivityChanges, type CallActivity } from './callActivity';
 type Page = 'home' | 'request' | 'summary' | 'agreements' | 'contacts' | 'settings';
 interface PendingStart { transport: 'browser' | 'backend'; plan: ReviewPlan; mode: 'simulator' | 'live'; key: string; scenario: Scenario }
 export default function App() {
+  const accountControls = useContext(OwnerAccountContext);
   const storageAvailable = useSyncExternalStore(browserStorage.subscribe, browserStorage.available);
   const [defaults, setDefaults] = useState(readRequestDefaults);
   const [simulator, setSimulator] = useState(api.isMockMode);
@@ -265,10 +267,11 @@ export default function App() {
   }
   const approvalLines = Object.values(approvalRecords).filter(record => record.callId === call?.id).map(record => record.text);
   const attentionPanel = !callWindowOpen && !!call?.pendingApproval && !callIsTerminal(call) && (page === 'summary' || page === 'agreements' || page === 'settings' || page === 'contacts' || !inlineApprovalVisible);
-  const liveCall = call && <LiveCall call={call} connection={connection} now={now} busy={busy} stopping={stopping} onStop={() => {
-    if (stopping) return; setStopping(true); setError('');
+  function stopCall() {
+    if (!call || stopping) return; setStopping(true); setError('');
     void api.stopCall(call.id).then(acceptSnapshot).catch(e => setError((e instanceof Error ? e.message : 'Stop response unavailable.') + ' Hangup is not confirmed; keep checking this attempt.')).finally(() => setStopping(false));
-  }} onDecision={decideApproval} onApprovalVisibility={setInlineApprovalVisible} approvalLines={approvalLines} activity={callActivity} />;
+  }
+  const liveCall = call && <LiveCall call={call} connection={connection} now={now} busy={busy} stopping={stopping} showStop={!callWindowOpen} onStop={stopCall} onDecision={decideApproval} onApprovalVisibility={setInlineApprovalVisible} approvalLines={approvalLines} activity={callActivity} />;
   const callFlow = pending && plan ? <section id="home-call-stage" tabIndex={-1} className="panel workflow-stage">
     <h2>Check the original call request</h2><p className="notice">The Start response may have been lost. Retrying uses the same command key and cannot create a second attempt.</p>
     <PlanDetails plan={plan} /><button className="primary mt-5" disabled={busy} onClick={() => void perform(() => executeStart(pending))}>{busy ? 'Checking…' : 'Check original Start request'}</button>
@@ -278,17 +281,17 @@ export default function App() {
       <div className="flex flex-wrap gap-3"><button className="primary" onClick={() => openSummary(call)}>View in Summary</button><button className="secondary" disabled={requestDisabled} onClick={() => newRequest()}>New request</button></div>
     </> : liveCall}
   </div> : undefined;
-  return <div className={'mx-auto max-w-7xl px-4 py-6 sm:px-8' + (attentionPanel ? ' has-attention-panel' : '')}>
+  return <div className={'app-shell mx-auto max-w-7xl px-4 py-6 sm:px-8' + (attentionPanel ? ' has-attention-panel' : '')}>
     <header className="app-header mb-6 border-b border-stone-700 pb-6">
       <div className="flex items-center gap-3"><img src={zeusLlamaLogo} alt="White llama wearing a golden headset and laurel crown" width={203} height={342} className="h-[80px] w-auto shrink-0 object-contain sm:h-[104px]" /><div><p className="eyebrow">A little divine intervention</p><h1 className="font-serif text-3xl sm:text-5xl">Zeus <span className="text-amber-300">Llama</span></h1></div></div>
-      <nav aria-label="Main navigation" className="header-nav">
+      <div className="header-controls">{accountControls}<nav aria-label="Main navigation" className="header-nav">
       <button className="secondary" aria-current={page === 'home' ? 'page' : undefined} onClick={() => setPage('home')}>Home</button>
       <button className="secondary" aria-current={page === 'request' ? 'page' : undefined} onClick={() => setPage('request')}>Request</button>
       <button className="secondary" aria-current={page === 'summary' ? 'page' : undefined} onClick={() => openSummary()}>Summary</button>
       <button className="secondary" aria-current={page === 'agreements' ? 'page' : undefined} onClick={() => { setPage('agreements'); void perform(refreshHistory); }}>Agreements</button>
       <button className="secondary" aria-current={page === 'contacts' ? 'page' : undefined} onClick={() => setPage('contacts')}>Contacts</button>
       <button className="secondary" aria-current={page === 'settings' ? 'page' : undefined} onClick={() => setPage('settings')}>Settings</button>
-      </nav>
+      </nav></div>
     </header>
     {call && <button id="view-call" type="button" className="secondary mb-5" onClick={() => setCallWindowOpen(true)}>View call{active ? ' · In progress' : ' · Finished'}</button>}
     {error && <div role="alert" className="notice error"><p>{error}</p>{backendUnreachable && <>
@@ -323,11 +326,17 @@ export default function App() {
       {page === 'contacts' && <ContactsView />}
       {page === 'settings' && <SettingsView key={String(simulator)} readiness={readiness} settings={settings} defaults={defaults} busy={busy || loading} simulator={simulator} modeLocked={modeLocked} scenario={scenario} onScenarioChange={setScenario}
         onModeChange={value => void perform(() => switchMode(value))} onRefresh={() => void perform(refreshReadiness)}
-        onSave={(value, nextDefaults) => void perform(async () => { const saved = await api.updateSettings(value); setSettings(saved); saveRequestDefaults(nextDefaults); setDefaults(nextDefaults); setNotice('Settings saved. Defaults apply to new requests and untouched fields in your current draft.'); })} />}
+        onSave={async (value, nextDefaults) => {
+          if (inFlight.current) throw new Error('Another command is pending. Please try again.');
+          inFlight.current = true; setBusy(true); setNotice('');
+          try { const saved = await api.updateSettings(value); setSettings(saved); saveRequestDefaults(nextDefaults); setDefaults(nextDefaults); }
+          finally { inFlight.current = false; setBusy(false); }
+        }} />}
     </main>
     {deleteTarget && <DeleteConversationDialog call={deleteTarget} onDelete={() => deleteConversation(deleteTarget)} onClose={() => setDeleteTarget(null)} />}
-    {callWindowOpen && call && <Modal className="call-dialog" title={'Call with ' + call.plan.request.business.name} onClose={closeCallWindow}>
-      <p className="mb-4 text-base text-stone-300">{call.plan.request.business.phone} · Closing this window does not stop the call.</p>
+    {callWindowOpen && call && <Modal className="call-dialog" title={'Call with ' + call.plan.request.business.name} onClose={closeCallWindow}
+      headerActions={!callIsTerminal(call) ? <button type="button" className="stop" disabled={stopping || call.callState === 'ending'} onClick={stopCall}>{stopping ? 'Requesting stop…' : call.callState === 'ending' ? 'Hangup requested…' : 'Stop call'}</button> : undefined}>
+      <p className="call-context">{call.plan.request.business.phone} · Closing this window does not stop the call.</p>
       {error && <p role="alert" className="notice error">{error}</p>}
       {callIsTerminal(call) && <ShortResult call={call} />}
       {liveCall}

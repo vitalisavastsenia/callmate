@@ -1,6 +1,6 @@
 # CallMate backend to UI message contract
 
-Status: proposed rules, formats, and examples for implementation review. Updated: 2026-10-15. This document adds no application implementation.
+Status: current HTTP/SSE interaction reference, updated 2026-10-16. Examples illustrate the shared executable schemas and local runtime; future real-provider behavior does not imply implemented Twilio calling. See [architecture](architecture.md) for the runtime boundary.
 
 Engineer 2 produces these messages; Engineer 1 consumes them. Engineer 3 supplies conversation and booking information to the backend through the internal dialogue ports. The browser receives application messages, never raw Twilio/OpenAI events.
 
@@ -53,8 +53,13 @@ The [complete API reference](interfaces.md#4-private-http-api) defines all field
 | Stop | `POST /api/v1/calls/:attemptId/stop` with `{}` | `202 { call: CallSnapshot }` | Show the returned state, usually `ending`; wait for provider termination or reconciliation. Stop is repeatable. |
 | View history | `GET /api/v1/history` | `200 { items: HistoryEntry[], nextCursor }` | Render saved outcomes; an empty list is a normal state. |
 | Delete conversation | `DELETE /api/v1/calls/:attemptId/conversation` | `200 { attemptId, deleted: true }` | Remove transcript and translation text locally; retain structured booking metadata. |
+| Delete Agreement | `DELETE /api/v1/calls/:attemptId/agreement` | `200 { call: CallSnapshot }` with `agreementDeletedAt` | Remove from Agreements/list/calendar, retaining the source call. This does not cancel an appointment. |
+| Load/save LLM agent | `GET/PUT /api/v1/settings/llm` | `200 LlmSettingsSchema` | Render provider/model/effort and credential status only. PUT may include write-only keys; clear secret inputs after success, never persist them in browser storage. |
+| Load/save call engine | `GET/PUT /api/v1/settings/call-engine` | `200 { engine, editable }` | Show Mock service or Twilio. Label Twilio not implemented; new Backend Starts return `503 PROVIDER_NOT_READY`, without fallback. |
 
 For a retry of the same Start or approval command, reuse its original idempotency key and body. Never generate a new Start key merely because the response was lost. A new key represents a new command. A transport timeout is a UI connection problem, not proof that the backend rejected the command.
+
+Persist the pending Start key/body before sending. An ambiguous HTTP 500 also requires resolving that same command/attempt before a new Start. Call-engine and LLM settings return `editable=false` while a call holds the reservation; concurrent updates return `409 CALL_ALREADY_ACTIVE`. Browser Simulator is independent of the backend engine and keeps local call history, while contacts and these settings remain server-backed in both browser modes. Credential usability in Settings/readiness is a local decryption/configuration check, not a paid provider probe.
 
 ## 3. SSE envelope and payload formats
 
@@ -318,7 +323,7 @@ Automatic retention emits the same `conversation.deleted` event as manual deleti
 For explicit test rates, `usage.updated`, snapshots and history may include `usage.testUsage`; see the [payload example and rate rules](docker-development.md#14-test-rate-usage-and-budgets). Display **Test-rate estimate** and its USD amount separately from **Provider charges: unavailable**. Keep that label after the call ends; completion never makes synthetic amounts settled. Without test metadata, keep the normal usage-status rules. `409 BUDGET_EXCEEDED` during Start means the configured test budget permits no elapsed time; show the error without a call card. During an active call, `call.error/BUDGET_EXCEEDED` means local budget termination is underway: disable further output/approval, retain the call card and usage, and keep Start blocked until terminal confirmation. A later `usage.updated` can exceed the budget while hangup is unconfirmed; display the reported value without clamping it. Budget termination cannot change a confirmed booking. The simple console returns usage through its development projection; the full cost display belongs to the booking UI.
 
 
-Readiness responses now include `capabilities: [{ name, enabled, ready }]` and `configuration`/`mock` checks. Display a disabled capability separately from an enabled capability whose prerequisites failed. A failed dependency still returns HTTP 200: inspect the report instead of treating HTTP success as call readiness. When the emulator is down, overall `ready=false` and `manual_mock_calls.ready=false`, but `scripted_calls.ready` and local history can remain true. Live calling, real dialogue integration and provider billing remain disabled; `voiceEngine=null` does not claim a real voice engine. Refreshing readiness never starts or retries a call. See the [full response example](docker-development.md#15-readiness-diagnostics); reverse callback/WS connectivity and provider credentials are not proven by the health probe.
+Readiness responses now include `capabilities: [{ name, enabled, ready }]` and `configuration`/`mock` checks. Display a disabled capability separately from an enabled capability whose prerequisites failed. A failed dependency still returns HTTP 200: inspect the report instead of treating HTTP success as call readiness. When the selected mock transport is down, overall `ready=false` and `manual_mock_calls.ready=false`; local history remains available. A separately configured fake/scripted transport needs no mock probe. Live calling and provider billing remain disabled, while configured Codex/OpenAI/Claude dialogue is available for reviewed mock calls. `voiceEngine` describes the configured path, not verified real audio. API dialogue readiness checks local key usability, not provider connectivity. Refreshing readiness never starts or retries a call. See the [full response example](docker-development.md#15-readiness-diagnostics); reverse callback/WS connectivity and provider credentials are not proven by the health probe.
 
 ## Generic request extension
 

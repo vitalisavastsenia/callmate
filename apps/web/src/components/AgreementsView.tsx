@@ -74,7 +74,7 @@ export default function AgreementsView({ history, currentCall, now, loading, bus
         {!!upcoming.length && <section aria-label="Upcoming appointments"><h3 className="section-title">Upcoming appointments</h3>{cards(upcoming)}</section>}
         {!!information.length && <section aria-label="Other agreements"><h3 className="section-title">Other agreements</h3>{cards(information)}</section>}
         {!!past.length && <section aria-label="Past appointments"><h3 className="section-title">Past appointments</h3>{cards(past)}</section>}
-      </div> : <>
+      </div> : <div className="agreements-calendar-layout"><div className="agreements-calendar-pane">
         <div className="agreements-month-nav"><button type="button" className="secondary" aria-label="Previous month" onClick={() => { setMonth(shiftMonth(month, -1)); setDay(null); }}>‹</button><h3 className="section-title" aria-live="polite">{monthLabel(month)}</h3><button type="button" className="secondary" aria-label="Next month" onClick={() => { setMonth(shiftMonth(month, 1)); setDay(null); }}>›</button><button type="button" className="text-add" onClick={() => showDate(today)}>Today</button></div>
         <div className="agreements-calendar" role="group" aria-label={`${monthLabel(month)} calendar`}>
           {weekdays.map(name => <abbr key={name} title={name} className="agreements-weekday">{name.slice(0, 3)}</abbr>)}
@@ -83,11 +83,11 @@ export default function AgreementsView({ history, currentCall, now, loading, bus
             const count = monthEntries.filter(entry => entry.date === date).length;
             return <button key={date} type="button" className="agreements-calendar-day" aria-pressed={day === date} aria-current={date === today ? 'date' : undefined} aria-label={`${dayLabel(date)}, ${count} ${count === 1 ? 'agreement' : 'agreements'}`} onClick={() => setDay(day === date ? null : date)}><span>{Number(date.slice(-2))}</span>{count > 0 && <span className="agreements-day-count" aria-hidden="true">{count}</span>}</button>;
           })}
-        </div>
-        <section className="mt-6" aria-label="Calendar agreements"><div className="mb-4 flex flex-wrap items-center justify-between gap-2"><h3 className="section-title">{day ? dayLabel(day) : monthLabel(month)}</h3>{day && <button type="button" className="text-add" onClick={() => setDay(null)}>Show whole month</button>}</div>
+        </div></div>
+        <section className="calendar-agenda" aria-label="Calendar agreements"><div className="mb-4 flex flex-wrap items-center justify-between gap-2"><h3 className="section-title">{day ? dayLabel(day) : monthLabel(month)}</h3>{day && <button type="button" className="text-add" onClick={() => setDay(null)}>Show whole month</button>}</div>
           {dated.length ? cards([...dated].sort((a, b) => a.date.localeCompare(b.date) || Date.parse(a.instant) - Date.parse(b.instant))) : <p>No agreements {day ? 'on this date' : 'this month'}.</p>}
         </section>
-      </>}
+      </div>}
     </>}
     {candidate && <Modal title="Delete agreement?" onClose={() => { if (!deletionPending.current) setCandidate(null); }}>
       <p className="font-semibold">{candidate.call.businessName} · {dayLabel(candidate.date)}</p>

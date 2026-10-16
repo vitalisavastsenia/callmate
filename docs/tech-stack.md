@@ -1,103 +1,88 @@
-# CallMate technology stack and implementation plan
+# Zeus Llama technology stack
 
-Status: shared contracts and the Docker-based TypeScript/Fastify/SQLite backend with a scripted simulator are implemented. UI and live provider/dialogue integrations are not yet built. Updated and provider documentation checked: 2026-10-15. See [Docker development](docker-development.md) for commands, routes, and simulator scenarios.
+Status: installed stack and integration boundaries, updated 2026-10-16. See [architecture](architecture.md) for flows and [Docker development](docker-development.md) for configuration. Twilio remains planned; the running stack uses simulations.
 
-## 1. Recommendation
+## 1. Implemented stack
 
-Use **React + TypeScript for a local browser UI, Node.js + Fastify for the local backend, SQLite for local storage, Twilio Programmable Voice + ConversationRelay for calls and speech, and a text LLM API for conversation planning**. A secure tunnel makes the callback listener reachable while the computer is running.
-
-This keeps application hosting and storage in local Docker, with persistent SQLite storage in a Docker volume. Required external services for real calling are Twilio, an LLM provider, and a tunnel provider. No AWS/Azure account, separate speech-provider account, managed database, or hosted container service is required. Twilio still uses its selected downstream speech providers; it is not an offline system.
-
-## 2. Stack
-
-| Layer | Choice | Reason / boundary |
+| Layer | Implementation | Boundary |
 | --- | --- | --- |
-| UI | React, TypeScript, Vite | A small local application does not need server rendering. Build static assets and serve them from the local API process. |
-| Styling and forms | Tailwind CSS, accessible components, React Hook Form + Zod | Clear form validation, review cards, live status, and approval controls. Keep the initial UI small. |
-| Backend | Current supported Node.js LTS, TypeScript, Fastify, `@fastify/websocket` | HTTP callbacks, persistent WebSocket sessions, local API, and call controller in one process. |
-| Browser updates | Server-sent events, with normal HTTP for user actions | Stream statuses/text without putting credentials or Twilio sessions in the browser. Reconnect using a local event cursor. |
-| Storage | SQLite via `better-sqlite3`; versioned SQL migrations | One user and one active call need no database server. Store runtime data outside the repository. |
-| Telephony | Official `twilio` Node SDK and Programmable Voice Calls API | Outbound dialing, permitted caller ID, status events, hangup, and maximum call duration. |
-| Speech | Twilio ConversationRelay | Managed recognition, speech synthesis, and interruption handling, connected to the local app by WSS. |
-| Conversation | OpenAI Responses API with strict structured output; Zod validation | Extract offers and propose actions. Application code owns permissions and booking state. Provider can later be replaced through a small adapter. |
-| Initial text model | Configurable `gpt-6-luna` candidate | A starting point for the integration spike, not a claim of proven Spanish telephone quality. Pin a supported model/version after evaluation and track usage. |
-| Public callbacks | ngrok HTTPS/WSS tunnel to the dedicated callback port | No application deployment required. Confirm the chosen plan supports the needed connection duration and URL behavior. |
-| Tests | Node.js test runner and Fastify injection for contracts/server; planned browser tests with Playwright and mocked Twilio/LLM events | Validate policy and lifecycle deterministically before spending money on calls. |
-| Local diagnostics | Structured, redacted logs and a small status panel | Debug failures without uploading transcripts to an analytics service. |
+| Workspaces | npm: contracts, dialogue, server and web | Root scripts include all four packages; standalone mock has its own manifest/lockfile. |
+| Runtime | Node.js ≥24, TypeScript; Docker base Node 24 Bookworm slim | UI assets and backend in one application container. |
+| UI | React 19, Vite 7, Tailwind CSS 4 | Compiled static assets; optional Vite dev profile. React-controlled forms and shared schemas; no React Hook Form. |
+| HTTP/files | Fastify 5, `@fastify/static` | Private UI/API/console and separate callback listener in one process. |
+| Relay | `ws` 8 | Development mock upgrades and bounded protocol parsing; no `@fastify/websocket`. |
+| Browser updates | Fetch-based SSE and JSON HTTP | Cookie auth, cursor replay/reset, snapshot recovery; mutations remain HTTP. |
+| Contracts | Zod 4 and inferred TypeScript types | Runtime validation; schema validity does not grant booking authority. |
+| Storage | `better-sqlite3` 13, WAL, migrations 001–008 | Transactional snapshots/events, unique active-attempt index; no separate DB service. |
+| Authentication | Node crypto scrypt, opaque sessions, SQLite throttling | Single local owner; HttpOnly/SameSite cookie; no external identity service. |
+| Dialogue | `@callmate/dialogue` | Policy/reducers, four languages, 15 templates, controlled speech and English translations. |
+| Codex | Optional pinned CLI image, saved ChatGPT login | Bounded subprocess; absent in base image; no API-key fallback. |
+| OpenAI API | Native-fetch Responses adapter | Server credentials, structured proposals, cancellation and timeout. |
+| Claude API | Native-fetch Anthropic Messages adapter | Provider-compatible output schema plus full local validation. |
+| Secrets | Node crypto AES-256-GCM | Encrypted credentials in SQLite; master key in a separate private volume/file. |
+| Mock calling | Official `twilio` SDK against local Calls subset | Synthetic destinations/IDs, signed callbacks and simulated playback; no real dialing. |
+| Protocol checks | `twilio`, `fast-xml-parser`, `ws`, local fixtures | Offline REST/TwiML/WebSocket harness, separate from live integration. |
+| Diagnostics | Redacted Fastify logs and private readiness API | Separate simulated/missing-live capabilities; no credential/transcript logging. |
 
-Installed contracts/server versions are recorded in their manifests and lockfile. Docker builds and checks them without a host Node.js/npm installation. The callback listener is scaffolded, while its provider routes and WebSocket adapter remain future work.
+Exact versions are in manifests, the root [lockfile](../package-lock.json) and the mock lockfile. Model/effort suggestions live in [the shared LLM contract](../packages/contracts/src/llm.ts); they are not benchmarks or live account/model discovery.
 
-For the LLM integration, [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) supports schema-constrained responses; semantic and authorization checks still belong in the app. The [GPT-6 Luna model page](https://developers.openai.com/api/docs/models/gpt-6-luna) is the current model reference. Review [OpenAI data controls](https://developers.openai.com/api/docs/guides/your-data) for the actual account configuration and retention limits before real conversations.
+## 2. Deployment and persistence
 
-## 3. Which Twilio services to use
+Default Compose services are **`zeus-llama`** and **`mock-relay`**. Fastify serves UI/API at localhost:3000 and callbacks at localhost:3001; the operator is localhost:8080. Only the optional `dev` profile adds Vite at localhost:5173.
 
-| Twilio service | Decision | Role |
-| --- | --- | --- |
-| Programmable Voice | Required | Make and control the actual phone call. ConversationRelay alone does not dial the business. |
-| ConversationRelay | Recommended | Turn speech into text and approved reply text into speech, avoiding a custom audio pipeline. |
-| Phone number / caller ID | Required configuration | Use a permitted voice-capable origin number. Availability and verification must be checked for Spain and the account. |
-| Media Streams | Alternative, not the default | Useful for a raw-audio/realtime-model experiment later; adds codec, playback, and interruption work. Its lower stream price is not the complete speech-stack cost. |
-| Studio | Not needed initially | The local state machine already controls this single workflow. |
-| Functions/Assets | Not the persistent dialogue backend | Optional for small TwiML/fallback handlers later; the design still requires a persistent WSS app endpoint. |
-| Voice JavaScript SDK / conferences | Later | Needed if the user should listen or join through the browser. Live text does not require them. |
-| Recording / Conversation Intelligence | Disabled initially | No recording or paid analytics is needed to book a personal appointment. |
-| SMS / WhatsApp | Later | Not required for calling a business or showing the result locally. |
+| Volume | Data |
+| --- | --- |
+| `callmate-data` | SQLite: calls/events/commands, contacts, auth, settings, phrases and encrypted API credentials. |
+| `zeus-llm-secrets` | Master key at `/run/zeus-secrets`; preserve separately from database backups. |
+| `callmate-codex` (Codex override) | CLI ChatGPT login/config at `/codex`, separate from API keys. |
 
-The [ConversationRelay TwiML reference](https://www.twilio.com/docs/voice/twiml/connect/conversationrelay) exposes language, recognition, synthesis, and interruption settings. Start with Spanish explicitly configured; avoid automatic language switching until the basic call succeeds.
+Mock sessions are in memory. Browser Simulator calls/history/preferences use origin-local storage; contacts and server configuration still use SQLite. Agreements/calendar project saved outcomes rather than using a separate appointments service.
 
-Prefer Twilio-managed Deepgram recognition and an ElevenLabs Spanish-capable voice, selected from Twilio's supported inventory and verified with a test call. Neither needs a separate application integration in this design. Do not hardcode a guessed voice ID or assume every model/voice combination supports Spanish. See [Twilio voice configuration](https://www.twilio.com/docs/voice/conversationrelay/voice-configuration).
+Containers use a non-root user, read-only root filesystem, temporary `/tmp`, dropped capabilities and `no-new-privileges`. Default ports bind to loopback. Local mock operation needs no public tunnel or AWS/Azure infrastructure.
 
-ConversationRelay's protocol supports sending keypad digits. Keep IVR navigation optional until the direct human-answering use case works. The [Media Streams overview](https://www.twilio.com/docs/voice/media-streams) describes the alternative's different capabilities and limits.
+## 3. Configuration boundaries
 
-## 4. Twilio setup and personal operation
+Browser call mode, backend call engine and LLM provider are independent. Browser Simulator invokes no paid inference. Backend Mock uses the configured fake/scripted or development mock transport. Backend Twilio is explicitly unavailable and rejects new Starts with `503 PROVIDER_NOT_READY`.
 
-Before implementation testing:
+Settings → LLM agent selects provider, model and supported effort. Saved configuration overrides bootstrap environment values and applies without restarting. Keys are write-only; responses expose status/source only. Active reservations lock LLM/key and call-engine updates. See [LLM settings and secrets](docker-development.md#18-llm-agent-settings-and-secret-storage).
 
-Follow the detailed [Twilio account and configuration runbook](twilio-setup.md) for Console paths, setup order, configuration fields, callback mapping, and completion checks. Account setup can begin while the simulator is built; connecting callbacks requires the backend listener.
+Readiness and saving credentials do not perform paid inference or prove connectivity. Reviewed mock calls require a configured dialogue engine and never fall back to scripted success. Policy and current authority are checked independently of the model.
 
-1. Create/use the user's Twilio account and enable ConversationRelay under the applicable AI/ML terms. The [onboarding guide](https://www.twilio.com/docs/voice/conversationrelay/onboarding) describes its setup.
-2. Use a paid account for the ConversationRelay integration. The current [Voice trial restrictions](https://www.twilio.com/docs/usage/trials/try-out-voice) block ConversationRelay and Media Streams, allow only verified recipients, and restrict calling to the account's country. A basic trial call is an optional preliminary check, not the CallMate connectivity proof.
-3. Select a permitted caller ID and confirm any number-verification or local-document requirements. [Spain voice guidelines](https://www.twilio.com/en-us/guidelines/es/voice) currently specify a Twilio number for domestic calling and list origin restrictions. Do not assume a verified personal mobile number is interchangeable with a compliant Spanish Twilio origin.
-4. Set a callback policy for inbound calls to the Twilio number. The MVP does not answer them as an assistant. Share the user's actual callback number only with prior approval.
-5. Configure the local environment, chosen Spanish voice, and public callback base URL. Keep keys out of the browser and repository.
-6. Start the app and tunnel; verify readiness. Use a consenting test endpoint first, then a supervised real appointment call.
-7. Keep the computer awake throughout the call. Shut down the tunnel when it is not needed.
+## 4. Checks and commands
 
-## 5. Cost model
+| Area | Tooling |
+| --- | --- |
+| Contracts/server/dialogue | Node.js test runner, Fastify injection, local HTTP/WebSocket tests and deterministic fixtures. |
+| Dialogue evaluation | Scripted multilingual/policy tests and a 32-scenario Spanish evaluation; separate from real speech evaluation. |
+| Web unit/client behavior | Vitest and DOM-based tests. |
+| Browser integration | Playwright, including backend-backed workflow, modal/layout and history/deletion behavior. |
+| Build/type checks | TypeScript across workspaces and Vite production build. |
 
-The [Twilio Spain pricing page](https://www.twilio.com/en-us/voice/pricing/es), checked on 2026-10-15, lists ConversationRelay at **$0.07/min**, Spanish local outbound calls at **$0.0178/min**, mobile calls from EEA at **$0.0486/min**, other listed Spanish mobile calls at **$0.18/min**, and local number rental at **$5.50/month**. Actual applicable rates depend on destination and origin; confirm them before dialing.
+From the repository root:
 
-```text
-Monthly cost ≈ number rental
-             + outbound billed minutes × applicable destination/origin rate
-             + ConversationRelay billed minutes × relay rate
-             + LLM usage
-             + any tunnel plan, taxes, and optional features
+```sh
+# Two-service stack.
+docker compose up --build -d --wait
+
+# Optional CLI image/login volume; follow Docker guide login steps.
+docker compose -f compose.yaml -f compose.codex.yaml up --build -d --wait
+
+# Type checks and offline workspace tests.
+docker compose --profile checks run --build --rm checks
+
+# Dialogue evaluation or offline protocol walkthrough.
+docker compose --profile checks run --build --rm checks npm run evaluate --workspace @callmate/dialogue
+docker compose --profile checks run --build --rm checks npm run demo:twilio-mock --workspace @callmate/server
 ```
 
-Illustration: twenty four-minute local-number calls, assuming 80 billed minutes for each service, cost about **$12.52/month before LLM usage, taxes, and any tunnel charges**: $5.50 + 80 × ($0.0178 + $0.07). This is an example, not an account quote or a guaranteed bill. Do not apply the landline rate to mobile/special-service destinations; reconcile provider usage and rounding separately.
+The web manifest also exposes `npm run test:e2e --workspace @callmate/web`. Playwright requires browser dependencies and its configured test server; it is not run automatically by Compose `checks`. See [web verification setup](../apps/web/README.md). Ordinary tests use local/synthetic providers, not paid inference or telephone calls.
 
-For personal use, reducing setup and maintenance is more valuable initially than optimizing a few cents per minute. Implement a maximum duration per call, one-call concurrency, destination restrictions, and a daily estimated spending allowance. Keep the allowance separate from the user's haircut budget. Avoid automatic retries and optional recording/analytics charges.
+## 5. Planned Twilio and accounting
 
-## 6. Alternatives and tradeoffs
+The intended real provider is **Twilio Programmable Voice + ConversationRelay**: Calls creation/control for telephony and authenticated callbacks/WSS for managed speech. A future tunnel would expose only callbacks. Media Streams, browser audio joining, recording and paid analytics are not implemented features.
 
-| Option | Benefit | Cost / reason to defer |
-| --- | --- | --- |
-| ConversationRelay + text LLM | Minimal custom speech infrastructure; inspect text before speaking. | Relay usage charge; selected speech providers process audio; internet required. Recommended first. |
-| Twilio Media Streams + realtime speech model | More direct speech interaction and audio control. | Implement the audio bridge and validate booking authority carefully; measure total cost and latency rather than assuming cheaper. |
-| ConversationRelay + local LLM through Ollama | Can remove text-LLM API usage and keep model inference local. | Requires suitable hardware and separate Spanish quality/latency evaluation. Twilio speech still remains external. |
-| Small personal server later | Calls can work while the laptop sleeps. | Hosting and authentication become additional responsibilities. Not needed to validate the core personal workflow. |
+Remaining work includes live provider wiring, account/origin/destination checks, speech configuration, actual playback evidence, production confirmation verification, callback/tunnel failure recovery and a supervised connectivity pilot. The [Twilio runbook](twilio-setup.md) is preparatory; selecting Twilio does not enable these components.
 
-Do not add Redis, Kubernetes, a hosted Postgres database, an agent framework, or a multi-user account system to the initial implementation. A typed controller and a few provider adapters are sufficient for the described scope.
+Current accounting uses explicit **synthetic USD test rates**, elapsed time and a matching reviewed USD budget, without fetching real bills or converting currencies. Future accounting must distinguish call routing, relay/speech, model tokens, number rental, tunnel charges, taxes and rounding/currency. Verify actual rates and account restrictions before live calling. Appointment price limits remain separate from call-cost limits.
 
-## 7. Implementation milestones
-
-| Stage | Deliverable | Exit condition |
-| --- | --- | --- |
-| 1. Local UI and simulator | Request/review/live/result screens, SQLite, state machine, and simulated Spanish dialogue. | Booking rules, timezone handling, approval expiry, and duplicate Start are verified without dialing. |
-| 2. Twilio connectivity spike | Outbound call to a consenting test number, signed callbacks, WSS ConversationRelay, Spanish greeting, and Stop. | Voice compatibility, latency, duration limit, and safe relay termination measured; secrets remain local. |
-| 3. Controlled conversation | LLM candidate actions, policy checks, Spanish templates, interruption handling, and English text. | Scripted out-of-policy offers never become spoken acceptance; partial/late events cannot bypass checks. |
-| 4. Booking result | Explicit business confirmation, uncertain outcomes, history, `.ics`, retention, and cost display. | Failure, restart, timeout, and ambiguous-confirmation scenarios behave as specified. |
-| 5. Supervised personal pilot | A few real barbershop calls initiated by the user. | Review actual outcomes, recognition mistakes, response delays, and bills before expanding scope. |
-
-Keep ordinary development tests offline. Paid/provider tests and real calls are deliberate separate actions. No fixed delivery dates or implementation estimates are asserted before the connectivity spike.
+The [delivery plan](mvp-delivery-plan.md) retains real-call PoC/pilot gates. Local HTTP/SSE, browser and mock tests establish local behavior, not telephone quality, provider entitlement or billing accuracy.

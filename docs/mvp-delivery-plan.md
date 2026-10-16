@@ -1,6 +1,10 @@
 # CallMate delivery plan for three engineers
 
-Status: proposed task allocation. Updated: 2026-10-15. Based on [requirements](requirements.md), [architecture](architecture.md), and the [technology stack](tech-stack.md).
+Status: original delivery allocation and future real-call gates; implementation checkpoint updated 2026-10-16. Based on [requirements](requirements.md), [architecture](architecture.md), and the [technology stack](tech-stack.md).
+
+**Implemented checkpoint:** all four application workspaces exist and are integrated. UI/backend simulations, HTTP/SSE, SQLite recovery/retention, contacts, Agreements/calendar/deletion, four dialogue languages/15 templates and Codex/OpenAI/Claude settings are present. Default Compose has two services: `zeus-llama` and `mock-relay`. Twilio selection is explicitly unavailable; real telephony, attested playback, production confirmation verification, provider billing and the supervised pilot remain open. Existing local/browser tests do not complete the real-call PoC below.
+
+Current work stays on `feat/app-integration` under [AGENTS.md](../AGENTS.md); the original parallel-branch instructions below are historical planning guidance.
 
 ## 1. Deliver two usable increments
 
@@ -39,7 +43,7 @@ Engineer 2 owns the authoritative call lifecycle, persistence, deadlines, and fi
 
 The local API routes and error shapes are now specified in [Shared interfaces](interfaces.md#4-private-http-api) and exported as `api` from the contracts package. Review changes through the shared contract rather than independently choosing route names during implementation.
 
-Code ownership (`packages/contracts/` and `apps/server/` now exist; other application directories remain proposed):
+Original code ownership (all four application packages now exist; test paths below include planned provider-fixture ownership):
 
 ```text
 apps/web/                  Engineer 1

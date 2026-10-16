@@ -1,169 +1,162 @@
-# CallMate architecture
+# Zeus Llama architecture
 
-Status: proposed personal-use architecture. Updated: 2026-10-15. Implements [requirements](requirements.md); tooling and provider references are in [tech-stack.md](tech-stack.md).
+Status: current implementation, updated 2026-10-16. Repository and package names still use CallMate. Real telephone calling is not implemented; current call transports are simulations. Executable [contracts](../packages/contracts/src/index.ts) take precedence over documentation examples.
 
-## 1. Design decision
+## 1. Runtime and deployment
 
-Run the browser UI locally and the Node.js application logic and SQLite database in a local Docker container, with SQLite in a persistent Docker volume. Use Twilio Programmable Voice for outbound calls and Twilio ConversationRelay for the speech layer. A text LLM interprets the conversation and proposes the next action; application code validates actions before anything consequential is spoken. The [Docker guide](docker-development.md) describes the implemented backend/simulator and its current limits. The simulator uses scripted adapters without network access to providers; this is not the live conversation/policy implementation.
-
-ConversationRelay handles recognition and speech synthesis, so the application exchanges text and control events rather than implementing a raw audio bridge. This is a good fit for a personal tool with occasional calls. It still needs an application backend and an LLM: Twilio does not automatically know the user's appointment request. See the [ConversationRelay overview](https://www.twilio.com/docs/voice/conversationrelay).
-
-## 2. Components and connections
+The default [Compose stack](../compose.yaml) starts two containers. **`zeus-llama`** runs one Node.js process serving the compiled React UI, private HTTP/SSE API, technical console and a separate callback listener. **`mock-relay`** runs the independent ConversationRelay emulator and operator UI. There is no separate production frontend container or database server.
 
 ```mermaid
 flowchart LR
-    U[Local browser UI] -->|Local HTTP and SSE| A[Local API and booking controller]
-    A --> D[(Local SQLite)]
-    A -->|Text requests over HTTPS| L[LLM API]
-    A -->|Create and end call| V[Twilio Programmable Voice]
-    V <-->|Normal telephone call| B[Spanish business]
-    V <--> R[Twilio ConversationRelay]
-    R <-->|Text and control over WSS| T[Secure tunnel]
-    V -->|Signed callbacks over HTTPS| T
-    T <--> C[Dedicated local callback listener]
-    C <--> A
+    User[Owner browser] -->|UI, JSON, SSE: localhost:3000| Private
+    Operator[Operator browser] -->|localhost:8080| Mock
+    subgraph App[zeus-llama container]
+        Private[Private listener: UI, API, console]
+        Controller[Call controller and dialogue policy]
+        Callback[Callback listener: port 3001]
+        Agent[LLM agent adapter]
+        Private --> Controller
+        Callback --> Controller
+        Controller --> Agent
+    end
+    Controller -->|Calls API: Docker network| Mock[mock-relay container]
+    Mock -->|Signed callbacks and WebSocket| Callback
+    Controller --> DB[(SQLite: callmate-data)]
+    Agent --> DB
+    Agent --> Keys[(Master key: zeus-llm-secrets)]
+    Agent --> CLI[Optional Codex CLI and saved login]
+    Agent -->|HTTPS for API providers| API[OpenAI or Anthropic API]
 ```
 
-One Node.js process can own two HTTP listeners and the call controller. Use a persistent process during a call; no distributed services, external queue, or hosted database is needed.
+Host ports bind to `127.0.0.1`; listeners bind to `0.0.0.0` inside containers. Defaults are 3000 (app/API), 3001 (callbacks), and 8080 (operator). Containers use Docker DNS names `zeus-llama` and `mock-relay`; `server` remains a compatibility alias. No public tunnel is needed for local mock calls.
+
+The optional `dev` profile adds Vite on port 5173 with an API proxy. The `checks` profile runs offline checks. [The Codex override](../compose.codex.yaml) selects an image containing Codex CLI and adds its persistent ChatGPT login volume; the base runtime image does not contain the CLI. See [Docker setup](docker-development.md) for commands and configuration.
+
+## 2. Independent mode and provider selections
+
+| Choice | Storage and behavior |
+| --- | --- |
+| Browser **Simulator / Backend** | Browser preference selects the scripted local client or HTTP/SSE client. Browser Simulator keeps call history locally and does not invoke the server call controller or LLM. Authentication, contacts and server LLM/call-engine settings still use the backend. |
+| Settings → **Call engine** | SQLite stores `mock` (default) or `twilio`. Mock uses the configured local development transport, or the legacy scripted backend when `TELEPHONY_PROVIDER=fake`. Twilio is explicitly unavailable: new Backend Starts return `503 PROVIDER_NOT_READY`, without a provider request, reservation or fallback. |
+| Settings → **LLM agent** | SQLite stores `disabled`, `codex`, `openai` or `anthropic`, plus model and effort. Saved settings override environment bootstrap values. The agent resolves an adapter for subsequent turns without a server restart. |
+
+The server currently requires `CALLMATE_MODE=simulator`. Network mock transport also requires development/test gates and `TELEPHONY_PROVIDER=mock`; disabling these gates cannot silently enable scripted success. Reviewed mock calls require a ready dialogue engine. Manual console conversations exercise transport and carry no automated booking authority. Calls created directly in the operator UI are separate ephemeral greeting/echo checks.
+
+Call-engine and LLM/key changes return `409 CALL_ALREADY_ACTIVE` while an attempt holds the active reservation, including ending or unresolved recovery. Stop, history, recovery and idempotent replay of existing commands remain available independently of new Start readiness.
+
+## 3. Packages and controller boundaries
+
+```text
+apps/web          → packages/contracts
+apps/server       → packages/contracts + packages/dialogue
+packages/dialogue → packages/contracts
+mock-conversation-relay: independent package and container
+```
 
 | Component | Responsibility |
 | --- | --- |
-| Browser UI | Request editing, plan review, live text, approval actions, Stop, and results. No provider credentials. |
-| Local API | Input validation, call authorization, single-call lock, approvals, local event stream, and history. |
-| Call controller | Explicit state transitions, Twilio lifecycle, deadlines, dialogue turns, and outcome reconciliation. |
-| Dialogue planner | Convert finalized business utterances into typed candidate actions and translate text for the user. |
-| Policy/response layer | Validate constraints and render approved Spanish responses; critical acceptance/readback replies use controlled templates. |
-| Callback listener | Verify Twilio HTTP/WebSocket requests and route recognized sessions to the controller. |
-| SQLite | Requests, immutable approved plans, attempts, events, approvals, and booking outcomes. |
-| Tunnel | Public HTTPS/WSS reachability for Twilio while forwarding only the callback listener. |
+| [Web UI](../apps/web/README.md) | Owner login, contacts, request/review/call/summary, settings, history, Agreements list/calendar and `.ics` export; HTTP/SSE client and browser simulator. |
+| [Contracts](../packages/contracts/src/index.ts) | Zod schemas, HTTP definitions, event envelopes, types, adapter ports and synthetic fixtures; no provider side effects. |
+| [Dialogue](../packages/dialogue/README.md) | Structured proposals, policy/reducers, controlled multilingual responses, templates, model adapters and offline evaluation; no database or dialing authority. |
+| [server.ts](../apps/server/src/server.ts) | Runtime composition, listeners, authentication, private routes, error boundaries and lifecycle. |
+| [call-controller.ts](../apps/server/src/call-controller.ts) | One public lifecycle facade over persisted scripted attempts and development mock conversations. |
+| [development-conversations.ts](../apps/server/src/development-conversations.ts) | Mock preflight/create, correlation, active reservation, deadlines, Stop and recovery/reconciliation. |
+| [relay-dialogue.ts](../apps/server/src/relay-dialogue.ts) | Current-turn checks, offers, exact-offer approvals, playback permits/receipts and booking transitions. |
+| [mock-relay.ts](../apps/server/src/mock-relay.ts), [mock-status.ts](../apps/server/src/mock-status.ts), [mock-calls-client.ts](../apps/server/src/mock-calls-client.ts) | Signed local transport, bounded protocol parsing, status callbacks and SDK-compatible mock Calls requests. |
+| [llm-agent.ts](../apps/server/src/llm-agent.ts), [llm-secrets.ts](../apps/server/src/llm-secrets.ts), [call-engine.ts](../apps/server/src/call-engine.ts) | Saved selection, encrypted credentials, adapter resolution and call-engine gate. |
+| [Twilio harness](twilio-mock.md) | Offline REST/TwiML/WebSocket checks and reusable protocol schemas; no live Twilio adapter. |
+| [Standalone mock](../mock-conversation-relay/README.md) | Calls API subset, synthetic destinations/IDs, signed callbacks, relay sessions and operator UI; sessions are in memory. |
 
-### Network boundary
+Technical console assets in `apps/server/src/web` are distinct from the React application; both are served by the private listener.
 
-- Private API: default host `127.0.0.1:3000`, published by Docker Compose. The future UI can use the same origin. Apply origin/CSRF protections to mutating browser requests; reject unexpected Host/Origin values.
-- Twilio callback listener: default host `127.0.0.1:3001`, published separately and intended for a callback-only tunnel. Both listeners bind `0.0.0.0` inside the container; host publications remain loopback-only. The callback listener contains no personal UI, history, settings, or call-start endpoints.
-- Planned public callback routes: `POST /twilio/voice`, `POST /twilio/status`, `POST /twilio/relay-ended`, and WebSocket `/twilio/relay`. The scaffold currently rejects all callback routes until signature/session validation is implemented. Unknown routes fail closed.
-- Twilio callback and WebSocket handshake signatures must be checked using the SDK, configured public URL, and correct request representation. Do not trust arbitrary forwarded host headers. Validate account and call/session ownership as well.
-- ConversationRelay sends a signature on its initial WebSocket handshake; this is documented in [Twilio onboarding](https://www.twilio.com/docs/voice/conversationrelay/onboarding). A random URL alone is not authentication.
+## 4. Reviewed mock conversation and authority
 
-The UI is local to the computer by default. Using it from a phone later requires an explicit authenticated private-access design; exposing the personal API through the Twilio tunnel is not that design.
-
-## 3. Outbound call flow
+The approved plan is immutable and binds destination, service/task, language, availability, shareable contact data, booking permission and limits. The browser reviews a server-normalized plan before Start; plan creation does not initiate a call.
 
 ```mermaid
 sequenceDiagram
-    actor User
-    participant App as Local app
-    participant Twilio
-    participant Shop as Business
-    participant LLM
-    User->>App: Approve plan and Start call
-    App->>App: Persist approval, reserve single-call slot
-    App->>Twilio: Create outbound call with duration limit
-    Twilio->>Shop: Ring telephone
-    Twilio->>App: Signed request for voice instructions
-    App-->>Twilio: TwiML connecting ConversationRelay
-    Twilio->>App: Signed WSS handshake and setup
-    Twilio->>Shop: Approved Spanish AI introduction
-    loop Business conversation
-        Shop->>Twilio: Spanish speech
-        Twilio->>App: Recognized text
-        App->>LLM: Conversation and approved constraints
-        LLM-->>App: Candidate action and extracted facts
-        App->>App: Validate policy, select Spanish response
-        App-->>Twilio: Approved response text
-        Twilio->>Shop: Synthesized speech
+    participant UI as Owner UI
+    participant C as Server controller
+    participant DB as SQLite
+    participant M as Mock relay / operator
+    participant L as Dialogue and policy
+    UI->>C: Start reviewed plan with durable idempotency key
+    C->>DB: Atomically reserve attempt and record command
+    C->>M: Create synthetic call
+    M->>C: Signed setup / finalized business turn
+    C->>L: Current plan, turn, messages and offer
+    L-->>C: Validated proposal and policy decision
+    opt Exact offer needs approval
+        C-->>UI: Snapshot / SSE with offer and expiry
+        UI->>C: Approve or reject offer/version
     end
-    App-->>User: Confirmed, not booked, or uncertain
+    C->>M: Controlled readback under current permit
+    M-->>C: Authenticated simulated output receipt
+    C->>M: Acceptance after fresh policy check
+    M-->>C: Acceptance receipt, then business confirmation
+    C->>DB: Atomically store result and events
+    C-->>UI: Snapshot / replayable SSE
 ```
 
-The TwiML must include a safe end/fallback path that hangs up after relay termination. Callback URLs are supplied for the individual outgoing call; creating an inbound phone product is unnecessary. Set the maximum duration at Twilio as well as locally so a laptop crash cannot leave an unlimited call running. Verify the exact Calls API parameters during the first integration milestone.
+The model returns structured candidate actions, facts and evidence references. It cannot dial, write bookings, grant approval, select an executable/endpoint or read credentials. The controller rechecks attempt/turn/plan/offer after asynchronous work and owns playback permits. Generated text, a user approval click, and an ended call are insufficient proof of a booking.
 
-### Twilio session adapter
+Controlled responses support **Spanish, Russian, English and Polish** across **15 templates**. Versioned phrases persist in SQLite; transcripts retain rendered speech and English translations. Spoken dates/times omit IANA names and UTC offsets; structured plans retain zone/instant. The haircut flow supplies the approved booking name and callback number instead of asking for the caller's identity or reciting a fee questionnaire; explicitly prohibited charges still cannot bypass policy.
 
-Map ConversationRelay `setup`, `prompt`, `interrupt`, and `error` messages into domain events. Process finalized turns in order; keep partial recognition provisional. Send approved replies as `text` messages. Limited `sendDigits` support can handle a simple menu after the base flow works. These capabilities are documented in [ConversationRelay WebSocket messages](https://www.twilio.com/docs/voice/conversationrelay/websocket-messages).
+In-plan offers can proceed through controlled readback and acceptance. Out-of-plan offers need an authenticated, unexpired grant for that exact offer/plan. Changed offers, intervening speech, interruption and Stop invalidate obsolete work. Reject sends a controlled closing and requests hangup; failure retains the reservation until termination is established.
 
-Keep speech interruptible. On interruption, cancel obsolete LLM work, stop sending old reply chunks, and record that the business may not have heard the complete sentence. Never treat generated text as proof of playback or agreement. Late model responses are discarded using a monotonically increasing turn version.
+Mock acceptance uses **simulated text playback receipts**, then separate affirmative business evidence checked by the bounded multilingual [confirmation matcher](../apps/server/src/mock-confirmation.ts). Contextual “Yes, I confirm” / “I already confirmed that” replies do not require endless repetition. Negation, corrections and uncertainty cannot establish confirmation. These checks are not attested real audio playback or a production semantic verifier. Results/calendar exports remain labelled as simulations.
 
-## 4. Conversation control and booking authority
+Generic Ask/Change/Other tasks use findings and follow-up results, separate from appointment confirmation. The library's add-on/contact-consent helpers do not imply every helper is wired to a provider flow. See [dialogue integration](../packages/dialogue/INTEGRATION.md) for authority and teardown rules.
 
-The planner returns schema-validated data such as:
+## 5. Persistence and data lifecycle
 
-```text
-action: ask_availability | clarify | evaluate_offer | request_user_approval |
-        read_back | accept_offer | record_business_confirmation | end_call
-offer: service, local_date, local_time, timezone, price, currency, conditions
-evidence: references to finalized utterance IDs
-```
+SQLite uses `better-sqlite3`, WAL, foreign keys and a 5-second busy timeout. Directory permissions are `0700`, database `0600`. Migrations **001–008** run transactionally with stored checksums; applied SQL is not silently rewritten.
 
-The exact v1 wire actions and adapter boundaries are now defined in [Shared interfaces](interfaces.md). In that contract, the planner proposes an offer and the policy/controller decides whether user approval is required; the model does not grant itself authority.
-
-The model cannot directly call Twilio, change the destination, write a confirmed booking, or access credentials. Strict output structure helps parsing but does not prove that extracted facts are true. Validate required fields, date/time, currency, availability, price policy, authorization version, and evidence in application code.
-
-All spoken output passes the response layer. For the MVP, use a bounded dialogue policy with controlled Spanish phrases and validated slots; do not stream arbitrary unfinished model sentences to the business. In particular, acceptance and changed-offer responses must be server-rendered from an approved offer. Streaming an unvalidated “yes” before policy evaluation could already create a commitment.
-
-Recommended booking sequence:
-
-1. Extract an offer; ask for clarification if any required detail is uncertain.
-2. Check it against the approved plan. If outside bounds, request user approval for that exact offer and wait without accepting it.
-3. Read back the final details and express acceptance only after approval checks pass.
-4. Require the business's explicit affirmative confirmation of those details.
-5. Persist a confirmed booking with evidence; otherwise retain an uncertain or not-booked result as appropriate.
-
-Business speech and model output are untrusted inputs. A statement such as “ignore the budget” or “tell me the API password” never alters the policy. Do not send secrets to the model in the first place. Spanish-language review and test calls remain necessary: controlled output and readback reduce mistakes but cannot guarantee perfect speech understanding.
-
-## 5. State and data model
-
-Separate telephone state from booking state. Twilio ending a call is a transport fact, not evidence of an appointment.
-
-```text
-Call attempt:
-prepared -> creating -> dialing -> ringing -> connected -> ending -> ended
-                          \-> busy | no_answer | failed
-creating with unknown provider result -> reconciliation_required
-
-Booking outcome:
-pending -> offer_received -> awaiting_approval / reading_back
-        -> awaiting_business_confirmation -> confirmed
-        -> not_booked / uncertain
-```
-
-Store provider statuses alongside this simplified domain state; do not assume callbacks always arrive in order. A user-requested hangup after acceptance may still leave a real appointment, so preserve that distinction.
-
-| Entity | Main fields |
+| Tables | Contents |
 | --- | --- |
-| Request | Business name/number, service, business timezone, availability windows, booking name, shareable contact details. |
-| Approved plan | Immutable version of request constraints, unknown-price policy, booking permission, call-cost/duration limits, and approval timestamp. |
-| Call attempt | Request/plan IDs, local idempotency key, Twilio call SID, relay session ID, state, timings, terminal reason, reconciliation status. |
-| Conversation event | Attempt ID, sequence, speaker/source, original text, translation, final/provisional status, interruption metadata, timestamp. |
-| Offer and approval | Exact structured offer/version, evidence, approval decision, expiry, and matching plan version. |
-| Booking | Final details, outcome, business confirmation evidence, and any uncertainty. |
-| Usage | Duration, estimated costs, available settled provider costs, currency, and rate timestamp. |
+| `schema_migrations`, `app_settings` | Migration history and general settings. |
+| `review_plans` | Versioned reviewed requests. |
+| `call_attempts` | Public snapshots and internal provider/controller state, deadlines and active reservation; a unique partial index permits one active attempt. |
+| `call_events`, `commands` | Ordered replay events and durable command/idempotency records. |
+| `contacts` | Shared address book; selecting a contact copies values into a plan, so later edits do not mutate approved calls. |
+| `auth_owner`, `auth_sessions`, `auth_rate_limit` | Owner password verifier, sessions and persistent login/setup throttling. |
+| `dialogue_phrases` | Versioned controlled phrase catalog. |
+| `llm_settings`, `llm_credentials`, `call_engine_settings` | LLM selection, encrypted API credentials and backend engine. |
 
-Use UTC instants plus IANA business timezone and original local date/time. Store money in integer minor units with currency. Reject impossible/ambiguous DST times rather than silently shifting an appointment. Business hours and availability are different concepts and should not be conflated.
+There is **no separate appointments table**. Agreements/calendar project saved call outcomes. `agreementDeletedAt` hides an eligible terminal entry while preserving its source call and transcript. Local deletion does not contact the business or cancel an appointment.
 
-Keep the database in the private `/data` directory of the persistent Docker volume, with owner-only permissions. Host/Docker disk encryption is an operational choice; SQLite is not encrypted by itself. Use migrations and a future local retention task, not an external scheduler.
+Conversation deletion separately purges transcript/translation and text-bearing replay data for terminal attempts. Automatic retention runs at startup, every minute and after relevant settings changes; default 30 days. Structured outcomes, usage and command tombstones survive. Snapshots/events commit together before SSE publication; deletion invalidates the affected replay range.
 
-## 6. Reliability and limits
+History is paginated. SSE uses persisted per-attempt sequence cursors, replay and reset/snapshot recovery. Browser Simulator call history belongs to origin-local storage, not SQLite. Mock sessions are ephemeral, not durable application history.
 
-| Risk | Handling |
-| --- | --- |
-| Repeated Start click | Unique local request key and transactional active-call reservation. |
-| Calls API times out | Mark creation uncertain and reconcile Twilio call records/callbacks; never blindly retry a potentially successful dial. Local idempotency does not imply Twilio guarantees exactly-once creation. |
-| Duplicate/out-of-order callbacks | Verify signature, deduplicate when possible, apply allowed transitions, and prevent completed states from regressing. |
-| Disconnect near booking acceptance | Keep uncertainty and prompt the user to check; no automatic rebooking. |
-| App restart | Reconcile nonterminal attempts against Twilio before allowing another call; cancel an orphaned live call where appropriate. |
-| Tunnel or laptop failure | Twilio-side maximum duration plus relay fallback; after recovery, reconcile rather than assume safe completion. |
-| Stop not acknowledged | Show ending/unconfirmed status, retry bounded hangup/reconciliation, and provide a Twilio Console fallback. |
-| LLM failure or long response | A short controlled apology, bounded retry before any commitment, then polite termination if still unavailable. |
-| Stale approval | Require active call, matching offer and plan version, unexpired approval, and a fresh policy check before speaking acceptance. |
-| Cost overrun | Estimate before dialing, cap duration/concurrency, restrict destinations, and reconcile actual usage later. Billing may lag, so a displayed budget is not a perfect real-time provider spend ceiling. |
+Times retain offset instants plus business-local date/time and IANA zone. Money uses integer minor units/currency; service prices are EUR and call budgets use configured EUR/USD. Optional test-rate metering currently requires a matching USD budget and generates persisted estimates, not real provider billing. No currency conversion is performed.
 
-No background autonomous retry queue is needed. The MVP calls only after a user starts an attempt while the app is ready.
+## 6. LLM settings and secret storage
 
-## 7. Data flow and operation
+The agent supports saved ChatGPT login through a bounded **Codex CLI subprocess**, **OpenAI Responses API**, and **Anthropic Claude Messages API**. Native-fetch API adapters use fixed HTTPS endpoints, structured output, cancellation and local validation. There is no automatic provider fallback or retry. Settings model lists are suggestions, not account entitlement; allowed effort values depend on provider/model, with default effort for custom IDs.
 
-- Twilio and its selected speech providers process telephone audio. The local app receives recognized text and sends approved response text to Twilio; no raw audio storage is required.
-- The LLM receives the relevant transcript and minimal plan details. Request non-persistence where supported and review account-level retention controls; do not assume local storage means providers retain nothing.
-- Do not claim EU-only processing merely because the business is in Spain or a phone number is European. Verify ConversationRelay availability, subprocessors, and actual routing before making residency promises.
-- Log call IDs, event types, timings, usage, and error categories. Keep transcript bodies in the private database, outside application logs and Git.
-- Test the callback tunnel and backend before a call. A changed public tunnel URL must update the call's configured URLs before dialing.
+Authenticated `GET/PUT /api/v1/settings/llm` returns selection and credential status (`configured`, `usable`, `source`) only. PUT accepts write-only keys: omitted preserves, a string replaces, `null` deletes the stored override. Stored keys override environment bootstrap keys; corrupt ciphertext fails closed. Deleting an override can reveal a still-configured environment key.
+
+API credentials use AES-256-GCM with fresh nonces and provider/version-bound authenticated data. Ciphertext is in SQLite; the random 32-byte master key is in **`zeus-llm-secrets:/run/zeus-secrets`**, separate from **`callmate-data:/data`**. Key-file ownership/permissions and symlink checks are enforced. An external private raw key file can be selected using `CALLMATE_LLM_MASTER_KEY_FILE`. Database backups alone cannot decrypt saved keys; preserve the master key separately. SQLite as a whole is not encrypted.
+
+Codex login has its own optional `callmate-codex` volume. The subprocess forces ChatGPT auth, removes API-key environment fallbacks and disables project instructions/tools/plugins for generation. API keys never enter dialogue inputs, snapshots, SSE or settings responses. See [secret operation and recovery](docker-development.md#18-llm-agent-settings-and-secret-storage).
+
+## 7. Security, reliability and diagnostics
+
+- The private listener serves UI, owner auth, API, SSE and console. One owner uses a scrypt password verifier and opaque 12-hour sessions in an HttpOnly, SameSite=Strict cookie. There are no default credentials or public multi-user registration. Host/Origin and cross-site mutation checks protect local endpoints; logout/expiry closes authenticated streams.
+- The callback listener exposes development-gated WebSocket `/ws/voice` and signed form POST `/callbacks/mock/status/:id`, with signature/session correlation. It does not expose private settings/history or implement production Twilio routes.
+- Containers use a non-root user, read-only root filesystem, temporary `/tmp`, dropped capabilities and `no-new-privileges`. Default mock credentials are local test placeholders.
+- Start transactionally persists a reservation and command fingerprint before contacting the mock. Retries reuse the original key. Rechecks after asynchronous Codex preflight prevent duplicate creation and stale settings/engine use. Ambiguous create results stay reserved for reconciliation; no blind redial.
+- Stop during preflight prevents later creation. After submission, hangup/reconciliation retains the reservation until provider termination is established. Restart recovery uses stored call/session identity, without speech replay or redial; outages and unresolved creates remain reserved.
+- Duration, silence and optional estimated-budget limits run without an open UI. Telephone state and booking outcome are separate: ending transport neither erases possible acceptance nor establishes success.
+- Partial/final prompt accumulation is bounded before model/consumer invocation: 4,000 characters for reviewed calls, 8,000 for manual/echo. Oversize closes with 1007; consumer failures are isolated to the socket with 1011. Persistence failures do not publish successful state.
+- Invalid request input returns sanitized 400 errors; internal persistence/controller/output failures return sanitized 500 errors. Model timeout/malformed output/provider failure yields a recoverable call error, without automatic acceptance, fallback or redial. The UI can recover or Stop.
+- Logs retain safe categories/method/status, not transcripts, raw provider payloads, URLs or credentials. API/CLI model use still transmits relevant conversation text to that provider.
+
+`/health` checks local storage, not call readiness. Private `/api/v1/readiness` exposes separate dependency/capability checks. Mock health does not prove a callback/audio round trip. API LLM readiness means locally available/decryptable credentials, not verified credentials, quota or connectivity; Codex readiness checks CLI/login. Saving settings and ordinary offline tests send no paid inference requests.
+
+## 8. Remaining real-provider work
+
+Selecting Twilio persists an unavailable choice. Neither the SDK-compatible emulator nor offline protocol harness dials real numbers. Live Calls creation/control, public authenticated callbacks, ConversationRelay speech, attested playback, production confirmation verification, real usage reconciliation and a supervised telephone pilot remain unfinished.
+
+The [Twilio setup runbook](twilio-setup.md), [delivery plan](mvp-delivery-plan.md) and [engineering agreement](engineering-contract.md) retain future real-call acceptance gates. A future integration must preserve listener isolation, reservation, exact-offer authority and uncertainty handling. Local/browser tests do not establish that real-call gates passed.

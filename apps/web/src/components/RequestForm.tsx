@@ -332,15 +332,14 @@ export default function RequestForm({ initial, prefill, view, onRequest, setting
       <form noValidate onSubmit={e => { e.preventDefault(); void prepare(); }}>
         <fieldset disabled={locked || busy || parsing || contactSaving} className="space-y-5">
           <label>Goal<textarea data-gramm="false" aria-label="Home goal" value={v.goal} onChange={e => set('goal', e.target.value)} required maxLength={4000} rows={4} placeholder="Describe in English what you need and any limits Zeus should follow…" /></label>
-          {templatePicker}
-          {view === 'home' && languagePicker}
+          <div className="home-options">{templatePicker}{view === 'home' && languagePicker}</div>
           <div className="flex flex-wrap gap-3" aria-label="Request templates">
             <button type="button" className="secondary template-chip" onClick={() => template('book')}>Book a haircut</button>
             <button type="button" className="secondary template-chip" onClick={() => template('ask')}>Ask a clinic about documents</button>
             <button type="button" className="secondary template-chip" onClick={() => template('change')}>Reschedule a vet visit</button>
           </div>
           {view === 'home' && <ContactPicker compact value={contactDetails} contacts={contacts} selectedId={selectedId} saveChecked={saveContact} onChange={changeContact} onSelect={chooseContact} onSaveChecked={checked => { setSaveContact(checked); setReviewedRequest(null); }} />}
-          <div className="flex flex-wrap items-center gap-4"><button type="submit" className="primary" disabled={!!homeMissing.length || locked || busy || parsing || contactSaving} aria-describedby="home-readiness">{parsing ? 'Preparing the plan…' : 'Prepare the plan'}</button><span id="home-readiness" role="status" className="text-base text-stone-300">{homeMissing.length ? `Add ${homeMissing.join(', ')} to continue.` : ''}</span><button type="button" className="text-add" onClick={() => onRequest()}>Enter details manually</button></div>
+          <div className="home-prepare flex flex-wrap items-center gap-4"><button type="submit" className="primary" disabled={!!homeMissing.length || locked || busy || parsing || contactSaving} aria-describedby="home-readiness">{parsing ? 'Preparing the plan…' : 'Prepare the plan'}</button><span id="home-readiness" role="status" className="text-base text-stone-300">{homeMissing.length ? `Add ${homeMissing.join(', ')} to continue.` : ''}</span><button type="button" className="text-add" onClick={() => onRequest()}>Enter details manually</button></div>
         </fieldset>
       </form>
     </section>

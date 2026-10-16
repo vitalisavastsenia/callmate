@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { createContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { AuthSession } from '../types';
 import { ApiError, getSession, signIn, signOut } from '../api';
+
+export const OwnerAccountContext = createContext<ReactNode>(null);
 
 export default function AuthGate({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<AuthSession | null>(null);
@@ -37,15 +39,15 @@ export default function AuthGate({ children }: { children: ReactNode }) {
     }, Math.max(0, Date.parse(session.expiresAt) - Date.now()));
     return () => clearTimeout(timer);
   }, [session?.expiresAt]);
-  if (session?.authenticated) return <>
-    <div className="auth-account"><span>Signed in as {session.username}</span><button type="button" className="secondary" disabled={busy} onClick={async () => {
+  if (session?.authenticated) return <OwnerAccountContext.Provider value={
+    <div className="auth-account"><span>Signed in as {session.username}</span><button type="button" className="text-add" disabled={busy} onClick={async () => {
       submitting.current = true; generation.current++; setBusy(true); setError('');
       try { await signOut(); setSession({ setupRequired: false, authenticated: false, username: null, expiresAt: null }); }
       catch (error) { setError(error instanceof Error ? error.message : 'Sign out failed. Try again.'); }
       finally { submitting.current = false; setBusy(false); }
-    }}>{busy ? 'Signing out…' : 'Sign out'}</button></div>
+    }}>{busy ? 'Signing out…' : 'Sign out'}</button></div>}>
     {error && <div role="alert" className="notice error mx-auto max-w-xl"><p>{error}</p>{checkUnavailable && <><p>Your sign-in check is temporarily unavailable. Your draft is still here; the session expiry remains enforced.</p><button type="button" className="secondary mt-3" onClick={() => void retrySession.current()}>Retry connection</button></>}</div>}{children}
-  </>;
+  </OwnerAccountContext.Provider>;
   const setup = session?.setupRequired ?? false;
   return <main className="auth-screen"><section className="panel space-y-5" aria-labelledby="auth-title">
     <p className="eyebrow">Zeus Llama · CallMate</p><h1 id="auth-title" className="section-title">{!session ? 'Connecting to CallMate' : setup ? 'Create your owner account' : 'Sign in'}</h1>

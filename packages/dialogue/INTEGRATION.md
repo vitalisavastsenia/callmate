@@ -1,11 +1,14 @@
-# Engineer 3 integration handoff
+# Dialogue integration and runtime boundaries
+
+Updated: 2026-10-16. See [application architecture](../../docs/architecture.md) for the deployed components and [shared interfaces](../../docs/interfaces.md) for executable contract semantics.
 
 The server imports public exports from `@callmate/dialogue` and shared schemas
 and types from `@callmate/contracts`. Contract version: 1. Dialogue runs in the
-server process and adds no HTTP service or database. The Codex CLI adapter uses saved ChatGPT login in a local subprocess; the optional
-OpenAI API adapter uses server-supplied API credentials and one HTTPS request per turn.
+server process and adds no HTTP service or database. The Codex CLI adapter uses saved ChatGPT login in a local subprocess; OpenAI Responses and Anthropic Claude Messages adapters use server-supplied API credentials and one HTTPS request per turn, without automatic retries or fallback.
 Root workspace and Docker registration are complete on the integration branch.
-The optional server mock controller now handles finalized Spanish business turns, translations, offer identities, approvals and controlled replies. Full playback evidence, acceptance and semantic confirmation remain unavailable; see [runtime setup](../../docs/docker-development.md#17-dialogue-driven-local-mock-calls). For the library boundary, see [integration status](README.md#integration-with-engineer-2).
+The server mock controller handles finalized Spanish, Russian, English and Polish turns across 15 templates, translations, offers, approvals and controlled replies. Authenticated simulated output receipts permit mock readback/acceptance followed by separate bounded business confirmation; real audio playback evidence and production semantic verification remain unavailable. See [runtime setup](../../docs/docker-development.md#17-dialogue-driven-local-mock-calls) and [integration status](README.md#integration-with-engineer-2).
+
+The server's `LlmAgent` resolves saved provider/model/effort and encrypted credentials for each turn. Settings selects `disabled`, `codex`, `openai` or `anthropic`; active-call reservations lock changes. Keys remain outside dialogue inputs/outputs and are never returned to the browser. This selection is independent of Browser Simulator/Backend and Mock/Twilio call-engine selection. Twilio is unavailable; see [settings and storage](../../docs/docker-development.md#18-llm-agent-settings-and-secret-storage).
 
 ## Constructors and dependencies
 
@@ -15,7 +18,8 @@ import {
   createDialogueServices, type ModelClient, type OfferIdentitySource,
 } from "@callmate/dialogue";
 
-// These are configured by server bootstrap, never supplied by a browser/model.
+// Server-owned dependencies. Settings may select a validated model/provider,
+// but a browser/model never supplies an executable, transport endpoint or authority.
 declare const model: ModelClient;
 declare const lookupReservedIdentity: OfferIdentitySource;
 
@@ -38,14 +42,18 @@ No fallback fake model, provider client, grant, or live call is created.
   observes cancellation. The server supplies its real or scripted adapter. Provider
   credentials, model selection/instructions, transport timeout, and adapter resource
   shutdown stay with that adapter; no live SDK is bundled here.
-- `createCodexModelClient({ executable?, model?, timeoutMs? })` uses `codex exec`
+- `createCodexModelClient({ executable?, model?, effort?, timeoutMs? })` uses `codex exec`
   with forced ChatGPT authentication and no API-key fallback. Its default deadline
   is 60 seconds; set the planner deadline explicitly to match. See the
   [local subscription example](README.md#codex-cli-with-chatgpt-login).
-- `createOpenAIModelClient({ apiKey, model, timeoutMs?, maxOutputTokens? })` is the
+- `createOpenAIModelClient({ apiKey, model, effort?, timeoutMs?, maxOutputTokens? })` is the
   included native-fetch Responses API adapter. Supply it to the same constructors;
   keep API credentials server-side. See [configuration and the text-only example](README.md#openai--codex-api-adapter).
   It never grants booking authority or bypasses policy, controller checks, or permits.
+- `createAnthropicModelClient({ apiKey, model, effort?, timeoutMs?, maxOutputTokens? })`
+  supplies the Claude Messages adapter through the same `ModelClient` boundary.
+  Its provider-compatible output schema is followed by full local validation;
+  credentials and raw provider errors stay behind the adapter.
 - `timeoutMs` defaults to 10,000 and accepts integers 1–60,000. Cancellation,
   bounded deadlines, sanitized error codes, and late-response disposal are
   documented in the [dialogue API](README.md#dialogue-port).
@@ -73,7 +81,7 @@ No fallback fake model, provider client, grant, or live call is created.
    returns booking fields for the controller's atomic update. During a possible
    acceptance, preserve uncertainty instead of starting another booking.
 5. Evaluate the candidate against the **current** snapshot, server time, and
-   server-resolved grant. `allow` contains controlled Spanish text; `ask_user`,
+   server-resolved grant. `allow` contains controlled selected-language text; `ask_user`,
    `clarify`, and `deny` contain no playback permission. The controller chooses a
    safe follow-up and issues/cancels its own permit even for neutral/waiting speech.
 6. For `ask_user`, persist the exact offer/plan approval and wait. Authenticate
@@ -87,9 +95,15 @@ No fallback fake model, provider client, grant, or live call is created.
    confirmation. `record_business_confirmation` permits a neutral acknowledgement;
    it never establishes a confirmed outcome by itself.
 9. Derive the outcome using the exact receipt and a `ConfirmationVerifier` assessing
-   the actual Spanish evidence and all later corrections. Missing/unverified or
+   selected-language evidence and all later corrections. Missing/unverified or
    ambiguous evidence produces uncertainty. There is no production semantic
    verifier in this package yet. Persist/emit the derived English result separately.
+
+In the current mock runtime, playback evidence above is explicitly simulated and
+the server supplies `verifyMockConfirmation` for bounded multilingual evidence.
+It accepts contextual affirmation only after the exact acceptance receipt and
+checks corrections/negation rather than repeatedly asking for confirmation.
+This is not a production verifier or proof that a real appointment exists.
 
 `reduceBooking` and `deriveOutcome` are pure controller helpers. The controller
 increments revisions/events, enforces call limits, handles transactions and
@@ -129,7 +143,10 @@ server responsibilities; aborting a dialogue promise does not hang up a call.
 `DialogueError` exposes fixed `code`/message values without provider details or
 transcript/abort reason text. There are no automatic retries. On malformed output,
 timeout, or provider failure, the controller can clarify or end unresolved using
-its bounded recovery policy. If acceptance might have started, retain uncertainty
+its bounded recovery policy. The current mock controller publishes a recoverable
+`call.error` and sends no acceptance on a failed proposal; another business turn
+can clarify, or the user can Stop. It does not retry the model automatically.
+If acceptance might have started, retain uncertainty
 and reconcile instead of reporting not booked or redialing automatically.
 
 The dialogue/policy objects have no persistent resources or `close()` method.
@@ -151,7 +168,8 @@ call. The ordinary package test includes the evaluation suite, so CI can use one
 command after building contracts. Root scripts include these checks.
 
 The exported contract version is unchanged. Before an integrated app is
-declared ready for real bookings, Engineer 2 must complete real provider wiring
-and attested playback, and Engineers 2 and 3 must arrange a production Spanish
-semantic verifier and fluent review. The standalone evaluations do not satisfy the combined-app or real-call
-acceptance gates in the [engineering agreement](../../docs/engineering-contract.md).
+declared ready for real bookings, complete real provider wiring and attested
+playback, plus production confirmation verification and fluent review for the
+enabled languages. Local app integration and browser tests are implemented;
+standalone evaluations and mock tests do not satisfy the real-call acceptance
+gates in the [engineering agreement](../../docs/engineering-contract.md).

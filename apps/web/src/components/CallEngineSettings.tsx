@@ -15,15 +15,22 @@ export default function CallEngineSettings({ locked, onSaved }: { locked: boolea
     }, () => { if (current) setError('Could not load the call engine. Check the backend and sign-in session, then retry.'); })
       .finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
-  }, [locked, reload]);
-  return <section className="mb-6 space-y-3" aria-labelledby="call-engine-title">
-    <h3 id="call-engine-title" className="section-title">Call engine</h3>
+  }, [reload]);
+  useEffect(() => {
+    if (locked || !settings || settings.editable) return;
+    let current = true;
+    void getCallEngine().then(value => { if (current) setSettings(previous => previous ? { ...previous, editable: value.editable } : previous); }, () => {});
+    return () => { current = false; };
+  }, [locked, settings?.editable]);
+  const dirty = !!settings && engine !== settings.engine;
+  return <section className="space-y-3" aria-labelledby="call-engine-title">
+    <div className="settings-card-heading"><h3 id="call-engine-title" className="section-title">Call engine</h3>{settings && <span className="settings-save-state" role="status">{dirty ? 'Unsaved changes' : 'Up to date'}</span>}</div>
     <p className="text-base text-stone-300">Applies to Backend calls. The browser Simulator remains a separate scripted mode.</p>
     {loading && <p role="status">Loading call engine…</p>}
     {error && <p role="alert" className="notice error">{error}</p>}
     {message && <p role="status" className="notice">{message}</p>}
     {settings && <form onSubmit={async event => {
-      event.preventDefault(); if (locked || loading || saving || !settings.editable) return;
+      event.preventDefault(); if (locked || loading || saving || !settings.editable || !dirty) return;
       setSaving(true); setError(''); setMessage('');
       try { const value = await updateCallEngine(engine); setSettings(value); setEngine(value.engine); setMessage('Call engine saved.'); onSaved(); }
       catch { setError('Could not save the call engine. Finish any active call and check the backend, then retry.'); }
@@ -35,7 +42,7 @@ export default function CallEngineSettings({ locked, onSaved }: { locked: boolea
       <p id="call-engine-description" role={engine === 'twilio' ? 'status' : undefined} className={engine === 'twilio' ? 'notice' : 'text-base text-stone-300'}>
         {engine === 'twilio' ? TWILIO_NOT_IMPLEMENTED : 'Mock service simulates calls. No real phone number is dialed.'}
       </p>
-      <button type="submit" className="primary">{saving ? 'Saving call engine…' : 'Save call engine'}</button>
+      <button type="submit" className="primary settings-save" disabled={!dirty}>{saving ? 'Saving call engine…' : 'Save call engine'}</button>
     </fieldset></form>}
     {(locked || settings && !settings.editable) && <p className="notice">Finish or resolve the current call attempt before changing the call engine.</p>}
     {!loading && (!settings || !settings.editable) && <button type="button" className="secondary" disabled={saving} onClick={() => setReload(value => value + 1)}>Refresh call engine</button>}

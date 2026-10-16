@@ -20,13 +20,20 @@ export default function LlmAgentSettings({ locked, onSaved }: { locked: boolean;
     }, () => { if (current) setError('Could not load LLM agent settings. Check the backend and sign-in session, then retry.'); })
       .finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
-  }, [reload, locked]);
+  }, [reload]);
+  useEffect(() => {
+    if (locked || !saved || saved.editable) return;
+    let current = true;
+    void getLlmSettings().then(value => { if (current) setSaved(previous => previous ? { ...previous, editable: value.editable } : previous); }, () => {});
+    return () => { current = false; };
+  }, [locked, saved?.editable]);
   const disabled = locked || loading || saving || !saved || !saved.editable;
   const updateModel = (next: string, nextProvider = provider) => {
     setModel(next); if (!llmEfforts(nextProvider, next || null).includes(effort)) setEffort('default');
   };
-  return <section className="mt-6 space-y-4" aria-labelledby="llm-agent-title">
-    <h3 id="llm-agent-title" className="section-title">LLM agent</h3>
+  const dirty = !!saved && (provider !== saved.provider || (model.trim() || null) !== saved.model || effort !== saved.effort || Object.values(actions).some(action => action !== 'keep'));
+  return <section className="space-y-4" aria-labelledby="llm-agent-title">
+    <div className="settings-card-heading"><h3 id="llm-agent-title" className="section-title">LLM agent</h3>{saved && <span className="settings-save-state" role="status">{dirty ? 'Unsaved changes' : 'Up to date'}</span>}</div>
     <p className="text-base text-stone-300">Used for Backend conversations in every supported language. API providers bill your account separately. Saving settings does not send a model request.</p>
     {loading && <p role="status">Loading LLM settings…</p>}
     {error && <p role="alert" className="notice error">{error}</p>}
@@ -34,7 +41,7 @@ export default function LlmAgentSettings({ locked, onSaved }: { locked: boolean;
     {(locked || saved && !saved.editable) && <p className="notice">Finish the active call before changing the agent or API keys.</p>}
     {!loading && !saved && <button type="button" className="secondary" onClick={() => setReload(value => value + 1)}>Retry LLM settings</button>}
     {saved && <form autoComplete="off" onSubmit={async event => {
-      event.preventDefault(); if (disabled) return;
+      event.preventDefault(); if (disabled || !dirty) return;
       const form = event.currentTarget, data = new FormData(form);
       const apiKeys: Partial<Record<'openai' | 'anthropic', string | null>> = {};
       for (const key of ['openai', 'anthropic'] as const) {
@@ -71,7 +78,7 @@ export default function LlmAgentSettings({ locked, onSaved }: { locked: boolean;
         <p className="text-base text-stone-300">Keys are encrypted on the server and never returned here or saved in browser storage.</p>
         {(['openai', 'anthropic'] as const).map(key => {
           const credential = saved.credentials[key], label = key === 'openai' ? 'OpenAI' : 'Claude';
-          return <div key={key} className="space-y-2">
+          const fields = <div className="space-y-2">
             <label>{label} API key<select aria-label={`${label} API key action`} value={actions[key]} onChange={event => setActions(previous => ({ ...previous, [key]: event.target.value as KeyAction }))}>
               <option value="keep">Keep current key</option><option value="replace">{credential.configured ? 'Replace' : 'Add'} key</option>{credential.source === 'stored' && <option value="remove">Delete stored key</option>}
             </select></label>
@@ -79,9 +86,10 @@ export default function LlmAgentSettings({ locked, onSaved }: { locked: boolean;
             {actions[key] === 'replace' && <label>New {label} API key<input name={`${key}-key`} type="password" autoComplete="new-password" spellCheck={false} autoCapitalize="none" maxLength={512} required /></label>}
             {actions[key] === 'remove' && <p className="text-base">The stored key will be deleted when you save. Any key supplied by the server environment remains available.</p>}
           </div>;
+          return provider === key ? <div key={key}>{fields}</div> : <details className="other-provider-key" key={key}><summary>{label} key · {credential.configured ? 'Configured' : 'Not configured'}{actions[key] !== 'keep' ? ' · Unsaved changes' : ''}</summary>{fields}</details>;
         })}
       </fieldset>
-      <button type="submit" className="primary">{saving ? 'Saving LLM agent…' : 'Save LLM agent'}</button>
+      <button type="submit" className="primary settings-save" disabled={!dirty}>{saving ? 'Saving LLM agent…' : 'Save LLM agent'}</button>
     </fieldset></form>}
   </section>;
 }

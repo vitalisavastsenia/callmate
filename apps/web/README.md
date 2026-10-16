@@ -1,8 +1,18 @@
 # Zeus Llama web UI
 
-React + Vite + TypeScript + Tailwind. English UI, Spanish, Russian, English, or Polish haircut transcripts with English translations, and the gold/dark Zeus Llama theme.
+React + Vite + TypeScript + Tailwind. English UI, Spanish, Russian, English, or Polish conversations with English translations, and the gold/dark Zeus Llama theme.
 
 The UI follows [delivery-plan section 4](../../docs/mvp-delivery-plan.md#4-engineer-1-ui-and-user-workflow) and [requirements](../../docs/requirements.md). See [UI-CALIBRATION.md](UI-CALIBRATION.md) for delivered scope, verification, and integration dependencies. This is a complete simulated UI workflow, not a completed real-call PoC or integrated personal MVP.
+
+## Interface layout
+
+The compact account/header and horizontally scrollable navigation keep Home's goal input visible on a narrow viewport. Existing colors, artwork, icons and serif headlines are retained; shared controls use a consistent type/spacing scale and respect reduced-motion preferences. Keyboard focus remains visible in scrolling navigation.
+
+Settings has section links for Calling, LLM agent, Personal details, Limits & storage, and Provider readiness. Personal details and limits save independently, as do the call engine and LLM configuration. Each form reports unsaved changes and retains its edits after a failed save; saving another section does not discard an unsaved engine/model selection. Inactive-provider key controls are collapsed but remain available without changing providers. Secrets remain write-only and are cleared after submitting the LLM form.
+
+The call dialog keeps Stop in its fixed header while the body scrolls; minimizing restores inline Stop. Essential connection/approval/uncertainty notices stay visible, while explanatory copy is under About this call/About these actions. Original text and English translations remain visible together. On desktop, Agreements shows the calendar beside the selected date/month agenda; narrow screens stack them. Calendar times, simulation labels and deletion semantics are unchanged.
+
+The `ui-layout.spec.ts` browser checks run in the `production` and `production-narrow` projects. They verify initial goal visibility, keyboard navigation, independent settings/error recovery, Stop after scrolling, and the responsive calendar agenda against a disposable built application. The normal checks command does not run Playwright; use the verification setup below.
 
 ## Start in Docker
 
@@ -94,9 +104,9 @@ Times support AM/PM, 24-hour ranges, “between 5 and 7 pm”, “from 17:00 to 
 
 ## Integration branch limits
 
-This merge preserves both workstreams; it does not complete their end-to-end integration. The backend simulator currently accepts appointment requests only and requires an approved booking name. Generic ask/change/other requests receive `400 INVALID_REQUEST`. Tone/notes/contact references persist with plans, but free-text boundaries still need backend policy adoption before live calling.
+The UI/backend HTTP/SSE workflow is integrated and covered by browser tests; real telephony remains unfinished. The scripted backend simulator accepts appointment requests only and requires an approved booking name. Generic ask/change/other requests receive `400 INVALID_REQUEST`. Tone/notes/contact references persist with plans, but free-text boundaries still need backend policy adoption before live calling.
 
-Call budgets must match the currency in backend settings; no FX conversion is performed. Explicit USD test rates reject EUR call budgets. With test rates disabled, provider charges remain unavailable. The shared history can include `kind: "manual_mock"` entries with no booking plan; the booking UI reports that these must be viewed/controlled in the backend console at port 3000. Its standalone simulator emits the current readiness capabilities contract. Live telephony remains disabled. The optional backend dialogue path analyzes Spanish, Russian, English, and Polish haircut inquiries and returns policy-approved relay replies; see [setup and limits](../../docs/docker-development.md#17-dialogue-driven-local-mock-calls). Select **Settings → Backend**, choose **Conversation language** in the request form, review the plan, and answer in the local mock operator window. It does not yet accept or confirm bookings.
+Call budgets must match the currency in backend settings; no FX conversion is performed. Explicit USD test rates reject EUR call budgets. With test rates disabled, provider charges remain unavailable. The shared history can include `kind: "manual_mock"` entries with no booking plan; the booking UI reports that these must be viewed/controlled in the backend console at port 3000. Its standalone simulator emits the current readiness capabilities contract. Live telephony remains disabled. The optional backend dialogue path analyzes Spanish, Russian, English, and Polish haircut inquiries and returns policy-approved relay replies; see [setup and limits](../../docs/docker-development.md#17-dialogue-driven-local-mock-calls). Select **Settings → Backend**, choose **Conversation language** in the request form, review the plan, and answer in the local mock operator window. The mock controller can accept and confirm simulated bookings using authenticated simulated output receipts and bounded business-confirmation checks; these are not real appointment or audio-playback evidence.
 
 The reviewed language persists in drafts/plans, repeat calls, and history. Request review displays it before Start. Assistant transcript messages can carry stable, versioned phrase references; display the supplied rendered text and English translation, not a client-side reconstruction from IDs. The reusable translations live in backend SQLite. Existing drafts without a language remain Spanish. The browser simulator keeps its Spanish script and rejects another selected language with a prompt to use Backend.
 
