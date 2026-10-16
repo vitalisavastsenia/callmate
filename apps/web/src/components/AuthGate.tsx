@@ -8,14 +8,20 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   const [username, setUsername] = useState(''); const [password, setPassword] = useState('');
   const [confirmation, setConfirmation] = useState('');
   const generation = useRef(0); const submitting = useRef(false);
+  const retrySession = useRef<() => Promise<void>>(async () => {});
+  const [checkUnavailable, setCheckUnavailable] = useState(false);
   useEffect(() => {
     let disposed = false;
     const refresh = async () => {
       if (submitting.current) return;
       const current = ++generation.current;
-      try { const next = await getSession(); if (!disposed && current === generation.current) { setSession(next); setError(''); } }
-      catch (error) { if (!disposed && current === generation.current) { setSession(null); setError(error instanceof Error ? error.message : 'Cannot check sign-in status.'); } }
+      try { const next = await getSession(); if (!disposed && current === generation.current) { setSession(next); setError(''); setCheckUnavailable(false); } }
+      catch (error) { if (!disposed && current === generation.current) {
+        if (error instanceof ApiError && error.code === 'UNAUTHENTICATED') setSession(old => old ? { ...old, authenticated: false, username: null, expiresAt: null } : old);
+        setCheckUnavailable(true); setError(error instanceof Error ? error.message : 'Cannot check sign-in status.');
+      } }
     };
+    retrySession.current = refresh;
     const expired = () => { setSession(old => old ? { ...old, authenticated: false, username: null, expiresAt: null } : old); void refresh(); };
     const focus = () => { void refresh(); };
     window.addEventListener('callmate:unauthorized', expired); window.addEventListener('focus', focus);
@@ -25,6 +31,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!session?.expiresAt) return;
     const timer = setTimeout(() => {
+      generation.current++;
       setSession(old => old ? { ...old, authenticated: false, username: null, expiresAt: null } : old);
       setError('Your session expired. Sign in again to continue.');
     }, Math.max(0, Date.parse(session.expiresAt) - Date.now()));
@@ -37,15 +44,13 @@ export default function AuthGate({ children }: { children: ReactNode }) {
       catch (error) { setError(error instanceof Error ? error.message : 'Sign out failed. Try again.'); }
       finally { submitting.current = false; setBusy(false); }
     }}>{busy ? 'Signing out…' : 'Sign out'}</button></div>
-    {error && <p role="alert" className="notice error mx-auto max-w-xl">{error}</p>}{children}
+    {error && <div role="alert" className="notice error mx-auto max-w-xl"><p>{error}</p>{checkUnavailable && <><p>Your sign-in check is temporarily unavailable. Your draft is still here; the session expiry remains enforced.</p><button type="button" className="secondary mt-3" onClick={() => void retrySession.current()}>Retry connection</button></>}</div>}{children}
   </>;
   const setup = session?.setupRequired ?? false;
   return <main className="auth-screen"><section className="panel space-y-5" aria-labelledby="auth-title">
     <p className="eyebrow">Zeus Llama · CallMate</p><h1 id="auth-title" className="section-title">{!session ? 'Connecting to CallMate' : setup ? 'Create your owner account' : 'Sign in'}</h1>
     {error && <p role="alert" className="notice error">{error}</p>}
-    {!session ? <><p>Your local backend must be running to sign in.</p><button type="button" className="secondary" onClick={async () => {
-      setError(''); try { setSession(await getSession()); } catch (error) { setError(error instanceof Error ? error.message : 'Cannot reach the backend.'); }
-    }}>Retry connection</button></> : <>
+    {!session ? <><p>Your local backend must be running to sign in.</p><button type="button" className="secondary" onClick={() => void retrySession.current()}>Retry connection</button></> : <>
       <p>{setup ? 'One account protects your contacts, calls, and settings on this installation. Choose a password with at least 12 characters.' : 'Use the owner account for this installation.'}</p>
       <form method="post" className="space-y-4" onSubmit={async event => {
         event.preventDefault(); if (busy) return;

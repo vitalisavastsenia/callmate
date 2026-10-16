@@ -105,3 +105,5 @@ The reviewed language persists in drafts/plans, repeat calls, and history. Reque
 Saved active calls and pending Start commands remember their browser-simulator or backend transport. Reload restores that transport even if another tab changed the default selection. Other tabs block new requests and mode changes while a saved attempt is unresolved; **Restore saved call** loads the original attempt without dialing again. Legacy ID-only records use the previously selected mode.
 
 A structured pre-attempt Start rejection (for example, `503 PROVIDER_NOT_READY`) clears the pending command and returns to request review. Network failures, invalid responses and command conflicts retain the original command for idempotent recovery; an authentication failure during recovery does not discard it.
+
+A temporary session-check/network failure keeps the mounted request draft and offers **Retry connection**. A verified signed-out response, private API 401, explicit logout, or the existing session expiry still locks the UI.

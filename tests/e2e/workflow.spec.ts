@@ -714,3 +714,35 @@ test('another tab cannot switch away from a saved call and reload restores its t
   await page.getByRole('dialog').getByRole('button', { name: 'Stop call', exact: true }).click();
   await other.close();
 });
+
+test('a transient session check preserves the draft but a verified sign-out locks the UI', async ({ page }) => {
+  await page.goto('/');
+  const goal = page.getByLabel('Home goal', { exact: true });
+  await goal.fill('Keep this unsaved appointment request');
+  await page.route('**/api/auth/session', route => route.abort('connectionrefused'));
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(page.getByRole('alert')).toContainText('Your draft is still here');
+  await expect(goal).toHaveValue('Keep this unsaved appointment request');
+  await page.unroute('**/api/auth/session');
+  await page.getByRole('button', { name: 'Retry connection', exact: true }).click();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(goal).toHaveValue('Keep this unsaved appointment request');
+  await page.route('**/api/auth/session', route => route.fulfill({ json: { setupRequired: false, authenticated: false, username: null, expiresAt: null } }));
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
+  await expect(goal).toHaveCount(0);
+});
+
+test('session expiry still locks an offline draft', async ({ page }) => {
+  await page.clock.install();
+  await page.route('**/api/auth/session', route => route.fulfill({ json: { setupRequired: false, authenticated: true, username: 'e2e-owner', expiresAt: new Date(Date.now() + 5000).toISOString() } }));
+  await page.goto('/');
+  await page.getByLabel('Home goal', { exact: true }).fill('An offline draft');
+  await page.unroute('**/api/auth/session');
+  await page.route('**/api/auth/session', route => route.abort('connectionrefused'));
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(page.getByRole('alert')).toContainText('Your draft is still here');
+  await page.clock.runFor(6000);
+  await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
+  await expect(page.getByLabel('Home goal', { exact: true })).toHaveCount(0);
+});
