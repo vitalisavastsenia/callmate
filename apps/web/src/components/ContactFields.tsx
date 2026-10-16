@@ -12,6 +12,7 @@ export function Modal({ title, onClose, children, className = '' }: { title: str
   const ref = useRef<HTMLDialogElement>(null); const titleId = useId();
   useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close(); }, []);
   return createPortal(<dialog ref={ref} className={'contact-dialog ' + className} aria-labelledby={titleId} onCancel={e => { e.preventDefault(); onClose(); }}>
-    <div className="mb-5 flex items-start justify-between gap-3"><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" aria-label="Close dialog" onClick={onClose}>×</button></div>{children}
+    <div className="modal-header mb-5 flex items-start justify-between gap-3"><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" aria-label="Close dialog" onClick={onClose}>×</button></div>
+    <div className="modal-body">{children}</div>
   </dialog>, document.body);
 }
