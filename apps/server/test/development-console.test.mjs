@@ -1560,3 +1560,29 @@ test('mock auto-approval: interruption while a receipt is in flight cannot mark 
   const call = await f.snapshot(); assert.ok(!call.messages.some(m => m.phrase?.id.endsWith('.acceptance')));
   assert.equal(call.outcome.status, 'pending');
 });
+
+for (const frame of [
+  { type: 'prompt', voicePrompt: 'Synthetic reply', lang: 'en-US', last: true },
+  { type: 'prompt', voicePrompt: 'Synthetic partial', lang: 'en-US', last: false },
+  { type: 'dtmf', digit: '#' },
+  { type: 'interrupt', utteranceUntilInterrupt: 'Synthetic interruption', durationUntilInterruptMs: 50 },
+]) test(`relay ${frame.type}/${frame.last ?? ''}: failed SQLite activity closes only the socket and keeps the call reserved`, async t => {
+  const app = await fixture(t, { development: { automatic: false }, simulator: { automatic: false } });
+  const created = (await app.api('/api/dev/conversations', 'POST', input())).body.conversation;
+  const peer = await app.answer(created.callSid); await until(() => peer.messages.length === 1);
+  const before = app.runtime.controller.get(created.id);
+  const db = new Database(join(app.dataDir, 'callmate.sqlite'));
+  try {
+    db.exec("CREATE TRIGGER fail_relay_activity BEFORE UPDATE ON call_attempts BEGIN SELECT RAISE(ABORT, 'synthetic private storage failure'); END");
+    peer.send(JSON.stringify(frame));
+    assert.equal(await peer.closed, 1011);
+    assert.deepEqual(app.runtime.controller.get(created.id), before);
+    assert.equal((await app.api('/api/v1/history')).status, 200);
+    assert.equal((await app.api('/api/dev/conversations', 'POST', input())).body.error.code, 'CALL_ALREADY_ACTIVE');
+    assert.ok(!app.logs.includes('synthetic private storage failure'));
+    db.exec('DROP TRIGGER fail_relay_activity');
+    await app.api(`/api/dev/conversations/${created.id}/stop`, 'POST', {});
+    assert.equal(app.runtime.controller.get(created.id).callState, 'ended');
+    assert.equal(app.hungUp, 1); assert.equal(app.creates, 1);
+  } finally { db.exec('DROP TRIGGER IF EXISTS fail_relay_activity'); db.close(); }
+});

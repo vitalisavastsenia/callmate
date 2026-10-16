@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { WebSocket, WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer, type RawData } from "ws";
 import type { Config } from "./config.js";
 import { relayInbound, relayOutbound } from "./twilio/protocol.js";
 import type { RelayInbound, RelayOutbound } from "./twilio/protocol.js";
@@ -54,7 +54,7 @@ export function mountMockRelay(app: FastifyInstance, config: Config, maxDuration
       };
       ws.on("error", () => {}); // Do not log provider frames or exception values.
       ws.once("close", () => { clearTimeout(deadline); clearTimeout(setupDeadline); partial = ""; identities.forEach((key) => active.delete(key)); try { consumer?.close(); } catch { /* Keep unresolved calls reserved after storage failure. */ } });
-      ws.on("message", (raw, binary) => {
+      const handleMessage = (raw: RawData, binary: boolean) => {
         if (closing || ended || ws.readyState !== WebSocket.OPEN) return;
         let parsed;
         try { if (binary) throw new Error(); parsed = relayInbound.safeParse(JSON.parse(raw.toString())); }
@@ -89,8 +89,7 @@ export function mountMockRelay(app: FastifyInstance, config: Config, maxDuration
           if (!message.last) return;
           const text = partial; partial = "";
           if (consumer) {
-            try { if (text.trim()) consumer.prompt(text, language); }
-            catch { stop(1011, "Cannot persist development conversation"); }
+            if (text.trim()) consumer.prompt(text, language);
             return;
           }
           if (text === "/end") {
@@ -112,6 +111,15 @@ export function mountMockRelay(app: FastifyInstance, config: Config, maxDuration
         } else if (message.type === "error") {
           stop(1011, "Provider reported a relay error");
         } // DTMF is validated and accepted without inventing booking actions or replies.
+      };
+      ws.on("message", (raw, binary) => {
+        try { handleMessage(raw, binary); }
+        catch {
+          // Every consumer callback can touch SQLite, including partial speech,
+          // DTMF and interrupt activity. Never let a storage failure escape ws.emit.
+          partial = "";
+          stop(1011, "Cannot process development conversation");
+        }
       });
     });
   };
