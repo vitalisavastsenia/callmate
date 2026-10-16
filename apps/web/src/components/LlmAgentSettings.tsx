@@ -73,7 +73,9 @@ export default function LlmAgentSettings({ locked, onSaved }: { locked: boolean;
           <label>Reasoning effort<select aria-label="Reasoning effort" aria-describedby="llm-effort-help" value={effort} onChange={event => setEffort(event.target.value as LlmEffort)}>{llmEfforts(provider, model || null).map(value => <option key={value} value={value}>{value === 'default' ? 'Provider default' : value}</option>)}</select><small id="llm-effort-help">Higher effort can increase response time and API cost.</small></label>
         </>}
       </div>
-      {provider === 'codex' && <p className="text-base">Uses the server’s saved ChatGPT login. Codex CLI must be installed in the backend container; check Provider readiness below.</p>}
+      {provider === 'disabled' && <p className="notice">LLM agent is disabled. Reviewed Backend mock calls need a configured agent. Select an API provider and add your key, or use Codex CLI with its Docker image and your login.</p>}
+      {(provider === 'openai' || provider === 'anthropic') && !saved.credentials[provider].configured && <p className="notice">Add your {provider === 'openai' ? 'OpenAI' : 'Claude'} API key below, choose a model available to your account, and save the LLM agent.</p>}
+      {provider === 'codex' && <p className="text-base">Uses the server’s saved ChatGPT login. The default Docker image does not include Codex CLI: use compose.codex.yaml and initialize your login using scripts/setup-codex-login.sh. Select Codex CLI here and save; choosing it does not install the CLI or sign you in. See docs/docker-development.md, section 17, for setup and device login.</p>}
       <fieldset className="space-y-4"><legend className="section-title">API keys</legend>
         <p className="text-base text-stone-300">Keys are encrypted on the server and never returned here or saved in browser storage.</p>
         {(['openai', 'anthropic'] as const).map(key => {

@@ -73,6 +73,10 @@ function LimitsDefaults({ settings, defaults, busy, onSave }: DefaultsProps) {
 
 export default function SettingsView(props: Props) {
   const { readiness, busy, simulator, modeLocked, scenario, onModeChange, onScenarioChange, onRefresh } = props;
+  const mockTransport = !!readiness?.capabilities.some(capability => capability.name === 'mock_relay' && capability.enabled);
+  const needsDialogue = !simulator && mockTransport && !readiness?.capabilities.some(capability => capability.name === 'dialogue_integration' && capability.ready);
+  const callsReady = !!readiness?.ready && !needsDialogue;
+  const callMode = simulator ? 'Browser Simulator' : mockTransport ? 'Backend mock calls' : 'Backend calls';
   return <section className="settings-view" aria-labelledby="settings-title">
     <div className="page-heading"><p className="eyebrow">Make Zeus your own</p><h2 id="settings-title">Settings</h2><p className="settings-description">Manage calling, your agent and defaults. Each section saves separately.</p></div>
     <div className="settings-layout"><nav className="settings-nav" aria-label="Settings sections">
@@ -84,11 +88,13 @@ export default function SettingsView(props: Props) {
         </div><p className="mt-3 text-base text-stone-300">{modeLocked ? 'Finish or resolve the current call attempt before switching modes.' : simulator ? 'Scripted calls on this device. No number is dialed.' : readiness?.capabilities.some(c => c.name === 'mock_relay' && c.enabled) ? readiness.capabilities.some(c => c.name === 'dialogue_integration' && c.ready) ? 'Local mock conversations use the configured dialogue engine. Answer at localhost:8080. No real number is dialed.' : 'Reviewed mock calls need a ready dialogue engine. Check Provider readiness below.' : 'Backend scripted simulation. No number is dialed and results are synthetic.'}</p></fieldset>
         {simulator && <label className="mb-6">Simulated outcome<select aria-label="Simulated outcome" disabled={modeLocked || busy} value={scenario} onChange={e => onScenarioChange(e.target.value as Scenario)}>{Object.entries(scenarios).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
         <CallEngineSettings locked={modeLocked || busy} onSaved={onRefresh} />
+        {needsDialogue && <div className="notice mt-5" role="status"><p className="font-semibold">Mock calls need an LLM agent</p><p className="mt-2">The mock service handles call transport. Choose an LLM provider and model below to generate replies. API providers need your API key; Codex CLI needs the optional Docker image and your saved login.</p><a className="home-request-link" href="#settings-agent">Configure LLM agent</a></div>}
       </section>
-      <div id="settings-agent" className="settings-card"><LlmAgentSettings locked={modeLocked || busy} onSaved={onRefresh} /></div>
+      <div id="settings-agent" tabIndex={-1} className="settings-card"><LlmAgentSettings locked={modeLocked || busy} onSaved={onRefresh} /></div>
       <PersonalDefaults {...props} /><LimitsDefaults {...props} />
       <details id="settings-readiness" className="settings-card"><summary className="section-title cursor-pointer">Provider readiness</summary>
-        <p>{readiness ? (readiness.mode === 'simulator' ? 'Simulator' : 'Real-call backend') + ' · ' + (readiness.ready ? 'Ready' : 'Not ready') : 'Backend readiness unavailable'}</p>
+        <p role="status">{readiness ? callMode + ' · ' + (callsReady ? 'Ready' : 'Not ready') : 'Backend readiness unavailable'}</p>
+        {!simulator && readiness && <p className="mt-2 text-base text-stone-300">Transport: {readiness.ready ? 'Ready' : 'Not ready'}{needsDialogue ? ' · Dialogue agent: Not ready. Configure LLM agent above, then check readiness again.' : ''}</p>}
         <p className="my-3 text-base">Voice engine: {readiness?.voiceEngine?.replaceAll('_', ' ') ?? 'Not active'}</p>
         <ul className="readiness-checks">{readiness?.checks.map(check => <li key={check.name}><strong className="capitalize">{check.name}</strong><span className="status-badge">{check.status.replaceAll('_', ' ')}</span><p>{check.message}</p></li>)}</ul>
         <button type="button" className="secondary mt-4" disabled={busy} onClick={onRefresh}>Check readiness again</button>

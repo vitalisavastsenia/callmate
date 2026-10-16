@@ -69,6 +69,15 @@ export default function App() {
     && !readiness?.capabilities.some(c => c.name === 'dialogue_integration' && c.ready);
   const mayStart = storageAvailable && !mockNeedsDialogue && !!readiness?.ready && !active && !loading && !unresolved;
 
+  function openAgentSettings() {
+    setPage('settings');
+    requestAnimationFrame(() => {
+      const section = document.getElementById('settings-agent');
+      section?.scrollIntoView({ behavior: 'instant', block: 'start' });
+      section?.focus({ preventScroll: true });
+    });
+  }
+
   function acceptSnapshot(next: CallSnapshot) {
     const old = latestCall.current;
     if (old?.id === next.id && old.revision > next.revision) return;
@@ -306,7 +315,7 @@ export default function App() {
         {!simulator && readiness?.checks.filter(check => check.name === 'telephony' && check.status === 'missing').map(check => <p key={check.name} role="status" className="notice mb-4">{check.message}</p>)}
         <div hidden={page !== 'home'}><Home onRequest={() => { setNotice(''); setPage('request'); }} /></div>
         {!loading && <RequestForm key={requestKey} initial={requestInitial} initialPrepared={initialPrepared} view={page === 'request' ? 'request' : 'home'} onRequest={message => { setNotice(message ?? ''); setPage('request'); }} settings={settings} defaults={defaults} approvalPending={!!call?.pendingApproval} busy={busy} locked={requestDisabled || showCall} callDisabled={!mayStart}
-          callHelp={<>{mockNeedsDialogue && <p className="notice">Mock calls need a ready dialogue engine. Check Settings → Provider readiness after configuring the backend Codex login.</p>}{(!readiness?.ready || mockNeedsDialogue) && <div className="notice"><p>Calling requires confirmed backend readiness.</p><button type="button" className="secondary mt-3" disabled={busy} onClick={() => void perform(refreshReadiness)}>Check readiness again</button></div>}{!simulator && !mockNeedsDialogue && readiness?.capabilities.some(c => c.name === 'mock_relay' && c.ready) && <p className="notice">Local mock call: open localhost:8080 and click Answer when it rings. No real phone number is dialed.</p>}{api.isMockMode && <p className="text-base text-stone-300">No number will be dialed. Custom simulator requests use scripted answers and may need follow-up.</p>}</>}
+          callHelp={<>{mockNeedsDialogue && <div className="notice"><p>Mock calls need a ready dialogue engine. Choose a provider and model in Settings → LLM agent, then add your API key or set up the Codex CLI login.</p><button type="button" className="secondary mt-3" onClick={openAgentSettings}>Set up LLM agent</button></div>}{(!readiness?.ready || mockNeedsDialogue) && <div className="notice"><p>Calling requires confirmed backend readiness.</p><button type="button" className="secondary mt-3" disabled={busy} onClick={() => void perform(refreshReadiness)}>Check readiness again</button></div>}{!simulator && !mockNeedsDialogue && readiness?.capabilities.some(c => c.name === 'mock_relay' && c.ready) && <p className="notice">Local mock call: open localhost:8080 and click Answer when it rings. No real phone number is dialed.</p>}{api.isMockMode && <p className="text-base text-stone-300">No number will be dialed. Custom simulator requests use scripted answers and may need follow-up.</p>}</>}
           flow={callFlow} onCall={request => void perform(() => callRequest(request))}
           scenario={scenario} onScenarioChange={setScenario}
         />}

@@ -651,6 +651,44 @@ Relay prompt length is checked across all partial frames before consumer callbac
 
 HTTP input validation (body, route/query parameters, command keys and signed callback fields) returns sanitized `400 INVALID_REQUEST` details. Invalid persisted data or an invalid controller/response snapshot is an internal failure and returns `500 INTERNAL_ERROR` without raw schema diagnostics. A failed Start response does not imply that its attempt was never reserved: retain the original command key for idempotent recovery.
 
+### Mock is ready but dialogue is missing
+
+`Mock: ready` verifies the local relay health endpoint. It does not configure an
+agent. Default Compose deliberately sets `CALLMATE_DIALOGUE_PROVIDER=disabled`,
+so reviewed calls cannot start until the developer configures an LLM. The
+readiness API's overall `ready` covers transport prerequisites; check the
+`dialogue_integration.ready` capability too. The UI reports **Backend mock calls
+· Not ready** when this prerequisite is missing, even with healthy transport.
+
+Each developer can choose either setup:
+
+1. **API:** start normal Compose, choose **Settings → LLM agent → Codex / OpenAI
+   API** or **Claude API**, select a model available to their account, add their
+   own API key and save. No CLI image or ChatGPT login is required for this path.
+2. **Codex CLI:** use the project's optional image and initialize that developer's
+   saved login, following section 17 above:
+
+   ```sh
+   docker compose -f compose.yaml -f compose.codex.yaml build zeus-llama
+   sh scripts/setup-codex-login.sh
+   docker compose -f compose.yaml -f compose.codex.yaml up -d --wait
+   ```
+
+   If no host credential file is available, use the documented Docker device
+   login instead of the copy script. The default image does not contain the CLI;
+   selecting it in Settings cannot install it or sign in.
+
+Then select/save the provider in **LLM agent**, set **Call mode → Backend** and
+**Call engine → Mock service**, and check readiness again. A saved `disabled`
+selection overrides environment bootstrap defaults, including the Codex override.
+Changing Compose alone does not replace that saved choice. Answer the ringing
+call in the operator UI at `http://localhost:8080/`.
+
+Browser Simulator uses scripted replies and never contacts the relay. The
+technical console can exercise manual transport without an LLM; it does not
+automatically negotiate a reviewed request. Readiness/settings checks do not send
+paid inference requests. Configured agents use their provider during conversations.
+
 ## 18. LLM agent settings and secret storage
 
 Open **Settings → LLM agent** to select Disabled, Codex CLI (saved ChatGPT login), Codex/OpenAI API (Responses), or Claude API (Messages). Choose a model and supported reasoning effort; custom model IDs use provider-default effort. Suggested IDs are examples, not proof of account entitlement. Model availability and supported parameters remain provider-dependent. Codex CLI can use its default model and still needs the [optional CLI image and login](#17-dialogue-driven-local-mock-calls). API engines work in the normal image. These settings apply to all four supported conversation languages and only to Backend calls, within the existing development/test mock gates. They do not enable live telephony.
