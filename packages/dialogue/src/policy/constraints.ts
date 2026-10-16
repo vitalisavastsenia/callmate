@@ -1,3 +1,4 @@
+import { templateForRequest } from "@callmate/contracts";
 import type { CallSnapshot, Offer, PolicyDecision } from "@callmate/contracts";
 import { checkOfferEvidence } from "../booking/evidence.js";
 import { namesMatch, serviceKey } from "../language/spanish.js";
@@ -13,6 +14,14 @@ export function checkHardConstraints(snapshot: CallSnapshot, offer: Offer, now: 
   }
   if (Object.values(offer.conditions).some((condition) => condition === "unknown")) {
     return { decision: "clarify", field: "conditions" };
+  }
+  const profile = templateForRequest(request);
+  if (profile) {
+    if (Object.entries(offer.templateDetails ?? {}).some(([key, value]) => value != null && !profile.fields.some(field => field.key === key))) return { decision: "deny", reason: "unexpected_domain_detail" };
+    for (const field of profile.fields) {
+      if (offer.templateDetails?.[field.key] == null) return { decision: "clarify", field: "details" };
+      if (offer.templateDetails[field.key] !== request.templateDetails?.[field.key]) return { decision: "deny", reason: "domain_details_mismatch" };
+    }
   }
   const planService = serviceKey(request.service);
   if (!planService) return { decision: "clarify", field: "service" };

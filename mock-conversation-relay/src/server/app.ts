@@ -49,7 +49,7 @@ export function createApp(config: Config, controller = new Controller(config)) {
     reply.header("X-Content-Type-Options", "nosniff").header("Referrer-Policy", "no-referrer").header("Cache-Control", "no-store");
     reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
     app.log.info({ method: req.method, route: req.routeOptions.url ?? "unmatched", mockGenerated: true }, "mock request");
-    if (req.url.startsWith("/2010-04-01/")) {
+    if (req.url.startsWith("/2010-04-01/") || req.url.startsWith("/mock/v1/")) {
       const actual = Buffer.from(req.headers.authorization ?? "");
       const credentials = [`${config.MOCK_API_USERNAME}:${config.MOCK_API_PASSWORD}`, `${config.MOCK_ACCOUNT_SID}:${config.MOCK_AUTH_TOKEN}`];
       const authenticated = credentials.map((value) => Buffer.from(`Basic ${Buffer.from(value).toString("base64")}`))
@@ -73,6 +73,12 @@ export function createApp(config: Config, controller = new Controller(config)) {
     done(null, fields);
   });
   app.get("/healthz", async () => ({ ok: true, service: "CallMate Mock ConversationRelay", mock: true }));
+  // Explicitly mock-only; this is not a Twilio REST resource or audio attestation.
+  app.get("/mock/v1/calls/:callSid/outputs/:sequence", async req => {
+    const { callSid, sequence } = z.object({ callSid: z.string().regex(/^CA[0-9a-f]{32}$/i),
+      sequence: z.coerce.number().int().min(1).max(2000) }).parse(req.params);
+    return controller.outputReceipt(callSid, sequence);
+  });
   app.get("/api/config", async () => publicConfig);
   app.get("/api/sessions", async () => ({ sessions: controller.list() }));
   app.post("/api/sessions", async (req, reply) => {

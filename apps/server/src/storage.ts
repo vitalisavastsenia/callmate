@@ -7,6 +7,7 @@ import { SettingsSchema } from "@callmate/contracts";
 import type { z } from "zod";
 import { callStore } from "./call-store.js";
 import { contactStore } from "./contacts.js";
+import { dialoguePhraseStore } from "./dialogue-phrases.js";
 import { authStore } from "./auth-store.js";
 
 type Settings = z.infer<typeof SettingsSchema>;
@@ -61,7 +62,9 @@ export function openStore(dataDir: string) {
       return SettingsSchema.parse(JSON.parse(row.value));
     };
     getSettings(); // Fail startup on corrupt/incompatible storage, not on the first UI request.
+    const phrases = dialoguePhraseStore(db);
     return {
+      phrases,
       calls: callStore(db),
       contacts: contactStore(db),
       auth: authStore(db),
@@ -73,6 +76,7 @@ export function openStore(dataDir: string) {
         return settings;
       },
       check() {
+        phrases.check();
         db.prepare("SELECT id FROM app_settings WHERE id = 1").get();
         db.prepare("SELECT id FROM call_attempts LIMIT 1").get();
         db.prepare("SELECT id FROM contacts LIMIT 1").get();

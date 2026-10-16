@@ -1,8 +1,9 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import type { ApprovalDecision, CallSnapshot, DomainEvent, ReviewPlan, CandidateAction, PlaybackPermit } from "@callmate/contracts";
-import { PlaybackPermitSchema } from "@callmate/contracts";
-import { createDialogueServices, createOpenAIModelClient, reduceBooking, spanishWaitingForApproval } from "@callmate/dialogue";
-import type { ModelClient, BookingEvent, ExactOfferGrant } from "@callmate/dialogue";
+import { PlaybackPermitSchema, templateForRequest, templateForService, RequestDraftSchema } from "@callmate/contracts";
+import { createDialogueServices, createOpenAIModelClient, createCodexModelClient, reduceBooking, renderReply, renderAction, dialogueLanguage } from "@callmate/dialogue";
+import type { ModelClient, BookingEvent, ExactOfferGrant, RenderedReply } from "@callmate/dialogue";
 import type { Config } from "./config.js";
 import type { Store } from "./storage.js";
 import { isMockAttempt } from "./call-store.js";
@@ -10,6 +11,9 @@ import type { MockAttempt } from "./call-store.js";
 import type { RelayOutbound } from "./twilio/protocol.js";
 import type { RelaySend } from "./mock-relay.js";
 import { CommandError } from "./errors.js";
+import { mockRelayEnabled } from "./mock-relay.js";
+import { MockCallsClient } from "./mock-calls-client.js";
+import { verifyMockConfirmation } from "./mock-confirmation.js";
 
 type Attempt = MockAttempt & { call: CallSnapshot };
 type Emit = (type: DomainEvent["type"], payload: unknown) => void;
@@ -17,18 +21,21 @@ type QueuedOutput = { frame: RelayOutbound; permit: PlaybackPermit | null };
 type Queue = (frame: RelayOutbound, permit: PlaybackPermit | null) => void;
 type Change = (id: string, work: (a: Attempt, emit: Emit) => void) => unknown;
 
-/** Controller-owned dialogue over local ConversationRelay. Never treats socket writes as playback. */
+/** Controller-owned dialogue. Only authenticated mock receipts simulate completed playback. */
 export class RelayDialogue {
   private services: ReturnType<typeof createDialogueServices> | undefined;
   private jobs = new Map<string, AbortController>();
   private senders = new Map<string, RelaySend>();
   private closed = false;
+  private playbackJobs = new Map<string, Promise<void>>();
   private speechPending = new Set<string>();
   get enabled() { return !!this.services; }
   constructor(private config: Config, private store: Store, private change: Change,
     private stopped: (id: string) => boolean, model?: ModelClient) {
-    if (model || config.dialogueProvider === "openai") {
-      const client = model ?? createOpenAIModelClient({ apiKey: config.openaiApiKey!, model: config.dialogueModel!, timeoutMs: config.dialogueTimeoutMs });
+    if (model || config.dialogueProvider !== "disabled") {
+      const client = model ?? (config.dialogueProvider === "codex"
+        ? createCodexModelClient({ ...(config.dialogueModel ? { model: config.dialogueModel } : {}), timeoutMs: config.dialogueTimeoutMs })
+        : createOpenAIModelClient({ apiKey: config.openaiApiKey!, model: config.dialogueModel!, timeoutMs: config.dialogueTimeoutMs }));
       this.services = createDialogueServices(client, { timeoutMs: config.dialogueTimeoutMs,
         offerIdentitySource: () => { throw new Error("Turn-specific reservation required"); } });
       this.model = client;
@@ -42,13 +49,16 @@ export class RelayDialogue {
   }
   private now() { return new Date().toISOString(); }
   greeting(plan: ReviewPlan) {
-    if ((plan.request.requestType ?? "book") !== "book" || !["haircut", "corte de pelo", "corte de cabello"].includes(plan.request.service.trim().toLowerCase())) {
-      throw new CommandError(400, "INVALID_REQUEST", "Dialogue mock currently supports Spanish haircut appointments only");
+    if ((plan.request.requestType ?? "book") !== "book" || !templateForRequest(plan.request) || templateForService(plan.request.service)?.id !== templateForRequest(plan.request)?.id) {
+      throw new CommandError(400, "INVALID_REQUEST", "Select a supported appointment template and matching service");
     }
+    const profile = templateForRequest(plan.request)!;
+    if (!RequestDraftSchema.safeParse({ ...plan.request, templateId: profile.id }).success) throw new CommandError(400, "INVALID_REQUEST", "Complete the required template details before starting");
     if (/[\p{Cc}\p{Cf}<>]/u.test(plan.request.bookingName)) throw new CommandError(400, "INVALID_REQUEST", "Booking name cannot be spoken safely");
     // Full availability and goal remain in every model input; disclosure precedes the first business turn.
-    return "Hola, soy un asistente de inteligencia artificial. Llamo para consultar una cita para un corte de pelo. ¿Puede ayudarme?";
+    return this.opening(plan).text;
   }
+  opening(plan: ReviewPlan) { return renderReply("greeting", plan, {}, this.store.phrases.lookup); }
   speech(id: string) {
     if (!this.enabled || !this.store.calls.get(id)?.call.plan) return;
     this.speechPending.add(id); this.cancel(id);
@@ -57,7 +67,8 @@ export class RelayDialogue {
   close() { this.closed = true; for (const id of this.jobs.keys()) this.cancel(id); this.senders.clear(); this.speechPending.clear(); }
   private update(a: Attempt, emit: Emit, event: BookingEvent) {
     const previous = a.call.pendingApproval;
-    const { acceptance: _receipt, ...fields } = reduceBooking(a.call, event, this.now());
+    const { acceptance, ...fields } = reduceBooking(a.call, event, this.now(), a.internal.dialoguePlayback?.acceptance ?? null);
+    if (a.internal.dialoguePlayback) a.internal.dialoguePlayback.acceptance = acceptance;
     Object.assign(a.call, fields);
     if (previous && !a.call.pendingApproval) emit("approval.resolved", { approvalId: previous.id,
       offer: { offerId: previous.offer.id, offerVersion: previous.offer.version },
@@ -76,13 +87,74 @@ export class RelayDialogue {
       emit("call.error", { code: "PROVIDER_UNAVAILABLE", message: "Dialogue could not produce a valid response. No acceptance was sent; stop or clarify the call.", recoverable: true });
     });
   }
+  interrupt(id: string) {
+    this.speech(id);
+    this.change(id, (a, emit) => {
+      const playback = a.internal.dialoguePlayback;
+      if (!playback || a.call.callState !== "connected") return;
+      for (const pending of playback.pending) {
+        const message = a.call.messages.find(m => m.id === pending.permit.outputId);
+        if (message?.playback === "playing") { message.playback = "interrupted"; emit("transcript.updated", message); }
+      }
+      playback.pending = [];
+    });
+  }
+  async syncPlayback(id: string): Promise<void> {
+    if (!mockRelayEnabled(this.config) || this.closed) return;
+    const existing = this.playbackJobs.get(id); if (existing) return existing;
+    const job = this.reconcilePlayback(id).finally(() => { if (this.playbackJobs.get(id) === job) this.playbackJobs.delete(id); });
+    this.playbackJobs.set(id, job); return job;
+  }
+  private async reconcilePlayback(id: string) {
+    const client = new MockCallsClient(this.config);
+    while (!this.closed && !this.stopped(id)) {
+      const a = this.get(id), pending = a.internal.dialoguePlayback?.pending[0];
+      const sessionId = a.internal.correlation?.sessionId;
+      if (!pending || !sessionId || !a.internal.callSid || a.internal.stopRequested
+        || a.internal.correlation?.recoveryRequired || a.call.callState !== "connected") return;
+      let receipt;
+      for (let retry = 0; retry < 3; retry++) {
+        try { receipt = await client.outputReceipt(a.internal.callSid, sessionId, pending.sequence); break; }
+        catch { if (retry < 2) await delay(50); }
+      }
+      if (!receipt || receipt.textSha256 !== createHash("sha256").update(pending.permit.approvedSpanishText).digest("hex")
+        || receipt.language !== dialogueLanguage(a.call.plan) || Date.parse(receipt.completedAt) < Date.parse(pending.startedAt)
+        || Date.parse(receipt.completedAt) > Date.now()) return;
+      if (this.closed || this.stopped(id)) return;
+      this.change(id, (a, emit) => {
+        const playback = a.internal.dialoguePlayback;
+        const current = playback?.pending[0];
+        const message = a.call.messages.find(m => m.id === pending.permit.outputId);
+        if (!playback || current?.permit.id !== pending.permit.id || message?.playback !== "playing"
+          || a.internal.stopRequested || a.internal.correlation?.recoveryRequired || a.call.callState !== "connected") return;
+        message.playback = "played"; emit("transcript.updated", message);
+        playback.pending.shift();
+        if (message.phrase?.id.endsWith(".acceptance") && pending.readbackMessageId && a.call.activeOffer) {
+          this.update(a, emit, { type: "acceptance_played", receipt: { permit: pending.permit,
+            offer: a.call.activeOffer, readbackMessageId: pending.readbackMessageId,
+            acceptanceMessageId: message.id, startedAt: pending.startedAt, observedAt: receipt!.completedAt } });
+        }
+      });
+      // An interruption/Stop can consume or invalidate a pending output during the HTTP request.
+      if (this.get(id).internal.dialoguePlayback?.pending[0]?.permit.id === pending.permit.id) return;
+    }
+  }
   prompt(id: string, send: RelaySend) {
     if (!this.model || this.closed) return;
     this.cancel(id); this.speechPending.delete(id); this.senders.set(id, send);
+    const triggerId = this.get(id).call.messages.findLast(m => m.speaker === "business")?.id;
+    const job = new AbortController(); this.jobs.set(id, job);
+    void this.syncPlayback(id).then(() => {
+      if (this.closed || job.signal.aborted || this.jobs.get(id) !== job || this.stopped(id)
+        || this.get(id).call.messages.findLast(m => m.speaker === "business")?.id !== triggerId) return;
+      this.generate(id, send, job);
+    }).catch(() => { if (!job.signal.aborted) this.fail(id); });
+  }
+  private generate(id: string, send: RelaySend, job: AbortController) {
+    if (!this.model || this.closed) return;
     const a = this.get(id); const call = structuredClone(a.call);
     const trigger = call.messages.findLast(m => m.speaker === "business");
     if (!trigger || call.callState !== "connected" || call.outcome.status !== "pending" || a.internal.stopRequested) return;
-    const job = new AbortController(); this.jobs.set(id, job);
     // Reserve before generation. Validation is a pure lookup; only the current job may persist it.
     const offerId = call.activeOffer?.id ?? randomUUID();
     const offerVersion = (call.activeOffer?.version ?? 0) + 1;
@@ -130,28 +202,50 @@ export class RelayDialogue {
         this.update(a, emit, { type: "approval_requested", approval });
         emit("approval.requested", approval);
       }
-      this.speak(a, emit, spanishWaitingForApproval(), send); return;
+      this.speak(a, emit, renderReply("waiting", a.call.plan, {}, this.store.phrases.lookup), send); return;
     }
     if (decision.decision === "allow" && candidate.action === "evaluate_offer") {
       this.respond(a, emit, { action: "read_back", offerId: candidate.offer.id, offerVersion: candidate.offer.version }, send); return;
     }
-    if (decision.decision === "allow" && candidate.action !== "accept_offer" && candidate.action !== "record_business_confirmation") {
+    if (decision.decision === "allow" && candidate.action === "record_business_confirmation") {
+      const evidence = a.call.messages.filter(m => candidate.evidenceMessageIds.includes(m.id));
+      if (!mockRelayEnabled(this.config) || verifyMockConfirmation({ offer: a.call.activeOffer!, evidence,
+        businessMessagesAfterAcceptance: evidence }) !== "affirmed") {
+        this.speak(a, emit, renderReply("confirm_booking", a.call.plan, {}, this.store.phrases.lookup), send); return;
+      }
+      this.update(a, emit, { type: "business_confirmation", evidenceMessageIds: candidate.evidenceMessageIds, verifyMeaning: verifyMockConfirmation });
+      if (a.call.outcome.status === "confirmed") {
+        this.speak(a, emit, renderReply("closing_confirmed", a.call.plan, {}, this.store.phrases.lookup), send);
+        send({ type: "end", handoffData: JSON.stringify({ reasonCode: "dialogue_complete", bookingStatus: "confirmed", simulation: true }) }, null);
+      }
+      return;
+    }
+    if (decision.decision === "allow" && (candidate.action !== "accept_offer" || mockRelayEnabled(this.config))) {
+      if (candidate.action === "accept_offer" && verifyMockConfirmation({ offer: a.call.activeOffer!,
+        evidence: a.call.messages.filter(m => m.id === a.call.messages.findLast(m => m.speaker === "business")?.id),
+        businessMessagesAfterAcceptance: [] }) !== "affirmed") {
+        this.speak(a, emit, renderReply("confirm_details", a.call.plan, {}, this.store.phrases.lookup), send); return;
+      }
       if (candidate.action === "read_back") this.update(a, emit, { type: "readback_started", offerId: candidate.offerId, offerVersion: candidate.offerVersion });
-      // There is deliberately no route to acceptance without attested full readback playback.
-      this.speak(a, emit, decision.approvedSpanishText, send);
+      // Acceptance requires the authenticated mock receipt for the complete readback.
+      this.speakDecision(a, emit, candidate, decision.approvedSpanishText, send);
       if (candidate.action === "end_call") {
         this.update(a, emit, { type: "call_finished", reason: candidate.reason === "unresolved" ? "technical_failure" : candidate.reason });
         send({ type: "end", handoffData: JSON.stringify({ reasonCode: "dialogue_complete", bookingStatus: "not_booked" }) }, null);
       }
       return;
     }
-    if (decision.decision === "clarify" && ["service", "name", "date", "time", "price", "conditions"].includes(decision.field)) {
+    if (decision.decision === "clarify" && ["service", "name", "date", "time", "price", "conditions", "details"].includes(decision.field)) {
       const clarify = this.services!.bookingPolicy.evaluate({ snapshot: a.call,
         candidate: { action: "clarify", missing: [decision.field as "price"] }, now, grant: null });
-      if (clarify.decision === "allow") { this.speak(a, emit, clarify.approvedSpanishText, send); return; }
+      if (clarify.decision === "allow") { this.speakDecision(a, emit, { action: "clarify", missing: [decision.field as "price"] }, clarify.approvedSpanishText, send); return; }
+    }
+    if (candidate.action === "accept_offer" && decision.decision === "clarify" && decision.field === "readback") {
+      emit("call.error", { code: "PROVIDER_NOT_READY", message: "Readback delivery is not confirmed by the mock. Let the phrase finish, or check/update the mock service before trying again. No acceptance was sent.", recoverable: true });
+      return;
     }
     emit("call.error", { code: "PROVIDER_NOT_READY", message: "The proposed reply was withheld by policy or requires playback/consent support. No acceptance was sent.", recoverable: true });
-    this.speak(a, emit, "Un momento, por favor. No puedo aceptar ni confirmar una reserva todavía.", send);
+    this.speak(a, emit, renderReply("blocked", a.call.plan, {}, this.store.phrases.lookup), send);
   }
   private deliver(id: string, triggerId: string, output: QueuedOutput[], send: RelaySend) {
     // Commit transcript/events first; Stop from a synchronous subscriber must still prevent delivery.
@@ -165,8 +259,31 @@ export class RelayDialogue {
         || permit.offer?.id !== a.call.activeOffer?.id || permit.offer?.version !== a.call.activeOffer?.version
         || a.call.messages.findLast(m => m.speaker === "assistant")?.id !== permit.outputId
         || a.call.messages.find(m => m.id === permit.outputId)?.originalText !== permit.approvedSpanishText)) return;
+      if (permit && frame.type === "text") {
+        const message = a.call.messages.find(m => m.id === permit.outputId)!;
+        if (message.phrase?.id.endsWith(".acceptance") && this.services!.bookingPolicy.evaluate({ snapshot: a.call,
+          candidate: { action: "accept_offer", offerId: a.call.activeOffer!.id, offerVersion: a.call.activeOffer!.version },
+          now: this.now(), grant: a.internal.grant ?? null }).decision !== "allow") return;
+        this.change(id, (a, emit) => {
+          const playback = a.internal.dialoguePlayback ??= { sequence: 1, pending: [], acceptance: null };
+          const sequence = ++playback.sequence;
+          const message = a.call.messages.find(m => m.id === permit.outputId)!;
+          if (message.phrase?.id.endsWith(".readback") || message.phrase?.id.endsWith(".acceptance")) {
+            message.playback = "playing"; emit("transcript.updated", message);
+            playback.pending.push({ sequence, permit, startedAt: this.now(),
+              readbackMessageId: message.phrase.id.endsWith(".acceptance")
+                ? a.call.messages.findLast(m => m.phrase?.id.endsWith(".readback") && m.playback === "played")?.id ?? null : null });
+          }
+        });
+        // Persistence/event subscribers can request Stop synchronously.
+        if (this.closed || this.speechPending.has(id) || this.stopped(id)) return;
+        const latest = this.get(id);
+        if (latest.internal.stopRequested || latest.call.callState !== "connected"
+          || latest.call.messages.findLast(m => m.speaker === "business")?.id !== triggerId) return;
+      }
       send(frame);
     }
+    void this.syncPlayback(id).catch(() => { /* Retain pending delivery for reconciliation; no guessed playback. */ });
   }
   expire(id: string) {
     const a = this.get(id); const approval = a.call.pendingApproval;
@@ -177,7 +294,15 @@ export class RelayDialogue {
     });
     return true;
   }
-  private speak(a: Attempt, emit: Emit, text: string, send: Queue) {
+  private speakDecision(a: Attempt, emit: Emit, candidate: CandidateAction, approved: string, send: Queue) {
+    const plan = { ...a.call.plan, request: { ...a.call.plan.request,
+      availability: a.call.plan.request.availability.filter(w => Date.parse(w.end.instant) > Date.now()) } };
+    const reply = renderAction(candidate, plan, a.call.activeOffer, this.store.phrases.lookup, a.call.outcome.status === "confirmed");
+    if (reply.text !== approved) throw new Error("Localized phrase does not match policy-approved text");
+    this.speak(a, emit, reply, send);
+  }
+  private speak(a: Attempt, emit: Emit, reply: RenderedReply, send: Queue) {
+    const text = reply.text;
     if (this.closed || this.speechPending.has(a.call.id) || a.internal.stopRequested || a.internal.correlation?.recoveryRequired || a.call.callState !== "connected" || a.call.messages.length >= 1999) return;
     const trigger = a.call.messages.findLast(m => m.speaker === "business");
     if (!trigger) return;
@@ -187,10 +312,10 @@ export class RelayDialogue {
       offer: a.call.activeOffer ? { id: a.call.activeOffer.id, version: a.call.activeOffer.version } : null,
       approvedSpanishText: text, expiresAt: new Date(Date.now() + 1000).toISOString() });
     const message = { id: permit.outputId, turnId: trigger.turnId, speaker: "assistant" as const,
-      originalText: permit.approvedSpanishText, language: "es-ES" as const, translationEn: null,
+      originalText: permit.approvedSpanishText, language: dialogueLanguage(a.call.plan), translationEn: reply.translationEn, phrase: reply.phrase,
       final: true, playback: "generated" as const, createdAt: a.call.updatedAt };
     a.call.messages.push(message); emit("transcript.updated", message);
-    send({ type: "text", token: permit.approvedSpanishText, lang: "es-ES", last: true, interruptible: true, preemptible: true }, permit);
+    send({ type: "text", token: permit.approvedSpanishText, lang: dialogueLanguage(a.call.plan), last: true, interruptible: true, preemptible: true }, permit);
   }
   decide(id: string, decision: ApprovalDecision, key: string) {
     const body = JSON.stringify(decision); const endpoint = `dialogue-approval:${id}`;

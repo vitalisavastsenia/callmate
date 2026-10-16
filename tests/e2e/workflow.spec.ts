@@ -75,6 +75,30 @@ test('call popup restores the same call after reload and Stop remains available'
   await expect(popup.getByRole('button', { name: 'Approve this offer', exact: true })).toHaveCount(0);
 });
 
+test('call popup starts a new attempt from the same reviewed request after Stop', async ({ page }) => {
+  await page.clock.install(); await prepare(page, 'above_price'); await start(page, true); await advance(page, 5);
+  const popup = page.getByRole('dialog');
+  await expect(popup.getByRole('button', { name: 'Call again', exact: true })).toHaveCount(0);
+  const before = await page.evaluate(() => JSON.parse(localStorage.getItem('zeus-llama.simulator.v1')!).sessions[0].call);
+  await popup.getByRole('button', { name: 'Stop call', exact: true }).click();
+  const again = popup.getByRole('button', { name: 'Call again', exact: true });
+  await expect(again).toBeEnabled();
+  await again.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: test.info().outputPath('call-again.png') });
+  await again.evaluate((button: HTMLButtonElement) => { button.click(); button.click(); });
+  await expect(popup.getByRole('button', { name: 'Stop call', exact: true })).toBeVisible();
+  await expect(again).toHaveCount(0);
+  const after = await page.evaluate(() => ({ id: localStorage.getItem('zeus-llama.active-attempt.v1'), sessions: JSON.parse(localStorage.getItem('zeus-llama.simulator.v1')!).sessions }));
+  expect(after.id).not.toBe(before.id);
+  expect(after.sessions).toHaveLength(2);
+  const previous = after.sessions.find((s: { call: { id: string } }) => s.call.id === before.id).call;
+  const current = after.sessions.find((s: { call: { id: string } }) => s.call.id === after.id).call;
+  expect(previous.callState).toBe('ended'); expect(previous.messages).toEqual(before.messages);
+  expect(current.plan.request).toEqual(before.plan.request);
+  expect(current.messages).toHaveLength(0);
+  await popup.getByRole('button', { name: 'Stop call', exact: true }).click();
+});
+
 test('inline request → exact approval → result → history, calendar, deletion, and Repeat', async ({ page }) => {
   const network: string[] = []; page.on('request', r => {
     const path = new URL(r.url()).pathname;
@@ -401,7 +425,7 @@ test('mode changes keep the shared draft, isolate history, and persist the selec
     if (path.startsWith('/api/v1/contacts')) return route.continue();
     if (path.endsWith('/readiness')) return route.fulfill({ json: { mode: 'live', ready: false, voiceEngine: null, capabilities: [], checks: [] } });
     if (path.endsWith('/history')) return route.fulfill({ json: { items: [], nextCursor: null } });
-    if (path.endsWith('/settings')) return route.fulfill({ json: { defaultCallLimits: { maxDurationSeconds: 300, maxEstimatedCost: { amountMinor: 200, currency: 'EUR' } }, transcriptRetentionDays: 30 } });
+    if (path.endsWith('/settings')) return route.fulfill({ json: { defaultCallLimits: { maxDurationSeconds: 300, maxEstimatedCost: { amountMinor: 200, currency: 'USD' } }, transcriptRetentionDays: 30 } });
     return route.abort();
   });
   await page.goto('/');
@@ -410,9 +434,11 @@ test('mode changes keep the shared draft, isolate history, and persist the selec
   await page.getByLabel('Phone number', { exact: true }).fill('612345678');
   await button(page, 'Settings').click(); await button(page, 'Backend').click();
   await expect(button(page, 'Backend')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByLabel('Default maximum call cost (USD)', { exact: true })).toHaveValue('2');
   await button(page, 'Request').click();
   await expect(page.getByLabel('Name', { exact: true })).toHaveValue('Clinic Iris');
   await expect(page.getByLabel('Goal', { exact: true })).toHaveValue('Ask the manager about opening hours.');
+  await expect(page.locator('.advanced-overview')).toContainText('US$2.00 max');
   await expect(button(page, 'Fill details from goal')).toHaveCount(0);
   await page.reload(); await button(page, 'Settings').click();
   await expect(button(page, 'Backend')).toHaveAttribute('aria-pressed', 'true');
@@ -515,4 +541,153 @@ test('Request cards defer errors, preserve editable rules, and keep the review b
   await button(page, 'Home').click();
   await expect(bar).not.toBeVisible();
   await expect(page.getByLabel('Home goal', { exact: true })).toHaveValue('Leave a message asking them to email me.');
+});
+
+test('Home language selection survives preparation and requires fresh review when changed', async ({ page }) => {
+  await page.goto('/');
+  const language = page.getByRole('combobox', { name: /^Conversation language/ });
+  await expect(language).toBeVisible();
+  await expect(language.locator('option')).toHaveCount(4);
+  await language.selectOption('ru-RU');
+  await button(page, 'Book a haircut').click();
+  await button(page, 'Prepare the plan').click();
+  await expect(page.locator('.inline-plan')).toContainText('Russian');
+  await button(page, 'Edit details').click();
+  await expect(language).toHaveValue('ru-RU');
+  await language.selectOption('en-US');
+  await expect(button(page, 'Call')).toHaveCount(0);
+  await button(page, 'Review call plan').click();
+  await expect(page.locator('.inline-plan')).toContainText('English');
+  await button(page, 'Home').click();
+  await expect(language).toHaveValue('en-US');
+  await language.selectOption('pl-PL');
+  await expect(button(page, 'Call')).toHaveCount(0);
+  await button(page, 'Prepare the plan').click();
+  await expect(page.locator('.inline-plan')).toContainText('Polish');
+  await page.screenshot({ path: test.info().outputPath('home-conversation-language.png'), fullPage: true });
+});
+
+test('domain templates review all 15 profiles and preserve the chosen language', async ({ page }) => {
+  const { conversationTemplates } = await import('@callmate/contracts');
+  await prepare(page);
+  const picker = page.getByRole('combobox', { name: 'Conversation template', exact: true });
+  await expect(picker.locator('option')).toHaveCount(16);
+  const language = page.getByRole('combobox', { name: /^Conversation language/ });
+  await language.selectOption('pl-PL');
+  for (const profile of conversationTemplates) {
+    await picker.selectOption(profile.id);
+    await expect(language).toHaveValue('pl-PL');
+    if (profile.fields.length) await expect(button(page, 'Review call plan')).toBeDisabled();
+    for (const field of profile.fields) {
+      const name = new RegExp('^' + field.label);
+      if (field.kind === 'choice') await page.getByRole('combobox', { name }).selectOption(field.options![0]!.value);
+      else if (field.kind === 'number') await page.getByRole('spinbutton', { name }).fill('2');
+      else await page.getByRole('textbox', { name }).fill('Toyota Corolla');
+    }
+    await expect(button(page, 'Review call plan')).toBeEnabled();
+    await button(page, 'Review call plan').click();
+    const review = page.locator('.inline-plan');
+    await expect(review).toContainText(profile.label); await expect(review).toContainText('Polish');
+    for (const field of profile.fields) await expect(review).toContainText(field.kind === 'choice' ? field.options![0]!.label[2] : field.kind === 'number' ? '2' : 'Toyota Corolla');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    if (profile.id === 'bank') await page.screenshot({ path: test.info().outputPath('bank-template.png'), fullPage: true });
+  }
+  await page.getByRole('textbox', { name: 'Requested service', exact: true }).fill('Custom service');
+  await expect(picker).toHaveValue('');
+});
+
+test('USD backend budgets survive Settings save and a real plan/Start request', async ({ page }) => {
+  const url = 'http://127.0.0.1:3000/api/v1/settings';
+  const previous = await (await page.request.get(url)).json();
+  const usd = { ...previous, defaultCallLimits: { maxDurationSeconds: 300, maxEstimatedCost: { amountMinor: 200, currency: 'USD' } } };
+  expect((await page.request.put(url, { data: usd })).ok()).toBe(true);
+  let id: string | undefined;
+  try {
+    await page.goto('http://127.0.0.1:5175/');
+    await button(page, 'Settings').click();
+    const settingCost = page.getByLabel('Default maximum call cost (USD)', { exact: true });
+    await expect(settingCost).toHaveValue('2');
+    await settingCost.fill('1.75');
+    await button(page, 'Save settings').click();
+    await expect(page.getByText(/^Settings saved\./)).toBeVisible();
+    expect((await (await page.request.get(url)).json()).defaultCallLimits.maxEstimatedCost).toEqual({ amountMinor: 175, currency: 'USD' });
+    await button(page, 'Home').click();
+    await button(page, 'Book a haircut').click();
+    await button(page, 'Request').click();
+    await page.getByLabel('Approved name', { exact: true }).fill('Alex Example');
+    await page.getByText('Advanced settings', { exact: true }).click();
+    await expect(page.getByLabel('Maximum estimated call cost (USD)', { exact: true })).toHaveValue('1.75');
+    await expect(page.getByLabel('Maximum service price (EUR)', { exact: true })).toHaveValue('30');
+    await button(page, 'Review call plan').click();
+    const created = page.waitForResponse(response => response.url().endsWith('/api/v1/plans') && response.request().method() === 'POST');
+    const started = page.waitForResponse(response => response.url().endsWith('/api/v1/calls') && response.request().method() === 'POST');
+    await button(page, 'Call').click();
+    const planResponse = await created;
+    expect(planResponse.status()).toBe(201);
+    const plan = (await planResponse.json()).plan;
+    expect(plan.request.callLimits.maxEstimatedCost).toEqual({ amountMinor: 175, currency: 'USD' });
+    expect(plan.request.pricePolicy.maximum.currency).toBe('EUR');
+    const startResponse = await started;
+    expect(startResponse.status()).toBe(202);
+    id = (await startResponse.json()).call.id;
+    await expect(button(page, 'Stop call')).toBeVisible();
+    await button(page, 'Stop call').click();
+    await expect(page.getByRole('alert')).toHaveCount(0);
+  } finally {
+    if (id) await page.request.post(`http://127.0.0.1:3000/api/v1/calls/${id}/stop`, { data: {} });
+    expect((await page.request.put(url, { data: previous })).ok()).toBe(true);
+  }
+});
+
+test('reviewed mock calls require a ready engine and explain where to answer', async ({ page }) => {
+  await prepare(page);
+  let engineReady = false;
+  let starts = 0;
+  await page.route('**/api/v1/readiness', route => route.fulfill({ json: {
+    mode: 'simulator', ready: true, voiceEngine: engineReady ? 'conversation_relay' : null,
+    checks: [], capabilities: [
+      { name: 'mock_relay', enabled: true, ready: true },
+      { name: 'dialogue_integration', enabled: engineReady, ready: engineReady },
+    ],
+  } }));
+  page.on('request', request => { if (new URL(request.url()).pathname === '/api/v1/calls' && request.method() === 'POST') starts++; });
+  await button(page, 'Settings').click(); await button(page, 'Backend').click();
+  await expect(page.getByText('Reviewed mock calls are unavailable until a dialogue engine is ready. Check Provider readiness below.')).toBeVisible();
+  await button(page, 'Request').click(); await button(page, 'Review call plan').click();
+  await expect(button(page, 'Call')).toBeDisabled();
+  await expect(page.getByText(/Mock calls need a ready dialogue engine/)).toBeVisible();
+  engineReady = true;
+  await button(page, 'Check readiness again').click();
+  await expect(button(page, 'Call')).toBeEnabled();
+  await expect(page.getByText(/Local mock call: open localhost:8080/)).toBeVisible();
+  expect(starts).toBe(0);
+});
+
+test('switching to a different budget currency clears an edited amount and requires review', async ({ page }) => {
+  await prepare(page);
+  await page.getByText('Advanced settings', { exact: true }).click();
+  // Even an explicit amount equal to the default must not be relabeled as USD.
+  await page.getByLabel('Maximum estimated call cost (EUR)', { exact: true }).fill('');
+  await page.getByLabel('Maximum estimated call cost (EUR)', { exact: true }).fill('2');
+  await button(page, 'Review call plan').click();
+  await page.route('**/api/v1/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.startsWith('/api/v1/contacts')) return route.continue();
+    if (path.endsWith('/readiness')) return route.fulfill({ json: { mode: 'simulator', ready: true, voiceEngine: null, capabilities: [], checks: [] } });
+    if (path.endsWith('/history')) return route.fulfill({ json: { items: [], nextCursor: null } });
+    if (path.endsWith('/settings')) return route.fulfill({ json: { defaultCallLimits: { maxDurationSeconds: 300, maxEstimatedCost: { amountMinor: 200, currency: 'USD' } }, transcriptRetentionDays: 30 } });
+    return route.abort();
+  });
+  await button(page, 'Settings').click(); await button(page, 'Backend').click();
+  await expect(page.getByLabel('Default maximum call cost (USD)', { exact: true })).toHaveValue('2');
+  await button(page, 'Request').click();
+  const budget = page.getByLabel('Maximum estimated call cost (USD)', { exact: true });
+  await expect(budget).toHaveValue('');
+  await expect(page.getByText(/^Call budgets now use USD\./)).toBeVisible();
+  await expect(button(page, 'Review call plan')).toBeDisabled();
+  await expect(button(page, 'Call')).toHaveCount(0);
+  await budget.fill('1');
+  await button(page, 'Review call plan').click();
+  await expect(page.locator('.inline-plan')).toContainText('US$1.00');
+  await expect(page.locator('.inline-plan')).toContainText('Maximum €30.00');
 });

@@ -56,7 +56,9 @@ export default function App() {
     requestAnimationFrame(() => document.getElementById('view-call')?.focus());
   }
   const unresolved = !!localStorage.getItem(activeKey) && !call;
-  const mayStart = !!readiness?.ready && !active && !loading && !unresolved;
+  const mockNeedsDialogue = !simulator && !!readiness?.capabilities.some(c => c.name === 'mock_relay' && c.enabled)
+    && !readiness?.capabilities.some(c => c.name === 'dialogue_integration' && c.ready);
+  const mayStart = !mockNeedsDialogue && !!readiness?.ready && !active && !loading && !unresolved;
 
   function acceptSnapshot(next: CallSnapshot) {
     const old = latestCall.current;
@@ -170,11 +172,12 @@ export default function App() {
     // A backend-normalized plan needs another deliberate review before dialing.
     if (JSON.stringify(RequestDraftSchema.parse(saved.request)) !== JSON.stringify(RequestDraftSchema.parse(request))) {
       setRequestInitial(saved.request); setInitialPrepared(true); setRequestKey(old => old + 1);
+      setCallWindowOpen(false); setShowCall(false); setPage('request');
       setNotice('The backend adjusted the plan. Review the updated details below, then choose Call to approve them.'); return;
     }
     const command: PendingStart = { plan: saved, mode: readiness!.mode, key: crypto.randomUUID(), scenario: (request.requestType ?? 'book') !== 'book' && !['uncertain', 'no_answer', 'interrupted'].includes(scenario) ? 'within_plan' : scenario };
     startCommand.current = command; setPending(command); localStorage.setItem(pendingKey, JSON.stringify(command));
-    try { await executeStart(command); } catch (e) { setNotice('The Start response is unknown. Check the original request below; do not start another attempt.'); throw e; }
+    try { await executeStart(command); } catch (e) { setCallWindowOpen(false); setPage('home'); setNotice('The Start response is unknown. Check the original request below; do not start another attempt.'); throw e; }
   }
   const homeOutcome = showCall ? call?.outcome.status : undefined;
   useEffect(() => {
@@ -260,7 +263,7 @@ export default function App() {
       <div hidden={page === 'summary' || page === 'settings' || page === 'contacts'}>
         <div hidden={page !== 'home'}><Home onRequest={() => { setNotice(''); setPage('request'); }} /></div>
         {!loading && <RequestForm key={requestKey} initial={requestInitial} initialPrepared={initialPrepared} view={page === 'request' ? 'request' : 'home'} onRequest={message => { setNotice(message ?? ''); setPage('request'); }} settings={settings} defaults={defaults} approvalPending={!!call?.pendingApproval} busy={busy} locked={requestDisabled || showCall} callDisabled={!mayStart}
-          callHelp={<>{!readiness?.ready && <div className="notice"><p>Calling requires confirmed backend readiness.</p><button type="button" className="secondary mt-3" disabled={busy} onClick={() => void perform(refreshReadiness)}>Check readiness again</button></div>}{api.isMockMode && <p className="text-base text-stone-300">No number will be dialed. Custom simulator requests use scripted answers and may need follow-up.</p>}</>}
+          callHelp={<>{mockNeedsDialogue && <p className="notice">Mock calls need a ready dialogue engine. Check Settings → Provider readiness after configuring the backend Codex login.</p>}{(!readiness?.ready || mockNeedsDialogue) && <div className="notice"><p>Calling requires confirmed backend readiness.</p><button type="button" className="secondary mt-3" disabled={busy} onClick={() => void perform(refreshReadiness)}>Check readiness again</button></div>}{!simulator && !mockNeedsDialogue && readiness?.capabilities.some(c => c.name === 'mock_relay' && c.ready) && <p className="notice">Local mock call: open localhost:8080 and click Answer when it rings. No real phone number is dialed.</p>}{api.isMockMode && <p className="text-base text-stone-300">No number will be dialed. Custom simulator requests use scripted answers and may need follow-up.</p>}</>}
           flow={callFlow} onCall={request => void perform(() => callRequest(request))}
           scenario={scenario} onScenarioChange={setScenario}
         />}
@@ -286,7 +289,7 @@ export default function App() {
       {error && <p role="alert" className="notice error">{error}</p>}
       {callIsTerminal(call) && <ShortResult call={call} />}
       {liveCall}
-      <div className="call-window-footer flex flex-wrap gap-3"><button type="button" className="secondary" onClick={closeCallWindow}>{active ? 'Minimize call' : 'Close call window'}</button>{callIsTerminal(call) && <button type="button" className="primary" onClick={() => openSummary(call)}>View in Summary</button>}</div>
+      <div className="call-window-footer flex flex-wrap gap-3"><button type="button" className="secondary" onClick={closeCallWindow}>{active ? 'Minimize call' : 'Close call window'}</button>{callIsTerminal(call) && <><button type="button" className="primary" disabled={requestDisabled || !mayStart} onClick={() => void perform(() => callRequest(structuredClone(call.plan.request)))}>Call again</button><button type="button" className="secondary" onClick={() => openSummary(call)}>View in Summary</button></>}</div>
     </Modal>}
     {attentionPanel && call && <aside className="attention-panel" aria-label="Zeus needs your approval"><ApprovalCard compact call={call} now={now} disabled={busy || connection !== 'connected'} onDecision={decideApproval} /><button className="text-add" onClick={showApproval}>Go to the conversation</button></aside>}
     <footer className="mt-10 text-center text-base text-stone-400">Your intention. Zeus’s voice.</footer>

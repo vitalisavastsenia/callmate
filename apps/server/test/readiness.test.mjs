@@ -50,10 +50,10 @@ test('healthy mock reports validated prerequisites and enabled capabilities with
     const report = await app.report(); assert.equal(report.ready, true); assert.equal(report.voiceEngine, null);
     for (const name of ['storage', 'configuration', 'mock']) assert.equal(check(report, name).status, 'ready');
     const caps = capabilities(report);
-    for (const name of ['scripted_calls', 'manual_mock_calls', 'mock_relay', 'mock_status_callbacks', 'history', 'approvals', 'automatic_retention', 'test_rate_budgets']) {
+    for (const name of ['manual_mock_calls', 'mock_relay', 'mock_status_callbacks', 'history', 'approvals', 'automatic_retention', 'test_rate_budgets']) {
       assert.equal(caps[name].enabled, true); assert.equal(caps[name].ready, true);
     }
-    for (const name of ['live_calls', 'dialogue_integration', 'provider_billing']) assert.deepEqual(caps[name], { name, enabled: false, ready: false });
+    for (const name of ['scripted_calls', 'live_calls', 'dialogue_integration', 'provider_billing']) assert.deepEqual(caps[name], { name, enabled: false, ready: false });
     assert.equal(new Set(report.checks.map((c) => c.name)).size, report.checks.length);
     assert.equal(new Set(report.capabilities.map((c) => c.name)).size, report.capabilities.length);
     assert.deepEqual(app.requests, [{ method: 'GET', url: '/healthz' }]);
@@ -69,7 +69,7 @@ test('mock outage degrades overall readiness while local scripted capabilities a
   assert.equal(check(report, 'mock').status, 'failed');
   const caps = capabilities(report);
   assert.deepEqual(caps.manual_mock_calls, { name: 'manual_mock_calls', enabled: true, ready: false });
-  assert.equal(caps.scripted_calls.ready, true); assert.equal(caps.history.ready, true);
+  assert.equal(caps.scripted_calls.ready, false); assert.equal(caps.history.ready, true);
   assert.equal(caps.test_rate_budgets.enabled, false);
   const health = await app.runtime.privateApi.inject({ url: '/health', headers: { host: 'localhost:3000' } });
   assert.equal(health.statusCode, 200); assert.equal(app.requests.length, 1);

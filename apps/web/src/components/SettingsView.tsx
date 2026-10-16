@@ -14,15 +14,15 @@ export default function SettingsView({ readiness, settings, defaults, busy, simu
     <fieldset className="mb-6" disabled={modeLocked || busy}><legend className="section-title">Call mode</legend><div className="flex flex-wrap gap-2">
       <button type="button" className="secondary template-chip" aria-pressed={simulator} onClick={() => onModeChange(true)}>Simulator</button>
       <button type="button" className="secondary template-chip" aria-pressed={!simulator} onClick={() => onModeChange(false)}>Backend</button>
-    </div><p className="mt-3 text-base text-stone-300">{modeLocked ? 'Finish or resolve the current call attempt before switching modes.' : simulator ? 'Scripted calls on this device. No number is dialed.' : 'Calls use the backend’s reported mode. With the local mock, answer in the operator window at localhost:8080. Real phone calling is unavailable.'}</p></fieldset>
+    </div><p className="mt-3 text-base text-stone-300">{modeLocked ? 'Finish or resolve the current call attempt before switching modes.' : simulator ? 'Scripted calls on this device. No number is dialed.' : readiness?.capabilities.some(c => c.name === 'mock_relay' && c.enabled) ? readiness.capabilities.some(c => c.name === 'dialogue_integration' && c.ready) ? 'Local mock conversations use the configured dialogue engine. Answer at localhost:8080. No real number is dialed.' : 'Reviewed mock calls are unavailable until a dialogue engine is ready. Check Provider readiness below.' : 'Backend scripted simulation. No number is dialed and results are synthetic.'}</p></fieldset>
     {simulator && <label className="mb-6">Simulated outcome<select aria-label="Simulated outcome" disabled={modeLocked || busy} value={scenario} onChange={e => onScenarioChange(e.target.value as Scenario)}>{Object.entries(scenarios).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
     {error && <p role="alert" className="notice error">{error}</p>}
     <form noValidate onSubmit={e => {
       e.preventDefault(); const data = new FormData(e.currentTarget);
-      const result = SettingsSchema.safeParse({ defaultCallLimits: { maxDurationSeconds: Number(data.get('duration')) * 60, maxEstimatedCost: { amountMinor: Math.round(Number(data.get('cost')) * 100), currency: 'EUR' } }, transcriptRetentionDays: Number(data.get('retention')) });
+      const result = SettingsSchema.safeParse({ defaultCallLimits: { maxDurationSeconds: Number(data.get('duration')) * 60, maxEstimatedCost: { amountMinor: Math.round(Number(data.get('cost')) * 100), currency: settings.defaultCallLimits.maxEstimatedCost.currency } }, transcriptRetentionDays: Number(data.get('retention')) });
       const next: RequestDefaults = { name: String(data.get('name')).trim(), phone: String(data.get('phone')).trim(), email: String(data.get('email')).trim(), timeZone: String(data.get('zone')).trim() };
       if (!result.success || !TimeZoneSchema.safeParse(next.timeZone).success || !String(data.get('duration')).trim() || !/^\d+(?:\.\d{1,2})?$/.test(String(data.get('cost'))) || next.name.length > 200 || (next.phone && !/^\+[1-9]\d{7,14}$/.test(next.phone)) || (next.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(next.email))) {
-        setError('Check the timezone, contact details, duration (0.5–10 minutes), EUR cost (up to two decimal places), and retention (1–365 days).'); return;
+        setError(`Check the timezone, contact details, duration (0.5–10 minutes), ${settings.defaultCallLimits.maxEstimatedCost.currency} cost (up to two decimal places), and retention (1–365 days).`); return;
       }
       setError(''); onSave(result.data, next);
     }}><fieldset disabled={busy} className="space-y-6">
@@ -34,7 +34,7 @@ export default function SettingsView({ readiness, settings, defaults, busy, simu
       <fieldset><legend className="section-title">Default advanced settings</legend><div className="form-grid share-grid">
         <label>Default timezone<input name="zone" defaultValue={defaults.timeZone} required /></label>
         <label>Default maximum call duration (minutes)<input name="duration" type="number" min="0.5" max="10" step="0.5" defaultValue={settings.defaultCallLimits.maxDurationSeconds / 60} required /></label>
-        <label>Default maximum call cost (EUR)<input name="cost" type="number" min="0" step="0.01" defaultValue={settings.defaultCallLimits.maxEstimatedCost.currency === 'EUR' ? settings.defaultCallLimits.maxEstimatedCost.amountMinor / 100 : ''} required /></label>
+        <label>Default maximum call cost ({settings.defaultCallLimits.maxEstimatedCost.currency})<input name="cost" type="number" min="0" step="0.01" defaultValue={settings.defaultCallLimits.maxEstimatedCost.amountMinor / 100} required /></label>
         <label>Conversation retention (days)<input name="retention" type="number" min="1" max="365" defaultValue={settings.transcriptRetentionDays} required /></label>
       </div></fieldset><button className="primary" type="submit">{busy ? 'Saving…' : 'Save settings'}</button>
     </fieldset></form>

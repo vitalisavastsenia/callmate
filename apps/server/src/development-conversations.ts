@@ -1,3 +1,6 @@
+import { DialogueLanguageSchema } from "@callmate/contracts";
+import { codexLoginReady } from "./codex-ready.js";
+import { dialogueLanguage } from "@callmate/dialogue";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import type { FastifyInstance } from "fastify";
@@ -34,6 +37,7 @@ export type DevelopmentOptions = { now?: () => number; automatic?: boolean; mode
 export class DevelopmentConversations {
   private readonly dialogue: RelayDialogue;
   get dialogueEnabled() { return this.dialogue.enabled; }
+  get mockTransportEnabled() { return this.config.telephonyProvider === "mock"; }
   private readonly now: () => number;
   private closed = false;
   private pending = new Set<Promise<unknown>>();
@@ -73,6 +77,7 @@ export class DevelopmentConversations {
     if (!active || !isMockAttempt(active)) return;
     if (active.call.plan && this.dialogue.expire(active.call.id)) this.requestStop(active.call.id, "user_stopped");
     this.enforceLimits(active.call.id);
+    if (active.call.plan) await this.dialogue.syncPlayback(active.call.id);
     await this.refresh(active.call.id);
   }
   private timestamp() { return new Date(this.now()).toISOString(); }
@@ -249,7 +254,7 @@ export class DevelopmentConversations {
       .map((m) => ({ text: m.originalText, language: m.language, at: m.createdAt }));
     while (responses.reduce((sum, m) => sum + m.text.length, 0) > 32_000) responses.shift();
     return { id: a.call.id, initialMessage: a.call.messages.find((m) => m.speaker === "assistant")?.originalText ?? "",
-      language: "language" in a.call ? a.call.language : "es-ES", conversationData: a.call.conversationData, usage: a.call.usage, status: a.internal.status, callSid: a.internal.callSid,
+      language: "language" in a.call ? a.call.language : dialogueLanguage(a.call.plan), conversationData: a.call.conversationData, usage: a.call.usage, status: a.internal.status, callSid: a.internal.callSid,
       sessionId: a.internal.correlation?.sessionId ?? null, error: a.internal.error, responses,
       operatorUrl: a.internal.callSid ? `${new URL(this.config.mockOperatorOrigin).origin}/?callId=${encodeURIComponent(a.internal.callSid)}` : null };
   }
@@ -265,13 +270,14 @@ export class DevelopmentConversations {
       return this.snapshot(command.attemptId) as CallSnapshot;
     }
     this.enabled();
-    if (!this.dialogueEnabled) throw new CommandError(503, "PROVIDER_NOT_READY", "Dialogue model is disabled");
+    if (!this.dialogueEnabled) throw new CommandError(503, "PROVIDER_NOT_READY", "Configure a dialogue engine before starting reviewed mock calls");
+    if (this.config.dialogueProvider === "codex" && !await codexLoginReady()) throw new CommandError(503, "PROVIDER_NOT_READY", "Codex CLI login is unavailable; run the Docker login setup");
     const plan = this.store.calls.plan(request.planId);
     if (!plan) throw new CommandError(404, "NOT_FOUND", "Review plan not found");
     if (request.mode !== "simulator") throw new CommandError(409, "MODE_MISMATCH", "Dialogue supports local mock calls only");
     if (request.planVersion !== plan.version) throw new CommandError(409, "PLAN_VERSION_MISMATCH", "Plan version differs");
     validate(plan);
-    await this.start({ requestId: key, initialMessage: this.dialogue.greeting(plan), language: "es-ES" }, plan, JSON.stringify(request));
+    await this.start({ requestId: key, initialMessage: this.dialogue.greeting(plan), language: dialogueLanguage(plan) }, plan, JSON.stringify(request));
     return this.snapshot(key) as CallSnapshot;
   }
   decide(id: string, decision: ApprovalDecision, key: string) { return this.dialogue.decide(id, decision, key); }
@@ -296,14 +302,16 @@ export class DevelopmentConversations {
       const limits = this.store.getSettings().defaultCallLimits;
       const maxDurationSeconds = plan?.request.callLimits.maxDurationSeconds ?? limits.maxDurationSeconds;
       const message = { id: randomUUID(), turnId: randomUUID(), speaker: "assistant" as const,
-        originalText: input.initialMessage, language: input.language, translationEn: null,
+        originalText: input.initialMessage, language: input.language, translationEn: plan ? this.dialogue.opening(plan).translationEn : null,
+        ...(plan ? { phrase: this.dialogue.opening(plan).phrase } : {}),
         final: true as const, playback: "withheld" as const, createdAt: now };
+      const { phrase: _phrase, ...manualMessage } = message;
       const manual = ManualCallSnapshotSchema.parse({ id: input.requestId, kind: "manual_mock", mode: "simulator", plan: null,
         language: input.language, revision: 1, lastEventSequence: 2, callState: "creating", bookingState: "pending", outcome: { status: "pending" },
-        activeOffer: null, pendingApproval: null, conversationData: "retained", messages: [message],
+        activeOffer: null, pendingApproval: null, conversationData: "retained", messages: [{ ...manualMessage, translationEn: null }],
         usage: initialUsage(now, this.config.testRateMinorPerMinute, (plan?.request.callLimits.maxEstimatedCost ?? limits.maxEstimatedCost)), createdAt: now, updatedAt: now });
       const { kind: _kind, language: _language, ...base } = manual;
-      const call = plan ? CallSnapshotSchema.parse({ ...base,
+      const call = plan ? CallSnapshotSchema.parse({ ...base, messages: [message],
         plan: ApprovedPlanSchema.parse({ ...plan, approvedAt: now }) }) : manual;
       const events = [{ type: "call.status", payload: { callState: "creating" } }, { type: "transcript.updated", payload: message }]
         .map((event, index) => DomainEventSchema.parse({ contractVersion: 1, id: randomUUID(), attemptId: call.id,
@@ -473,18 +481,24 @@ export class DevelopmentConversations {
       a.internal.correlation!.providerStatus = "in-progress";
       this.beginSilence(a);
       this.status(a, emit, "connected");
+      if (a.call.plan) a.internal.dialoguePlayback = { sequence: 1, pending: [], acceptance: null };
       a.call.messages[0]!.playback = "generated"; emit("transcript.updated", a.call.messages[0]!);
     });
-    send({ type: "text", token: a.call.messages[0]!.originalText, lang: "language" in a.call ? a.call.language : "es-ES", last: true, interruptible: true, preemptible: true });
+    send({ type: "text", token: a.call.messages[0]!.originalText, lang: "language" in a.call ? a.call.language : dialogueLanguage(a.call.plan), last: true, interruptible: true, preemptible: true });
     return {
       activity: () => this.activity(id),
       speech: () => this.dialogue.speech(id),
-      interrupt: () => this.dialogue.speech(id),
+      interrupt: () => this.dialogue.interrupt(id),
       prompt: (text, language) => {
         if (this.closed || this.enforceLimits(id)) return;
         const a = this.require(id); if (a.internal.correlation?.recoveryRequired) return;
         if (a.call.messages.length >= 2000) { void this.stop(id).catch(() => {}); return; }
-        if (a.call.plan && language !== "es-ES") { this.dialogue.fail(id); return; }
+        // Recognition language describes received speech, not authority to change agent output.
+        if (a.call.plan && !DialogueLanguageSchema.safeParse(language).success) {
+          this.change(id, (_a, emit) => emit("call.error", { code: "PROVIDER_NOT_READY",
+            message: "Reply received in an unsupported language. Choose Spanish, Russian, English or Polish in the mock operator and resend.", recoverable: true }));
+          return;
+        }
         this.change(id, (a, emit) => {
           const message = { id: randomUUID(), turnId: randomUUID(), speaker: "business" as const, originalText: text,
             language, translationEn: null, final: true as const, playback: "not_applicable" as const, createdAt: a.call.updatedAt };
@@ -513,6 +527,7 @@ export class DevelopmentConversations {
     if (!terminal(a.call)) throw new CommandError(409, "DATA_NOT_DELETABLE", "Conversation deletion requires a terminal call");
     if (a.call.conversationData !== "deleted") this.change(id, (a, emit) => {
       this.store.calls.purgeEvents(id); a.replayFloor = a.call.lastEventSequence;
+      delete a.internal.dialoguePlayback;
       a.call.messages = []; a.call.conversationData = "deleted"; emit("conversation.deleted", { conversationData: "deleted" });
     });
     return { attemptId: id, deleted: true as const };

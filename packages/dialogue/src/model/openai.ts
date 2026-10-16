@@ -1,7 +1,7 @@
 import { DialogueProposalSchema, type DialogueInput, type DialogueProposal } from "@callmate/contracts";
 import { parseInput } from "../planner/validation.js";
 import type { ModelClient } from "./client.js";
-import { dialogueInstructions } from "./instructions.js";
+import { instructionsFor } from "./instructions.js";
 import { dialogueResponseSchema } from "./response-schema.js";
 
 export type OpenAIModelOptions = {
@@ -150,7 +150,7 @@ export class OpenAIModelClient implements ModelClient {
         headers: { Authorization: `Bearer ${this.#apiKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           model: this.#model, store: false, stream: false, max_output_tokens: this.#maxOutputTokens,
-          instructions: dialogueInstructions,
+          instructions: instructionsFor(input),
           input: [{ role: "user", content: JSON.stringify(input) }],
           text: { format: { type: "json_schema", name: "callmate_dialogue_proposal",
             strict: true, schema: dialogueResponseSchema } },

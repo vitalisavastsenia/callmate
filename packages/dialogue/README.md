@@ -1,7 +1,7 @@
 # @callmate/dialogue
 
 Engineer 3's in-process dialogue and booking library for CallMate. The package
-implements `DialoguePort`, `BookingPolicyPort`, controlled Spanish replies, pure
+implements `DialoguePort`, `BookingPolicyPort`, controlled multilingual appointment replies, pure
 booking transitions, evidence checks, and English outcome derivation. It provides a raw
 `ModelClient` interface and offline test support using `@callmate/contracts`.
 The model adapter is injected. `createCodexModelClient` uses saved ChatGPT login
@@ -19,7 +19,9 @@ contracts package. There is currently no shared base TypeScript configuration.
 
 The server’s `verifyMockConfirmation` matcher recognizes bounded confirmations in all four supported languages, including “Да подтверждаю” / “Да я уже подтвердил это”, “Sí, confirmo” / “Sí, ya lo he confirmado”, “Yes, I confirm” / “Yes, I already confirmed that”, and “Tak, potwierdzam” / “Tak, już to potwierdziłem”. Negation, uncertainty, and changed terms still require clarification. The caller must separately validate booking state, completed acceptance playback, and evidence ordering before recording a confirmed booking; this matcher does not provide unrestricted semantic verification of arbitrary speech.
 
-The integration branch now includes an optional mock-call controller using this library. See [runtime setup and limits](../../docs/docker-development.md#17-dialogue-driven-local-mock-calls). It processes finalized Spanish replies and sends policy-approved text; acceptance and confirmation still require the missing playback/verifier integration.
+Availability is a follow-up after the controller-owned opening; it does not repeat AI disclosure or introduce the caller again. After readback, unconditional business assent (including “Да всё так спасибо”) is a candidate for acceptance of the unchanged offer. In mock mode, authenticated simulated text receipts allow the acceptance to be played and the controller then waits for a separate business confirmation. Corrections and uncertainty require changed-offer evaluation or clarification; no confirmation is inferred from ambiguous speech.
+
+The integration branch now includes an optional mock-call controller using this library. See [runtime setup and limits](../../docs/docker-development.md#17-dialogue-driven-local-mock-calls). It processes finalized Spanish, Russian, English, and Polish replies and sends policy-approved localized text; mock acceptance uses authenticated simulated text receipts and bounded multilingual confirmation matching; real provider playback and production confirmation verification remain separate integration work.
 
 The integration branch registers `packages/dialogue` alongside contracts, backend,
 and web. Root build/typecheck/test scripts include it, with contracts built first.
@@ -30,6 +32,16 @@ values `formal`, `very_polite`, and `friendly` normalize to that list when parse
 Controlled Spanish replies use friendly tú only when Friendly is selected without
 an explicit Formal/Very polite preference; otherwise they retain formal usted.
 This affects phrasing, never booking authority.
+
+## Conversation languages
+
+Set the reviewed `plan.request.language` to `es-ES`, `ru-RU`, `en-US`, or `pl-PL`. Missing language means Spanish for existing v1 plans. The model analyzes the selected language and translates business speech into English; all spoken replies remain controlled policy output. Availability, clarifications, readbacks, repeat/echo replies, the clean/dry-hair acknowledgement, approval waiting, blocked replies, and closings are localized. Exact readback/acceptance text checks use the selected language and preserve playback/authority gates. EUR prices and the plan's time zone do not change with language.
+
+`dialoguePhraseCatalog` supplies immutable `{ id, version, language, template }` entries. `renderReply` and `renderAction` accept a `PhraseLookup`; the backend supplies SQLite lookup and checks that rendered output exactly matches policy-approved text. The standalone library uses the bundled catalog without a database dependency. Templates use named, literal, single-pass slots; user/model strings cannot become templates. The backend persists phrase references alongside rendered text and English translations. See [storage and wire examples](../../docs/interfaces.md#localized-haircut-dialogue).
+
+New calls use greeting version 3 and availability version 2 across all 15 templates and four languages: the caller introduces itself as an AI assistant without mentioning the app name and includes the reviewed `bookingName` when supplied. Blank names are omitted from the opening. Names are literal speech data; greetings never take the owner login or infer a name from conversation text. Previous phrase versions remain in the catalog for historical references.
+
+The legacy v1 field `approvedSpanishText` now contains the policy-approved text in the selected conversation language. Its name is retained for wire compatibility. Existing Spanish scenario evaluations and the standalone Spanish pacing/post-booking consent companion remain Spanish-specific; they are not connected to the multilingual mock-call controller. Contact/add-on consent remains unavailable on that controller; mock final booking acceptance uses the server receipt and confirmation path described above.
 
 ## Build and typecheck
 
@@ -624,3 +636,32 @@ The server owns the injected model adapter's credentials and lifecycle: abort
 outstanding turn controllers during shutdown, then close the adapter's resources.
 The dialogue port owns no persistent connection or background task and needs no
 `close()` method. Server environment configuration remains Engineer 2's responsibility.
+
+
+## Conversation templates
+
+`packages/contracts/src/templates.ts` is the shared registry for all 15 profiles; the form, planner adapters, policy, renderer and server use the same IDs. A request selects optional `templateId`, `language`, canonical `service`, and `templateDetails`. Existing haircut requests without these additions remain readable. Explicit profile selection validates the matching service and all required fields before review/Start. Unknown/cross-domain fields and unsafe markup/control characters are rejected. Coded choices have vetted Spanish, Russian, English and Polish labels; vehicle make/model is a bounded literal slot. Do not put identification numbers or credentials in it.
+
+| Template ID | Reviewed details | Questions and scope |
+| --- | --- | --- |
+| `haircut` | Existing haircut constraints | Availability, exact price, duration and preparation; existing salon-specific actions remain restricted to this domain. |
+| `dentist` | Check-up, cleaning, or consultation | New patients, consultation fee, documents/preparation; no treatment consent. |
+| `doctor` | General practice, dermatology, or ophthalmology | Referral, new-patient documents, preparation and consultation fee; no medical decisions or history disclosure. |
+| `vet` | Dog/cat and check-up/vaccination consultation | Species accepted, records, preparation and consultation fee; no treatment authorization. |
+| `restaurant` | Party size and seating | Table availability, reservation charge, time limit, minimum spend and cancellation; no food orders or inferred meal total. |
+| `car_service` | Make/model and inspection/oil consultation/diagnostic | Diagnostic fee, drop-off duration, quote before work; no repairs or parts purchases. |
+| `plumber` | Flat/house and leak/drain assessment | Call-out/assessment fees, arrival window, quote before repair; address is supplied directly by the user. |
+| `electrician` | Flat/house and inspection/outlet/lighting | Call-out/inspection fee, arrival window and quote; no electrical work or safety instructions. |
+| `home_cleaning` | Flat/house and rooms | One-off scope, supplies/travel total, duration and access; no subscription, address/access-code disclosure or key handover. |
+| `bank` | Account-opening information, documents, or branch consultation | Appointment, foreign-resident document categories, English support and consultation fee; no banking transactions, account opening, authentication or financial-product agreement. |
+| `library` | Membership, study-room, or access information | Appointment/card requirements, identification categories, fees and access rules; no membership signup, borrowing or item reservations. |
+| `government` | Residency, local registration, or document information | Correct office/jurisdiction, originals/copies, appointment and official fees; no filings, declarations, payments or eligibility decisions. |
+| `legal` | Immigration, housing, or employment consultation | Expertise, first-consultation fee/duration and general preparation; no advice, representation agreement or disclosure of case facts. |
+| `language_school` | Beginner/intermediate/assessment level and course/test information | Schedule, placement-test fee, enrollment/materials/minimum-term conditions; no enrollment or recurring charges. |
+| `parcel_collection` | Recipient collection or proxy-process information | Correct collection point, hours, ID/authorization categories, deadlines and charges; no pickup/tracking codes, payment, proxy authorization or delivery changes. |
+
+All profiles support the four conversation languages, the common one-call/Start/Stop/retention lifecycle, versioned offers, English transcript translations, and controlled readback. `ask_requirements` selects that domain's vetted questions. `clarify` can include `details` to check the reviewed scope. For a new-domain offer, `offer.templateDetails` must contain business-evidenced values for every required field; missing values trigger clarification and changed values block readback/acceptance even with an exact-offer grant. Unknown price is never assumed to be zero; a restaurant reservation charge, diagnostic fee or first-visit fee remains distinct from meals, repairs, tuition or later treatment.
+
+Replies use IDs such as `bank.greeting`, `restaurant.requirements`, and `vet.readback`. Startup adds their immutable v1 translations to the existing SQLite `dialogue_phrases` table without modifying previously published haircut rows or migration checksums. Shared wording is inherited from the haircut catalog; domain introductions, service names, price questions, requirements and detailed readbacks are specialized. The model receives trusted registry guidance through both adapters, with free-text goals/transcripts kept in the untrusted context. It cannot select phrase IDs or author arbitrary spoken replies. The Responses schema still comes from the shared contract, including required/nullable nested detail fields ([Structured Outputs guide](https://developers.openai.com/api/docs/guides/structured-outputs)).
+
+The optional mock-call controller continues to withhold final acceptance/confirmed outcomes until full-playback attestation and a production semantic verifier are integrated. The domain guidance and offline injected-model tests do not prove live model interpretation, clinical/legal/financial accuracy or provider speech quality. Broader tasks and unlisted specialties/options require a reviewed extension rather than guessed mapping. Existing generic browser information/change examples remain separate scripted flows; new domain templates require the configured backend dialogue path.

@@ -1,8 +1,8 @@
 import { authHeaders } from './fixtures/auth.mjs';
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,6 +48,16 @@ async function fixture(t, options = {}) {
       if (options.beforeCreateReply) await options.beforeCreateReply(call);
       if (options.loseCreateReply) res.destroy(); else res.writeHead(201).end(serialized);
       return;
+    }
+    const outputMatch = /^\/mock\/v1\/calls\/(CA[0-9a-f]{32})\/outputs\/(\d+)$/.exec(req.url);
+    if (outputMatch) {
+      const call = calls.get(outputMatch[1]), sequence = Number(outputMatch[2]);
+      const output = call?.outputs?.[sequence - 1];
+      if (!options.playbackReceipts || !output) { res.writeHead(404).end('{}'); return; }
+      if (options.beforeOutputReply) await options.beforeOutputReply(call, sequence);
+      const receipt = { mock: true, kind: 'simulated_text_playback', accountSid: config.mockAccountSid,
+        callSid: call.sid, sessionId: call.sessionId, sequence, ...output };
+      res.end(JSON.stringify(options.receiptTransform ? options.receiptTransform(receipt) : receipt)); return;
     }
     const id = /\/Calls\/(CA[0-9a-f]{32})\.json$/.exec(req.url)?.[1]; const call = calls.get(id);
     if (!call) { res.writeHead(404).end('{}'); return; }
@@ -103,10 +113,15 @@ async function fixture(t, options = {}) {
     async answer(id, overrides = {}) {
       const call = calls.get(id); const peer = new WebSocket(call.relay.url, { headers: { "X-CallMate-Mock": "true" } });
       peers.push(peer); peer.on("error", () => {}); peer.messages = [];
-      peer.on("message", (raw) => peer.messages.push(JSON.parse(raw.toString())));
+      peer.on("message", (raw) => {
+        const message = JSON.parse(raw.toString()); peer.messages.push(message);
+        if (message.type === 'text' && message.last) (call.outputs ??= []).push({
+          textSha256: createHash('sha256').update(message.token).digest('hex'), language: message.lang, completedAt: new Date().toISOString() });
+      });
       peer.closed = new Promise((resolve) => peer.once("close", (code) => resolve(code)));
       await once(peer, "open"); call.peer = peer; call.status = "in-progress";
-      peer.send(JSON.stringify({ type: "setup", callSid: id, sessionId: sid("VX"), accountSid: config.mockAccountSid,
+      call.sessionId = overrides.sessionId ?? sid("VX");
+      peer.send(JSON.stringify({ type: "setup", callSid: id, sessionId: call.sessionId, accountSid: config.mockAccountSid,
         from: "+48000000000", to: "+48111111111", customParameters: Object.fromEntries(call.relay.Parameter.map((parameter) => [parameter.name, parameter.value])), ...overrides }));
       return peer;
     },
@@ -296,11 +311,13 @@ test('scripted and manual calls reserve one global slot, share paginated history
     }, body: JSON.stringify({ planId: plan.id, planVersion: 1, mode: 'simulator' }) });
     return { status: response.status, body: await response.json() };
   };
+  const scriptedRequest = { planId: plan.id, planVersion: 1, mode: 'simulator' };
   const request = input(); const manual = (await app.api('/api/dev/conversations', 'POST', request)).body.conversation;
-  assert.equal((await start()).body.error.code, 'CALL_ALREADY_ACTIVE');
+  assert.throws(() => app.runtime.simulator.start(scriptedRequest, randomUUID()), { code: 'CALL_ALREADY_ACTIVE' });
   assert.equal((await start(request.requestId)).body.error.code, 'IDEMPOTENCY_CONFLICT');
   await app.api(`/api/v1/calls/${manual.id}/stop`, 'POST', {});
-  const key = randomUUID(); const scripted = await start(key); assert.equal(scripted.status, 202);
+  const key = randomUUID(); app.runtime.simulator.start(scriptedRequest, key);
+  const scripted = await start(key); assert.equal(scripted.status, 202);
   assert.equal((await app.api('/api/dev/conversations', 'POST', input())).body.error.code, 'CALL_ALREADY_ACTIVE');
   assert.equal((await app.api('/api/dev/conversations', 'POST', { ...input(), requestId: key })).body.error.code, 'IDEMPOTENCY_CONFLICT');
   await app.api(`/api/v1/calls/${scripted.body.call.id}/stop`, 'POST', {}); await app.runtime.simulator.tick();
@@ -921,6 +938,49 @@ test('failed usage event insertion rolls back meter and snapshot together before
 // injecting only model generation. They never contact OpenAI or a telephone network.
 const dialogueProposal = (input, candidate) => ({ turnId: input.turnId, turnVersion: input.turnVersion,
   candidate, translations: [{ messageId: input.triggerMessageId, translationEn: "Contact reply translated for the owner." }] });
+
+test('reviewed mock Start without a dialogue engine fails without scripted confirmation or a call attempt', async t => {
+  const app = await fixture(t);
+  const plan = (await app.api('/api/v1/plans', 'POST', dialogueRequest())).body.plan;
+  const response = await fetch(app.apiOrigin + '/api/v1/calls', { method: 'POST', headers: {
+    ...app.auth, 'content-type': 'application/json', 'idempotency-key': randomUUID(),
+  }, body: JSON.stringify({ planId: plan.id, planVersion: plan.version, mode: 'simulator' }) });
+  assert.equal(response.status, 503); assert.equal((await response.json()).error.code, 'PROVIDER_NOT_READY');
+  assert.equal(app.creates, 0); assert.deepEqual((await app.api('/api/v1/history')).body.items, []);
+  const db = new Database(join(app.dataDir, 'callmate.sqlite'), { readonly: true });
+  try { assert.equal(db.prepare('SELECT count(*) AS n FROM commands').get().n, 0); } finally { db.close(); }
+});
+
+test('Codex provider uses the CLI adapter for actual relay turns and reports local login readiness', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'callmate-codex-server-'));
+  const previousPath = process.env.PATH;
+  writeFileSync(join(directory, 'codex'), `#!/usr/bin/env node
+import { writeFileSync } from 'node:fs';
+if (process.argv.includes('status')) { console.log('Logged in using ChatGPT'); process.exit(0); }
+let raw = ''; for await (const chunk of process.stdin) raw += chunk;
+const input = JSON.parse(raw);
+writeFileSync(process.argv[process.argv.indexOf('--output-last-message') + 1], JSON.stringify({
+  turnId: input.turnId, turnVersion: input.turnVersion, candidate: { action: 'ask_availability' },
+  translations: [{ messageId: input.triggerMessageId, translationEn: 'Hello, how can I help?' }]
+}));
+`, { mode: 0o700 });
+  process.env.PATH = `${directory}:${previousPath}`;
+  t.after(() => { process.env.PATH = previousPath; rmSync(directory, { recursive: true, force: true }); });
+  const f = await dialogueCall(t, undefined, { env: { CALLMATE_DIALOGUE_PROVIDER: 'codex' } });
+  f.prompt('Hola, ¿qué necesita?'); await until(() => f.peer.messages.length === 2);
+  assert.match(f.peer.messages[1].token, /disponibilidad/);
+  const call = await f.snapshot(); assert.equal(call.outcome.status, 'pending');
+  assert.equal(call.messages[1].translationEn, 'Hello, how can I help?');
+  const report = (await f.app.api('/api/v1/readiness')).body;
+  assert.equal(report.capabilities.find(c => c.name === 'dialogue_integration').ready, true);
+  assert.match(report.checks.find(c => c.name === 'dialogue').message, /ChatGPT login/);
+  writeFileSync(join(directory, 'codex'), '#!/bin/sh\nexit 1\n', { mode: 0o700 });
+  assert.equal((await f.app.api('/api/v1/readiness')).body.capabilities.find(c => c.name === 'dialogue_integration').ready, false);
+  await f.app.api(`/api/v1/calls/${f.id}/stop`, 'POST', {});
+  const blocked = await f.start(undefined, randomUUID());
+  assert.equal(blocked.status, 503); assert.equal(blocked.body.error.code, 'PROVIDER_NOT_READY');
+  assert.equal(f.app.creates, 1);
+});
 function dialogueRequest() {
   const request = structuredClone(reviewPlanFixture.request);
   const year = new Date().getUTCFullYear() + 1;
@@ -931,7 +991,7 @@ function dialogueRequest() {
 }
 async function dialogueCall(t, model, extra = {}) {
   const app = await fixture(t, { ...extra, development: { automatic: false, model, ...extra.development } });
-  const plan = (await app.api('/api/v1/plans', 'POST', dialogueRequest())).body.plan;
+  const plan = (await app.api('/api/v1/plans', 'POST', { ...dialogueRequest(), ...extra.request, ...(extra.language ? { language: extra.language } : {}) })).body.plan;
   const key = randomUUID();
   const start = async (request = { planId: plan.id, planVersion: plan.version, mode: 'simulator' }, commandKey = key) => {
     const response = await fetch(app.apiOrigin + '/api/v1/calls', { method: 'POST', headers: {
@@ -941,7 +1001,7 @@ async function dialogueCall(t, model, extra = {}) {
   const created = await start(); assert.equal(created.status, 202, JSON.stringify(created.body));
   const id = created.body.call.id;
   const peer = await app.answer([...app.calls.keys()][0]); await until(() => peer.messages.length === 1);
-  const prompt = (text, last = true) => peer.send(JSON.stringify({ type: 'prompt', voicePrompt: text, lang: 'es-ES', last }));
+  const prompt = (text, last = true) => peer.send(JSON.stringify({ type: 'prompt', voicePrompt: text, lang: extra.language ?? 'es-ES', last }));
   const snapshot = async () => (await app.api(`/api/v1/calls/${id}`)).body.call;
   return { app, id, peer, prompt, snapshot, start, plan };
 }
@@ -957,6 +1017,7 @@ test('dialogue mock: finalized contact replies drive the library, policy and rel
   f.prompt('¿qué necesita?'); await until(() => f.peer.messages.length === 2);
   assert.equal(inputs.length, 1); assert.equal(inputs[0].plan.id, f.plan.id);
   assert.match(f.peer.messages[1].token, /disponibilidad/);
+  assert.doesNotMatch(f.peer.messages[1].token, /Hola|asistente|llamo en nombre/);
   f.prompt('¿Qué precio?'); await until(() => f.peer.messages.length === 3);
   assert.match(f.peer.messages[2].token, /precio total/);
   const call = await f.snapshot();
@@ -967,6 +1028,41 @@ test('dialogue mock: finalized contact replies drive the library, policy and rel
   assert.equal(readiness.capabilities.find(c => c.name === 'dialogue_integration').ready, true);
   assert.equal(readiness.capabilities.find(c => c.name === 'live_calls').enabled, false);
   const history = (await f.app.api('/api/v1/history')).body; assert.equal(history.items[0].id, f.id);
+});
+
+test('dialogue mock: supported contact languages are received and translated without changing the reviewed agent language', async t => {
+  const inputs = [];
+  const f = await dialogueCall(t, { async generate(input) {
+    inputs.push(input); return dialogueProposal(input, { action: 'ask_availability' });
+  } });
+  for (const [language, text] of [['ru-RU', 'Здравствуйте, что вам нужно?'], ['pl-PL', 'Dzień dobry, w czym pomóc?'], ['en-US', 'Hello, how can I help?']]) {
+    const before = f.peer.messages.length;
+    f.peer.send(JSON.stringify({ type: 'prompt', voicePrompt: text, lang: language, last: true }));
+    await until(() => f.peer.messages.length === before + 1);
+    const call = await f.snapshot(); const contact = call.messages.findLast(m => m.speaker === 'business');
+    assert.equal(contact.originalText, text); assert.equal(contact.language, language);
+    assert.equal(contact.translationEn, 'Contact reply translated for the owner.');
+    assert.equal(inputs.at(-1).messages.find(m => m.id === contact.id).language, language);
+    assert.equal(f.peer.messages.at(-1).lang, 'es-ES'); assert.deepEqual(call.plan.request, f.plan.request);
+    assert.equal(call.outcome.status, 'pending');
+  }
+  const errors = new Database(join(f.app.dataDir, 'callmate.sqlite'), { readonly: true });
+  try { assert.equal(errors.prepare("SELECT count(*) AS n FROM call_events WHERE attempt_id=? AND json_extract(value,'$.type')='call.error'").get(f.id).n, 0); } finally { errors.close(); }
+});
+
+test('dialogue mock: unsupported recognition language reports an actionable error and allows a supported reply next', async t => {
+  let turns = 0;
+  const f = await dialogueCall(t, { async generate(input) { turns++; return dialogueProposal(input, { action: 'ask_availability' }); } });
+  f.peer.send(JSON.stringify({ type: 'prompt', voicePrompt: 'Hello', lang: 'ja-JP', last: true }));
+  const db = new Database(join(f.app.dataDir, 'callmate.sqlite'), { readonly: true });
+  try {
+    let error;
+    await until(() => { error = db.prepare("SELECT value FROM call_events WHERE attempt_id=? AND json_extract(value,'$.type')='call.error' ORDER BY sequence DESC LIMIT 1").get(f.id); return error; });
+    assert.match(JSON.parse(error.value).payload.message, /unsupported language.*mock operator.*resend/);
+    assert.equal(turns, 0); assert.equal((await f.snapshot()).callState, 'connected');
+    f.prompt('Hola, ¿qué necesita?'); await until(() => f.peer.messages.length === 2);
+    assert.equal(turns, 1); assert.equal((await f.snapshot()).messages.length, 3);
+  } finally { db.close(); }
 });
 
 for (const event of ['stop', 'newer reply', 'partial speech', 'interrupt', 'disconnect', 'shutdown']) {
@@ -1034,7 +1130,8 @@ test('dialogue mock: controller reserves offer identities; exact user approval p
   const key = randomUUID(); const accepted = await decide(body, key); assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
   await until(() => f.peer.messages.some(m => m.token.includes('Todavía no estoy aceptando')));
   assert.equal((await decide(body, key)).status, 200);
-  f.prompt('Sí, son correctos'); await until(() => f.peer.messages.some(m => m.token.includes('No puedo aceptar')));
+  f.prompt('Sí, son correctos'); await until(() => f.app.runtime.controller.replayEvents(f.id, 0).some(e => e.type === 'call.error'));
+  assert.equal(f.peer.messages.length, 3);
   call = await f.snapshot(); assert.equal(call.bookingState, 'reading_back'); assert.equal(call.outcome.status, 'pending');
   assert.ok(!f.peer.messages.some(m => /^Acepto la cita/.test(m.token)));
   await f.app.api(`/api/v1/calls/${f.id}/stop`, 'POST', {});
@@ -1150,4 +1247,239 @@ test('dialogue mock: approval cannot release old-offer readback while newer cont
       approvalId: approval.id, decision: 'approve', plan: approval.plan, offer: { offerId: approval.offer.id, offerVersion: approval.offer.version } }) });
   assert.equal(result.status, 409); assert.equal((await f.snapshot()).pendingApproval.id, approval.id);
   assert.ok(!f.peer.messages.some(m => m.token.includes('Todavía no estoy aceptando')));
+});
+
+for (const [language, hello, price, repeat, waiting, readback, unavailable, affirmation] of [
+  ['es-ES', 'Hola', /precio total/, /repetir/, /consultar esta propuesta/, /Todavía no estoy aceptando/, /Acepto la cita/, 'Sí, todo correcto, gracias'],
+  ['ru-RU', 'Здравствуйте', /стоимость стрижки/, /повторите/, /согласовать это предложение/, /пока не принимаю/, /Я принимаю запись/, 'Да всё так спасибо'],
+  ['en-US', 'Hello', /total price/, /repeat/, /check this proposal/, /not accepting/, /I accept the appointment/, 'Yes, that is correct, thank you'],
+  ['pl-PL', 'Dzień dobry', /cenę strzyżenia/, /powtórzyć/, /uzgodnić tę propozycję/, /Jeszcze nie akceptuję/, /Akceptuję termin/, 'Tak, wszystko się zgadza, dziękuję'],
+]) test(`dialogue mock: ${language} reaches TwiML, model context, policy replies and durable transcript IDs`, async t => {
+  let turn = 0; const inputs = [];
+  const { offerFixture } = await import('@callmate/contracts/fixtures');
+  const f = await dialogueCall(t, { async generate(input) {
+    inputs.push(input); turn++;
+    const candidate = turn === 1 ? { action: 'clarify', missing: ['price', 'conditions'] }
+      : turn === 2 ? { action: 'repeat', reason: 'not_heard' }
+      : turn === 3 ? { action: 'evaluate_offer', offer: { ...structuredClone(offerFixture),
+        appointment: input.plan.request.availability[0].start, price: { amountMinor: 3500, currency: "EUR" }, evidenceMessageIds: [input.triggerMessageId] } }
+      : { action: 'accept_offer', offerId: input.offer.id, offerVersion: input.offer.version };
+    return dialogueProposal(input, candidate);
+  } }, { language, playbackReceipts: true });
+  assert.equal([...f.app.calls.values()][0].relay.language, language);
+  assert.equal(f.peer.messages[0].lang, language);
+  let call = await f.snapshot(); assert.equal(call.messages[0].phrase.id, 'haircut.greeting');
+  assert.match(call.messages[0].translationEn, /I am an AI assistant/);
+  assert.doesNotMatch(call.messages[0].originalText + call.messages[0].translationEn, /Zeus|Зевс|CallMate/i);
+  assert.ok(call.messages[0].originalText.includes(f.plan.request.bookingName));
+  assert.ok(f.peer.messages[0].token.includes(f.plan.request.bookingName));
+  assert.ok(call.messages[0].translationEn.includes('on behalf of ' + f.plan.request.bookingName));
+  f.prompt(hello); await until(() => f.peer.messages.length === 2);
+  assert.match(f.peer.messages[1].token, price);
+  assert.match((await f.snapshot()).messages.at(-1).translationEn, /total price.*deposit/);
+  f.prompt(hello); await until(() => f.peer.messages.length === 3);
+  assert.match(f.peer.messages[2].token, repeat);
+  f.prompt(hello); await until(async () => (await f.snapshot()).pendingApproval !== null);
+  assert.match(f.peer.messages[3].token, waiting);
+  call = await f.snapshot(); const approval = call.pendingApproval;
+  const approved = await fetch(f.app.apiOrigin + `/api/v1/calls/${f.id}/approvals`, { method: "POST", headers: { ...f.app.auth, "content-type": "application/json", "idempotency-key": randomUUID() }, body: JSON.stringify({
+    approvalId: approval.id, decision: 'approve', plan: approval.plan,
+    offer: { offerId: approval.offer.id, offerVersion: approval.offer.version },
+  }) });
+  assert.equal(approved.status, 200, JSON.stringify(await approved.json()));
+  await until(() => f.peer.messages.length === 5); assert.match(f.peer.messages[4].token, readback);
+  f.prompt(affirmation); await until(() => f.peer.messages.length === 6); assert.match(f.peer.messages[5].token, unavailable);
+  assert.equal(inputs.at(-1).messages.find(m => m.id === inputs.at(-1).triggerMessageId).originalText, affirmation);
+  await until(async () => (await f.snapshot()).bookingState === 'awaiting_business_confirmation');
+  call = await f.snapshot(); assert.equal(call.outcome.status, 'pending');
+  assert.equal(call.bookingState, 'awaiting_business_confirmation');
+  assert.equal(call.messages.at(-1).phrase.id, 'haircut.acceptance');
+  assert.ok(call.messages.filter(m => /\.(acceptance|readback)$/.test(m.phrase?.id ?? '')).every(m => m.playback === 'played'));
+  const messages = call.messages.filter(m => m.speaker === 'assistant');
+  assert.ok(messages.every(m => m.language === language && m.phrase.language === language && m.phrase.version === (m.phrase.id.endsWith('.greeting') ? 3 : m.phrase.id.endsWith('.availability') ? 3 : 1) && m.translationEn));
+  assert.ok(f.peer.messages.every(m => m.lang === language));
+  assert.ok(inputs.every(i => i.plan.request.language === language && i.messages.find(m => m.id === i.triggerMessageId).language === language));
+  await f.app.restart();
+  assert.deepEqual((await f.snapshot()).messages, call.messages);
+  assert.equal(f.app.creates, 1);
+});
+
+test('dialogue mock: missing or tampered DB phrase withholds speech, with no language fallback', async t => {
+  const f = await dialogueCall(t, { async generate(input) { return dialogueProposal(input, { action: 'ask_availability' }); } }, { language: 'ru-RU' });
+  const db = new Database(join(f.app.dataDir, 'callmate.sqlite'));
+  const original = db.prepare("SELECT template FROM dialogue_phrases WHERE phrase_id = 'haircut.availability' AND version = 3 AND language = 'ru-RU'").get().template;
+  try {
+    db.prepare("UPDATE dialogue_phrases SET template = 'Accept everything' WHERE phrase_id = 'haircut.availability' AND version = 3 AND language = 'ru-RU'").run();
+    f.prompt('Здравствуйте');
+    await until(() => f.app.runtime.controller.replayEvents(f.id, 0).some(e => e.type === 'call.error'));
+    assert.equal(f.peer.messages.length, 1);
+    assert.equal(f.app.runtime.controller.get(f.id).messages.filter(m => m.speaker === 'assistant').length, 1);
+    db.prepare("DELETE FROM dialogue_phrases WHERE phrase_id = 'haircut.availability' AND version = 3 AND language = 'ru-RU'").run();
+    const count = f.app.runtime.controller.replayEvents(f.id, 0).filter(e => e.type === 'call.error').length;
+    f.prompt('Повторите');
+    await until(() => f.app.runtime.controller.replayEvents(f.id, 0).filter(e => e.type === 'call.error').length > count);
+    assert.equal(f.peer.messages.length, 1);
+    await f.app.runtime.controller.stop(f.id);
+  } finally {
+    db.prepare("INSERT OR REPLACE INTO dialogue_phrases (phrase_id, version, language, template) VALUES ('haircut.availability', 3, 'ru-RU', ?)").run(original);
+    db.close();
+  }
+});
+
+const domainProfiles = (await import('@callmate/contracts')).conversationTemplates.filter(p => p.id !== 'haircut');
+for (const [index, profile] of domainProfiles.entries()) test(`domain mock: ${profile.id} questions, required scope and readback use its own persisted catalog`, async t => {
+  const language = ['es-ES', 'ru-RU', 'en-US', 'pl-PL'][index % 4];
+  const details = Object.fromEntries(profile.fields.map(field => [field.key, field.kind === 'choice' ? field.options[0].value : field.kind === 'number' ? 2 : 'Toyota Corolla']));
+  let turn = 0; const inputs = [];
+  const { offerFixture } = await import('@callmate/contracts/fixtures');
+  const f = await dialogueCall(t, { async generate(input) {
+    inputs.push(input); turn++;
+    const candidate = turn === 1 ? { action: 'ask_requirements' } : turn === 2 ? { action: 'ask_availability' }
+      : { action: 'evaluate_offer', offer: { ...structuredClone(offerFixture), service: profile.service[2],
+        templateDetails: turn === 3 ? null : details, appointment: input.plan.request.availability[0].start,
+        evidenceMessageIds: [input.triggerMessageId] } };
+    return dialogueProposal(input, candidate);
+  } }, { language, request: { templateId: profile.id, templateDetails: details, service: profile.aliases[0] } });
+  assert.equal([...f.app.calls.values()][0].relay.language, language);
+  assert.equal((await f.snapshot()).messages[0].phrase.id, `${profile.id}.greeting`);
+  f.prompt(profile.service[index % 4]); await until(() => f.peer.messages.length === 2);
+  let call = await f.snapshot(); assert.equal(call.messages.at(-1).phrase.id, `${profile.id}.requirements`);
+  assert.equal(call.messages.at(-1).translationEn, profile.requirements[2]);
+  f.prompt(profile.service[index % 4]); await until(() => f.peer.messages.length === 3);
+  assert.equal((await f.snapshot()).messages.at(-1).phrase.id, `${profile.id}.availability`);
+  f.prompt('Details still unknown'); await until(() => f.peer.messages.length === 4);
+  call = await f.snapshot(); assert.equal(call.messages.at(-1).phrase.id, `${profile.id}.clarification`);
+  assert.match(call.messages.at(-1).translationEn, /confirm.*details/); assert.equal(call.bookingState, 'offer_received');
+  f.prompt(JSON.stringify({ service: profile.service[2], details, priceEUR: 25, appointment: f.plan.request.availability[0].start }));
+  await until(() => f.peer.messages.length === 5);
+  call = await f.snapshot(); assert.equal(call.messages.at(-1).phrase.id, `${profile.id}.readback`);
+  assert.match(call.messages.at(-1).translationEn, /not accepting/); assert.equal(call.activeOffer.version, 2);
+  assert.deepEqual(call.activeOffer.templateDetails, details); assert.equal(call.bookingState, 'reading_back'); assert.equal(call.outcome.status, 'pending');
+  assert.ok(inputs.every(input => input.plan.request.templateId === profile.id));
+  assert.ok(f.peer.messages.every(m => m.lang === language));
+  assert.ok(call.messages.filter(m => m.speaker === 'assistant').every(m => m.phrase.id.startsWith(profile.id + '.') && m.translationEn));
+  assert.ok(!f.peer.messages.some(m => /haircut|corte de pelo|стрижк|strzyż/i.test(m.token)));
+  await f.app.api(`/api/v1/calls/${f.id}/stop`, 'POST', {});
+});
+
+async function autoApprovalCall(t, extra = {}) {
+  const { offerFixture } = await import('@callmate/contracts/fixtures');
+  return dialogueCall(t, { async generate(input) {
+    const candidate = input.bookingState === 'reading_back'
+      ? { action: 'accept_offer', offerId: input.offer.id, offerVersion: input.offer.version }
+      : input.bookingState === 'awaiting_business_confirmation'
+        ? { action: 'record_business_confirmation', offerId: input.offer.id, offerVersion: input.offer.version, evidenceMessageIds: [input.triggerMessageId] }
+        : { action: 'evaluate_offer', offer: { ...structuredClone(offerFixture), appointment: input.plan.request.availability[0].start,
+          price: { amountMinor: 5000, currency: 'EUR' }, evidenceMessageIds: [input.triggerMessageId] } };
+    return dialogueProposal(input, candidate);
+  } }, { language: 'ru-RU', playbackReceipts: true, ...extra,
+    request: { pricePolicy: { maximum: { amountMinor: 5000, currency: 'EUR' }, allowUnknownPrice: false }, ...extra.request } });
+}
+
+for (const [language, assent, confirmation] of [
+  ['ru-RU', 'Да всё так спасибо', 'Да, записал вас'],
+  ['ru-RU', 'Да всё так спасибо', 'Да подтверждаю'],
+  ['ru-RU', 'Да всё так спасибо', 'Да я уже подтвердил это'],
+  ['es-ES', 'Sí, todo correcto, gracias', 'La reserva está confirmada'],
+  ['es-ES', 'Sí, confirmo', 'Sí, confirmo'],
+  ['es-ES', 'Sí, confirmo', 'Sí, ya lo he confirmado'],
+  ['en-US', 'Yes, that is correct, thank you', 'The appointment is booked'],
+  ['en-US', 'Yes, I confirm', 'Yes, I confirm'],
+  ['en-US', 'Yes, I confirm', 'Yes, I already confirmed that'],
+  ['pl-PL', 'Tak, wszystko się zgadza, dziękuję', 'Rezerwacja jest potwierdzona'],
+  ['pl-PL', 'Tak, potwierdzam', 'Tak, potwierdzam'],
+  ['pl-PL', 'Tak, potwierdzam', 'Tak, już to potwierdziłem'],
+]) test(`mock auto-approval/${language}/${confirmation}: inclusive price limit → received readback → acceptance → separate booking confirmation`, async t => {
+  const f = await autoApprovalCall(t, { language });
+  f.prompt('Synthetic complete offer for 50 EUR');
+  await until(async () => (await f.snapshot()).messages.some(m => m.phrase?.id.endsWith('.readback') && m.playback === 'played'));
+  let call = await f.snapshot(); assert.equal(call.pendingApproval, null); assert.equal(call.outcome.status, 'pending');
+  assert.equal(call.activeOffer.price.amountMinor, call.plan.request.pricePolicy.maximum.amountMinor);
+  assert.ok(!f.peer.messages.some(m => /^(Я принимаю|Acepto|I accept|Akceptuję)/.test(m.token)));
+  f.prompt(assent);
+  await until(async () => (await f.snapshot()).bookingState === 'awaiting_business_confirmation');
+  call = await f.snapshot(); assert.equal(call.pendingApproval, null); assert.equal(call.outcome.status, 'pending');
+  assert.equal(call.messages.filter(m => m.phrase?.id.endsWith('.acceptance')).length, 1);
+  const acceptance = call.messages.find(m => m.phrase?.id.endsWith('.acceptance')); assert.equal(acceptance.playback, 'played');
+  assert.ok(!f.peer.messages.some(m => m.type === 'end'));
+  f.prompt(confirmation);
+  await until(() => f.peer.messages.some(m => m.type === 'end'));
+  call = await f.snapshot(); assert.equal(call.outcome.status, 'confirmed'); assert.equal(call.mode, 'simulator');
+  assert.equal(call.messages.at(-1).phrase.id, 'haircut.closing_confirmed');
+  assert.ok(!call.messages.some(m => m.phrase?.id === 'haircut.confirm_booking'));
+  const evidence = call.messages.find(m => call.outcome.confirmationMessageIds.includes(m.id));
+  assert.equal(evidence.originalText, confirmation); assert.ok(call.messages.indexOf(evidence) > call.messages.indexOf(acceptance));
+  assert.deepEqual(JSON.parse(f.peer.messages.at(-1).handoffData), { reasonCode: 'dialogue_complete', bookingStatus: 'confirmed', simulation: true });
+  await f.app.callback([...f.app.calls.keys()][0], 'completed', 1);
+  assert.equal((await f.snapshot()).outcome.status, 'confirmed');
+  await f.app.restart(); assert.equal((await f.snapshot()).outcome.status, 'confirmed');
+  await f.app.api(`/api/v1/calls/${f.id}/conversation`, 'DELETE');
+  const db = new Database(join(f.app.dataDir, 'callmate.sqlite'), { readonly: true });
+  try { assert.equal(JSON.parse(db.prepare('SELECT internal FROM call_attempts WHERE id=?').get(f.id).internal).dialoguePlayback, undefined); }
+  finally { db.close(); }
+});
+
+for (const [name, extra] of [
+  ['missing', { playbackReceipts: false }],
+  ['wrong session', { receiptTransform: r => ({ ...r, sessionId: 'VX' + 'f'.repeat(32) }) }],
+  ['wrong text', { receiptTransform: r => ({ ...r, textSha256: 'f'.repeat(64) }) }],
+  ['wrong sequence', { receiptTransform: r => ({ ...r, sequence: r.sequence + 1 }) }],
+  ['wrong language', { receiptTransform: r => ({ ...r, language: 'es-ES' }) }],
+]) test(`mock auto-approval: ${name} receipt cannot authorize acceptance`, async t => {
+  const f = await autoApprovalCall(t, extra);
+  f.prompt('Synthetic complete offer'); await until(() => f.peer.messages.length === 2);
+  f.prompt('Да всё так спасибо');
+  await until(() => f.app.runtime.controller.replayEvents(f.id, 0).some(e => e.type === 'call.error'));
+  const call = await f.snapshot(); assert.equal(call.outcome.status, 'pending');
+  assert.ok(!call.messages.some(m => m.phrase?.id.endsWith('.acceptance')));
+});
+
+for (const [name, request] of [
+  ['above the price limit', { pricePolicy: { maximum: { amountMinor: 4999, currency: 'EUR' }, allowUnknownPrice: false } }],
+  ['explicit approval requested', { bookingAuthority: 'ask_before_accepting' }],
+]) test(`mock auto-approval: ${name} still asks the user`, async t => {
+  const f = await autoApprovalCall(t, { request });
+  f.prompt('Synthetic complete offer'); await until(async () => (await f.snapshot()).pendingApproval !== null);
+  const call = await f.snapshot(); assert.equal(call.bookingState, 'awaiting_approval');
+  assert.ok(!call.messages.some(m => /\.(readback|acceptance)$/.test(m.phrase?.id ?? '')));
+});
+
+for (const [language, assent, unsafeReadbackReply, unsafeConfirmations, confirmation] of [
+  ['ru-RU', 'Да всё так спасибо', 'Да, но цена теперь другая',
+    ['Наверное да, но нужно проверить', 'Да подтверждаю, но время другое'], 'Да я уже подтвердил это'],
+  ['es-ES', 'Sí, confirmo', 'Sí, pero el precio ha cambiado',
+    ['Sí, no lo he confirmado', 'Quizás sí', 'Sí, confirmo, pero a otra hora'], 'Sí, ya lo he confirmado'],
+  ['en-US', 'Yes, I confirm', 'Yes, but the price has changed',
+    ["Yes, I haven't confirmed it", 'I think so', 'Yes, I confirm, but at another time'], 'Yes, I already confirmed that'],
+  ['pl-PL', 'Tak, potwierdzam', 'Tak, ale cena się zmieniła',
+    ['Tak, jeszcze nie potwierdziłem', 'Chyba tak', 'Tak, potwierdzam, ale o innej godzinie'], 'Tak, już to potwierdziłem'],
+]) test(`mock auto-approval/${language}: an overconfident model cannot accept or confirm an ambiguous or corrected reply`, async t => {
+  const f = await autoApprovalCall(t, { language });
+  f.prompt('Synthetic complete offer'); await until(async () => (await f.snapshot()).messages.at(-1).playback === 'played');
+  f.prompt(unsafeReadbackReply); await until(() => f.peer.messages.length === 3);
+  assert.equal((await f.snapshot()).messages.at(-1).phrase.id, 'haircut.confirm_details');
+  assert.ok(!(await f.snapshot()).messages.some(m => m.phrase?.id.endsWith('.acceptance')));
+  f.prompt(assent); await until(async () => (await f.snapshot()).bookingState === 'awaiting_business_confirmation');
+  for (const reply of unsafeConfirmations) {
+    const before = f.peer.messages.length;
+    f.prompt(reply); await until(() => f.peer.messages.length === before + 1);
+    assert.equal((await f.snapshot()).messages.at(-1).phrase.id, 'haircut.confirm_booking');
+    assert.equal((await f.snapshot()).outcome.status, 'pending');
+    assert.ok(!f.peer.messages.some(m => m.type === 'end'));
+  }
+  f.prompt(confirmation); await until(async () => (await f.snapshot()).outcome.status === 'confirmed');
+});
+
+test('mock auto-approval: interruption while a receipt is in flight cannot mark the readback played', async t => {
+  let release, entered = false;
+  const gate = new Promise(resolve => { release = resolve; }); t.after(() => release());
+  const f = await autoApprovalCall(t, { beforeOutputReply: async (_call, sequence) => { if (sequence === 2) { entered = true; await gate; } } });
+  f.prompt('Synthetic complete offer'); await until(() => entered);
+  f.peer.send(JSON.stringify({ type: 'interrupt', utteranceUntilInterrupt: '', durationUntilInterruptMs: 1 }));
+  await until(async () => (await f.snapshot()).messages.at(-1).playback === 'interrupted');
+  release(); await delay(30);
+  f.prompt('Да всё так спасибо');
+  await until(() => f.app.runtime.controller.replayEvents(f.id, 0).some(e => e.type === 'call.error'));
+  const call = await f.snapshot(); assert.ok(!call.messages.some(m => m.phrase?.id.endsWith('.acceptance')));
+  assert.equal(call.outcome.status, 'pending');
 });

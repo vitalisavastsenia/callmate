@@ -418,11 +418,13 @@ Each capability has `{ name, enabled, ready }`. `enabled` reports configuration/
 
 | Capability | Enabled when |
 | --- | --- |
-| `scripted_calls`, `approvals` | Simulator mode. |
+| `scripted_calls` | Simulator mode, mock transport disabled and no dialogue engine. |
+| `approvals` | Simulator mode. |
 | `manual_mock_calls`, `mock_relay`, `mock_status_callbacks` | The complete mock transport gate is enabled. |
 | `history`, `automatic_retention` | Installed in every mode; readiness depends on local prerequisites. |
 | `test_rate_budgets` | Simulator mode with an explicit test rate. |
-| `live_calls`, `dialogue_integration`, `provider_billing` | Always false until their real integrations are implemented. |
+| `dialogue_integration` | Configured dialogue engine; readiness also needs mock health and local Codex login when selected. |
+| `live_calls`, `provider_billing` | Always false until their real integrations are implemented. |
 
 For example, with the mock enabled but stopped, the endpoint returns:
 
@@ -437,11 +439,11 @@ For example, with the mock enabled but stopped, the endpoint returns:
     { "name": "mock", "status": "failed", "message": "Local mock health check failed or timed out" },
     { "name": "telephony", "status": "ready", "message": "Scripted fake telephony is installed; real calling is disabled" },
     { "name": "voice", "status": "failed", "message": "Local mock relay handler is enabled; callback and WebSocket round trips have not been probed" },
-    { "name": "dialogue", "status": "ready", "message": "Scripted dialogue is installed; no model integration is enabled" },
+    { "name": "dialogue", "status": "missing", "message": "Reviewed mock calls require a configured dialogue engine; scripted fallback is disabled" },
     { "name": "tunnel", "status": "not_required", "message": "Local development needs no public tunnel" }
   ],
   "capabilities": [
-    { "name": "scripted_calls", "enabled": true, "ready": true },
+    { "name": "scripted_calls", "enabled": false, "ready": false },
     { "name": "manual_mock_calls", "enabled": true, "ready": false },
     { "name": "mock_relay", "enabled": true, "ready": false },
     { "name": "mock_status_callbacks", "enabled": true, "ready": false },
@@ -492,11 +494,52 @@ Then open either UI and create the owner again. There is no unauthenticated HTTP
 
 The booking UI can now run the dialogue library against actual contact replies
 from the local ConversationRelay mock. This path uses the shared plan, Start,
-Stop, approval, snapshot/history and SSE endpoints. It supports **Spanish haircut
-appointment inquiries**. The manual console at port 3000 remains a separate,
+Stop, approval, snapshot/history and SSE endpoints. It supports **15 appointment/reservation/information-visit templates in Spanish, Russian, English, and Polish**. The manual console at port 3000 remains a separate,
 multilingual transport check; its initial-message calls do not run AI.
 
-Configure the optional model in your ignored local `.env`:
+Choose one engine. **Codex CLI with your existing ChatGPT login** runs entirely
+inside Docker; no host Node/npm install or API key is needed:
+
+```sh
+docker compose -f compose.yaml -f compose.codex.yaml build server
+sh scripts/setup-codex-login.sh
+docker compose -f mock-conversation-relay/compose.yaml up -d --wait mock-relay
+docker compose -f compose.yaml -f compose.codex.yaml --profile web up --build -d --wait server web
+```
+
+The optional image pins `@openai/codex` to 0.163.0. The setup script copies only
+`${CODEX_HOME:-$HOME/.codex}/auth.json` into the private `callmate-codex` Docker
+volume with mode 0600. It does not mount your host Codex configuration, projects,
+history or skills. Credentials never enter the build context/image or Git. The
+volume is writable for token refresh. If you sign in again on the host, rerun the
+setup while no conversation is active. Do not use `down -v` if you want to retain
+both the database and container login. Treat volume backups as credentials.
+
+For keyring-only or missing file credentials, sign in directly inside Docker:
+
+```sh
+docker compose -f compose.yaml -f compose.codex.yaml run --rm --no-deps server codex login --device-auth
+```
+
+Follow the device-login instructions locally; never share the login code. This
+uses the same private credential volume. See [official Codex authentication](https://developers.openai.com/codex/auth).
+The CLI uses its default model unless `CALLMATE_DIALOGUE_MODEL` is explicitly set.
+Each finalized operator reply starts an isolated, ephemeral read-only CLI turn;
+tools, plugins and project instructions are disabled. Timeout is 60 seconds and
+Stop cancels pending work. Readiness checks CLI/login availability locally without
+sending model requests; it cannot establish subscription limits or model access.
+Conversation context is sent to OpenAI through your Codex login and consumes its
+usage allowance. Synthetic elapsed-time budgets do not cap subscription usage.
+Use this Compose override for subsequent builds/restarts so the CLI image and
+credential volume remain selected. To keep this choice for plain `docker compose`
+commands, add `COMPOSE_FILE=compose.yaml:compose.codex.yaml` to your ignored `.env`.
+The one-time login initializer temporarily runs as root with file ownership/access
+capabilities; the app still runs as the unprivileged node user with all capabilities
+dropped. The optional image includes the system certificate bundle required by the
+native CLI; TLS verification stays enabled. Existing browser mode preferences win over
+the default: select **Settings → Backend** once if necessary.
+
+Alternatively, configure the separately billed OpenAI API engine in your ignored local `.env`:
 
 ```dotenv
 CALLMATE_DIALOGUE_PROVIDER=openai
@@ -509,11 +552,10 @@ Choose an explicit model available to your API account with Responses and
 Structured Outputs support ([official guide](https://developers.openai.com/api/docs/guides/structured-outputs)). The server uses the existing dialogue package's
 [Responses adapter](../packages/dialogue/README.md#openai--codex-api-adapter),
 with a bounded, cancellable request per finalized contact utterance. Credentials
-are supplied only to the server container. The server does not install or invoke
-Codex CLI or reuse a host ChatGPT login. `disabled` is the default; no model
-requests occur on startup, readiness probes, manual console calls or offline tests.
-An enabled provider requires a key, model, simulator mode, mock transport and a
-development/test environment; invalid combinations fail startup without printing
+are supplied only to the server container. The base image does not install Codex CLI; the optional override above does.
+`disabled` is the default; no model requests occur on startup, readiness probes, manual console calls or offline tests.
+The API provider requires a key and model; both engines require simulator mode,
+mock transport and a development/test environment; invalid combinations fail startup without printing
 supplied values.
 
 1. Start the local mock and rebuild the backend/UI:
@@ -526,17 +568,22 @@ supplied values.
 2. Sign in at `http://localhost:5173`. Select **Settings → Backend** and check
    readiness: `dialogue_integration` must be enabled and ready. Readiness verifies
    configuration and mock health, **not** API credentials, model access or quality.
-   If existing backend settings use USD, save an explicit EUR call budget in
-   Settings before submitting the UI's EUR requests. No currency conversion is done.
-3. Review a haircut request with a booking name, future availability, price cap
+   The UI reads the backend's call-budget currency (USD or EUR) and uses it for
+   new requests and Settings saves. Service prices remain EUR. Switching from a
+   draft with another budget currency requires review; edited amounts must be
+   entered again in Advanced settings. No currency conversion is done.
+3. Choose **Conversation template**, complete its required details, choose **Conversation language** (Spanish, Russian, English, or Polish), then review the request with a booking name, future availability, price cap
    and authority boundaries. Start the call and answer it at `http://localhost:8080`.
    The destination phone number in the plan is context only: the development
    transport always uses its fixed synthetic numbers and cannot dial a telephone.
-4. Send Spanish replies from the operator window. Only a finalized utterance
-   starts model processing. The model receives the reviewed plan and current
+4. Send replies in the selected language from the operator window (the relay language is set automatically). Only a finalized utterance
+   starts model processing. The operator may reply in any of the four supported
+   languages: the backend preserves the original language, obtains an English
+   translation, and keeps agent output in the reviewed plan language. Unsupported
+   recognition-language labels produce an actionable error; choose a supported
+   language in the operator and resend. The model receives the reviewed plan and current
    conversation. The server validates its proposal, saves translations/offers,
-   checks booking policy, persists the permitted reply and then sends Spanish
-   relay text. Enable **Auto-play backend messages** to hear it with a browser voice.
+   checks booking policy, persists the permitted reply and then sends relay text in the selected language. Enable **Auto-play backend messages** to hear it with a browser voice.
    The app popup receives transcripts and approval requests through persisted SSE.
 5. Offers outside the approved constraints require the owner's exact-offer
    approval in the app. Approval permits a controlled readback, not acceptance.
@@ -550,14 +597,14 @@ never marked as `played`. Restart recovery reconciles/hangs up orphaned calls
 without redialing or replaying greetings, replies or model work. Retention removes
 transcripts and replay payloads through the existing shared lifecycle.
 
-**Current limits:** acceptance and confirmed outcomes remain unavailable. This
-relay integration has no attested full-readback playback or production Spanish
-confirmation verifier. Unsupported commitments, contact disclosure and add-on
-consent are withheld and surfaced as `call.error`; the owner can stop the call.
+**Current limits:** Mock mode can complete a simulated booking when the offer is within the reviewed constraints: it requires a mock-only authenticated text output receipt for the readback and acceptance, then a bounded confirmation phrase from the business. The UI marks the result as a simulation. Real provider playback attestation, semantic confirmation verification, and live booking remain unavailable. Offers outside constraints, unsupported commitments, contact disclosure and add-on consent are withheld and surfaced as `call.error`; the owner can stop the call. Corrections, negation and uncertain confirmation are clarified rather than accepted.
 Malformed output, provider errors and timeouts produce sanitized errors without
-retries or raw model output. Generic tasks, other services/languages and real
+retries or raw model output. Generic tasks beyond the 15 reviewed profiles, additional languages and real
 Twilio calls remain unsupported on this dialogue path. Existing scripted booking
-simulations continue to work with the model provider disabled.
+simulations remain explicitly available with `TELEPHONY_PROVIDER=fake` and the
+model provider disabled. With mock transport selected, a missing/unready engine
+blocks reviewed Start instead of silently returning a scripted confirmation. Old
+simulation outcomes remain in history and are labelled as simulation only. Requests selecting another language are rejected by scripted simulators rather than silently answered in Spanish.
 
 OpenAI API calls incur separate provider charges when enabled. The existing
 elapsed-time test-rate budget is synthetic and does **not** measure or cap actual
@@ -570,3 +617,18 @@ contains business speech, translations and generated assistant text;
 carry the current offer/decision state. `call.error` reports withheld output and
 sanitized model failures. Tests inject a model while exercising real local REST
 and WebSocket traffic; they do not establish live-model language quality.
+
+
+### Localized phrase storage
+
+Availability follow-ups use phrase version 3, which asks about the service, time windows and domain scope without a second introduction. Versioned `booking_unavailable` text is retained for older transcript records; current mock calls use simulated playback receipts and confirmation matching. Earlier versions remain unchanged for transcript/history compatibility.
+
+Migration `006_dialogue_phrases.sql` adds `dialogue_phrases`, keyed by `(phrase_id, version, language)`. Startup seeds the application-owned v1 catalog for `es-ES`, `ru-RU`, `en-US`, and `pl-PL`. For example, `haircut.greeting`, `haircut.availability`, `haircut.clarification`, `haircut.readback`, and `haircut.waiting` identify replies independently of their wording. Dates, exact EUR cents, time zones/UTC offsets, and approved/evidenced names remain bounded data slots. Language never converts prices or changes the reviewed schedule or authority.
+
+Each generated assistant transcript message includes `phrase: { id, version, language }`, the rendered `originalText`, and `translationEn`. SSE carries the same metadata; history/restart recovery preserves it. Old plans without `request.language` use Spanish, and old transcript messages without phrase references remain readable. Transcript retention/deletion removes conversation text and its references; the reusable catalog is retained.
+
+The catalog is versioned application configuration, not an editing UI or model-controlled prompt store. Missing or altered rows withhold speech, without falling back to another language; incompatible seeded content fails startup/readiness. To change wording, release a new catalog version and update its rendering references rather than modifying a published row in place. No phrase-editing endpoint exists. The model proposes structured actions and English translations of business speech; it cannot choose a phrase ID or authorize arbitrary speech.
+
+Offline integration tests inject a model and exercise all four languages through local HTTP/WebSocket traffic. They do not establish live model language quality, real Twilio speech quality, or completed playback. Browser audio depends on installed OS/browser voices.
+
+The catalog also seeds the 14 additional namespaces listed in the [profile table](../packages/dialogue/README.md#conversation-templates), reusing existing immutable haircut rows. Template metadata/instructions live in the shared application registry; rendered phrase translations live in SQLite. Choose the profile in Home or Request, complete its required details, and review them before Start. The new profiles use the configured backend dialogue and local mock; the browser and backend scripted examples reject non-haircut profile calls. No account, transaction, medical/legal consent, repair, enrollment or document-submission workflow is added.

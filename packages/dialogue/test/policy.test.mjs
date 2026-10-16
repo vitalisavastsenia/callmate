@@ -356,11 +356,12 @@ test("unrenderable reviewed names and wholly expired availability do not produce
     { decision: "deny", reason: "no_future_availability" });
 });
 
-test("Spanish opening, clarification, waiting, decline and closing phrases are bounded and non-committing", () => {
+test("Spanish availability follow-up, clarification, waiting, decline and closing phrases are bounded and non-committing", () => {
   const snapshot = buildSnapshot();
   const opening = evaluate(snapshot, { action: "ask_availability" });
   assert.equal(opening.decision, "allow");
-  assert.ok(opening.approvedSpanishText.includes("asistente de inteligencia artificial"));
+  assert.match(opening.approvedSpanishText, /disponibilidad para un corte de pelo/);
+  assert.doesNotMatch(opening.approvedSpanishText, /Hola|asistente de inteligencia artificial/);
   assert.ok(opening.approvedSpanishText.includes("20 de octubre de 2026"));
   for (const field of ["service", "name", "date", "time", "price", "conditions"]) {
     const clarification = evaluate(snapshot, { action: "clarify", missing: [field] });

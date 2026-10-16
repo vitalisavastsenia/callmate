@@ -1,11 +1,12 @@
 import {
-  CallSnapshotSchema, CandidateActionSchema, InstantSchema, TextSchema,
+  templateForRequest, CallSnapshotSchema, CandidateActionSchema, InstantSchema, TextSchema,
   type BookingPolicyPort, type CallSnapshot, type Offer, type PolicyDecision,
 } from "@callmate/contracts";
 import { checkOfferEvidence, offersEqual } from "../booking/evidence.js";
 import {
-  renderAcceptance, renderAvailability, renderClarification, renderClosing, renderReadback, serviceKey,
+  renderAvailability, renderClarification, renderClosing, serviceKey,
 } from "../language/spanish.js";
+import { renderAction, renderAcceptance, renderReadback } from "../language/catalog.js";
 import { checkHardConstraints, offerException } from "./constraints.js";
 import { checkExactOfferGrant, type PolicyInput } from "./grants.js";
 import { evaluateConversationAction, isConversationAction } from "../planner/conversation.js";
@@ -20,6 +21,21 @@ const progressStates = new Set<CallSnapshot["bookingState"]>(["pending", "offer_
 /** Synchronous policy with no provider calls, database access, grant creation, or playback side effects. */
 export class BookingPolicy implements BookingPolicyPort {
   evaluate(input: PolicyInput): PolicyDecision {
+    try {
+      const decision = this.evaluateControlled(input);
+      if (decision.decision !== "allow") return decision;
+      const legacy = templateForRequest(input.snapshot.plan.request)?.id === "haircut";
+      if (legacy && (!input.snapshot.plan.request.language || input.snapshot.plan.request.language === "es-ES") && input.candidate.action !== "ask_requirements"
+        && !(input.candidate.action === "clarify" && input.candidate.missing.includes("details"))) return decision;
+      const snapshot = CallSnapshotSchema.parse(input.snapshot);
+      const candidate = CandidateActionSchema.parse(input.candidate);
+      const plan = { ...snapshot.plan, request: { ...snapshot.plan.request,
+        availability: snapshot.plan.request.availability.filter(w => Date.parse(w.end.instant) > Date.parse(input.now)) } };
+      return allow(renderAction(candidate, plan, snapshot.activeOffer, undefined, snapshot.outcome.status === "confirmed").text);
+    } catch { return deny("unrenderable_response"); }
+  }
+
+  private evaluateControlled(input: PolicyInput): PolicyDecision {
     const snapshotResult = CallSnapshotSchema.safeParse(input?.snapshot);
     const candidateResult = CandidateActionSchema.safeParse(input?.candidate);
     const timeResult = InstantSchema.safeParse(input?.now);
@@ -33,6 +49,7 @@ export class BookingPolicy implements BookingPolicyPort {
     if (Date.parse(snapshot.plan.approvedAt) > Date.parse(now) || Date.parse(snapshot.updatedAt) > Date.parse(now)) {
       return deny("invalid_authority_time");
     }
+    if (templateForRequest(snapshot.plan.request)?.id !== "haircut" && ["request_add_on", "record_note"].includes(candidate.action)) return deny("haircut_action_in_other_domain");
     if (isConversationAction(candidate)) {
       try { return evaluateConversationAction(snapshot, candidate, now); }
       catch { return deny("unrenderable_response"); }
@@ -45,6 +62,10 @@ export class BookingPolicy implements BookingPolicyPort {
     switch (candidate.action) {
       case "clarify": return allow(renderClarification(candidate.missing, snapshot.plan.request.tone));
       case "end_call": return allow(renderClosing(candidate.reason));
+      case "ask_requirements":
+        if (!progressStates.has(snapshot.bookingState)) return deny("commitment_in_progress");
+        if (!templateForRequest(snapshot.plan.request)) return { decision: "clarify", field: "service" };
+        return this.render(snapshot, () => renderAction(candidate, snapshot.plan, snapshot.activeOffer).text);
       case "ask_availability": {
         if (!progressStates.has(snapshot.bookingState)) return deny("commitment_in_progress");
         if (!serviceKey(snapshot.plan.request.service)) return { decision: "clarify", field: "service" };

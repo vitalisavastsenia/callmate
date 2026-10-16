@@ -138,3 +138,21 @@ describe('generic task simulation', () => {
     expect(ended.outcome.resolution).toBe('needs_follow_up');
   });
 });
+
+it('preserves reviewed language and directs non-Spanish scripted calls to the backend', () => {
+  for (const language of ['ru-RU', 'en-US', 'pl-PL'] as const) {
+    const { plan } = mock.mockPlan({ ...reviewPlanFixture.request, language });
+    expect(plan.request.language).toBe(language);
+    expect(() => mock.mockStart({ planId: plan.id, planVersion: plan.version, mode: 'simulator' }, crypto.randomUUID())).toThrow(/Backend/);
+  }
+});
+
+it('keeps all domain profiles for review and refuses to substitute a scripted haircut conversation', async () => {
+  const { conversationTemplates } = await import('../src/types');
+  for (const profile of conversationTemplates.filter(profile => profile.id !== 'haircut')) {
+    const templateDetails = Object.fromEntries(profile.fields.map(field => [field.key, field.kind === 'choice' ? field.options![0]!.value : field.kind === 'number' ? 2 : 'Toyota Corolla']));
+    const { plan } = mock.mockPlan({ ...reviewPlanFixture.request, templateId: profile.id, templateDetails, service: profile.aliases[0]! });
+    expect(plan.request.templateId).toBe(profile.id); expect(plan.request.templateDetails).toEqual(templateDetails);
+    expect(() => mock.mockStart({ planId: plan.id, planVersion: plan.version, mode: 'simulator' }, crypto.randomUUID())).toThrow(/Backend/);
+  }
+});

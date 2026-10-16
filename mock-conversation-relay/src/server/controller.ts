@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { WebSocket } from "ws";
 import type { Config } from "./config.js";
 import { backendUrl, MockError } from "./config.js";
@@ -16,6 +16,7 @@ type Call = {
   abort: AbortController; deadline: number; ringDeadline: number; invalid: number;
   output: Transcript | null; callbackSequence: number; work: Promise<void>; endedByBackend: boolean;
   dialAt: number; resumeAt?: number; actionStarted: boolean;
+  outputs: { sequence: number; textSha256: string; language: string; completedAt: string }[];
 };
 type Options = { now?: () => number; makeId?: (prefix: "CA" | "VX") => string;
   log?: (event: { type: string; callSid: string; at: string; mockGenerated: true }) => void };
@@ -45,6 +46,13 @@ export class Controller extends EventEmitter {
     return call;
   }
   view(id: string) { return structuredClone(this.get(id).view); }
+  outputReceipt(id: string, sequence: number) {
+    const call = this.get(id);
+    const output = call.outputs[sequence - 1];
+    if (!output) throw new MockError("OUTPUT_NOT_READY", "Completed mock output not found", 404);
+    return { mock: true, kind: "simulated_text_playback", accountSid: call.view.accountSid,
+      callSid: id, sessionId: call.view.sessionId, ...output };
+  }
   list() { return [...this.calls.values()].map((call) => structuredClone(call.view)).reverse(); }
   private changed(call: Call) {
     if (this.calls.get(call.view.id) !== call) return;
@@ -119,7 +127,7 @@ export class Controller extends EventEmitter {
       transitions: [{ status: "queued", at }], transcript: [], events: [], droppedEvents: 0, callbacks: [], operatorId: null };
     const call: Call = { view, input, abort: new AbortController(), deadline: this.now() + this.config.CALL_TIMEOUT_SECONDS * 1000,
       ringDeadline: this.now() + (input.timeout ?? Math.min(30, this.config.CALL_TIMEOUT_SECONDS)) * 1000,
-      invalid: 0, output: null, callbackSequence: 0, work: Promise.resolve(), endedByBackend: false,
+      invalid: 0, output: null, outputs: [], callbackSequence: 0, work: Promise.resolve(), endedByBackend: false,
       dialAt: this.now() + this.config.MOCK_DIAL_DELAY_MS, actionStarted: false };
     this.calls.set(id, call);
     this.event(call, "lifecycle", "call.created", { from: view.from, to: view.to });
@@ -281,7 +289,14 @@ export class Controller extends EventEmitter {
       if (message.interruptible !== undefined) call.output.interruptible = message.interruptible;
       if (message.preemptible !== undefined) call.output.preemptible = message.preemptible;
       call.output.final = message.last;
-      if (message.last) call.output = null;
+      if (message.last) {
+        // A text simulation receipt, independent of optional browser/OS audio playback.
+        if (call.outputs.length >= 2000) { this.end(call, "failed", "OUTPUT_LIMIT", "Mock output limit reached"); return; }
+        call.outputs.push({ sequence: call.outputs.length + 1,
+          textSha256: createHash("sha256").update(call.output.text).digest("hex"),
+          language: call.output.lang, completedAt: this.timestamp() });
+        call.output = null;
+      }
     } else if (message.type === "end") {
       call.view.handoffData = message.handoffData ?? null;
       this.finishRelay(call);

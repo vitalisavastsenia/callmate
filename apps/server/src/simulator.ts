@@ -178,6 +178,8 @@ export class Simulator {
       if (!plan) throw new CommandError(404, "NOT_FOUND", "Review plan not found");
       if (plan.version !== request.planVersion) throw new CommandError(409, "PLAN_VERSION_MISMATCH", "Review plan version does not match");
       this.validatePlan(plan);
+      if (plan.request.templateId && plan.request.templateId !== "haircut") throw new CommandError(503, "PROVIDER_NOT_READY", "Domain templates require the configured dialogue model and mock relay");
+      if (plan.request.language && plan.request.language !== "es-ES") throw new CommandError(503, "PROVIDER_NOT_READY", "Multilingual calls require the configured dialogue model and mock relay; the scripted simulator uses Spanish only");
       if (this.db.active()) throw new CommandError(409, "CALL_ALREADY_ACTIVE", "Another call is still active");
       const call = CallSnapshotSchema.parse({ id: randomUUID(), revision: 1, lastEventSequence: 1,
         mode: "simulator", plan: ApprovedPlanSchema.parse({ ...plan, approvedAt: this.timestamp() }),

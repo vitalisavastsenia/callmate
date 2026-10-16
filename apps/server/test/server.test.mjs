@@ -41,6 +41,16 @@ test("configuration rejects invalid ports, paths and modes without echoing value
   });
 });
 
+test('Codex dialogue config needs local development mock mode and no API key', () => {
+  const env = { NODE_ENV: 'development', TELEPHONY_PROVIDER: 'mock', CALLMATE_DIALOGUE_PROVIDER: 'codex' };
+  assert.equal(loadConfig(env).dialogueProvider, 'codex');
+  assert.equal(loadConfig(env).openaiApiKey, undefined);
+  for (const override of [{ NODE_ENV: 'production' }, { TELEPHONY_PROVIDER: 'fake' }, { CALLMATE_MODE: 'live' }]) {
+    assert.throws(() => loadConfig({ ...env, ...override }), /dialogueProvider/);
+  }
+  assert.throws(() => loadConfig({ ...env, CALLMATE_DIALOGUE_PROVIDER: 'openai' }), /dialogueProvider/);
+});
+
 test("SQLite migration is repeatable, settings persist, and files are private", (t) => {
   const dataDir = directory(t);
   let store = openStore(dataDir);
@@ -200,4 +210,23 @@ test("real HTTP listeners start separately and close cleanly", async (t) => {
   await runtime.close();
   assert.equal(runtime.privateApi.server.listening, false);
   assert.equal(runtime.callbacks.server.listening, false);
+});
+
+test('versioned dialogue phrases persist across restarts and corruption fails closed', t => {
+  const dataDir = directory(t);
+  let store = openStore(dataDir);
+  const text = store.phrases.lookup('haircut.greeting', 1, 'ru-RU');
+  store.close(); store = openStore(dataDir);
+  assert.equal(store.phrases.lookup('haircut.greeting', 1, 'ru-RU'), text);
+  const db = new Database(join(dataDir, 'callmate.sqlite'));
+  try {
+    const rows = db.prepare('SELECT count(*) AS n FROM dialogue_phrases').get().n;
+    assert.ok(rows >= 100);
+    db.prepare("DELETE FROM dialogue_phrases WHERE phrase_id = 'haircut.waiting' AND language = 'pl-PL'").run();
+    assert.throws(() => store.phrases.lookup('haircut.waiting', 1, 'pl-PL'), /Missing/);
+    assert.throws(() => store.check(), /Missing/);
+    db.prepare("UPDATE dialogue_phrases SET template = 'unreviewed reply' WHERE phrase_id = 'haircut.greeting' AND language = 'en-US'").run();
+    store.close();
+    assert.throws(() => openStore(dataDir), /incompatible/);
+  } finally { db.close(); store.close(); }
 });

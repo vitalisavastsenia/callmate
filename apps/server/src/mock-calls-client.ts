@@ -74,6 +74,14 @@ export class MockCallsClient {
     return this.parse(await this.request(this.root + ".json", body));
   }
   async get(sid: string) { return this.parse(await this.request(`${this.root}/${encodeURIComponent(sid)}.json`)); }
+  async outputReceipt(sid: string, sessionId: string, sequence: number) {
+    const receipt = z.object({ mock: z.literal(true), kind: z.literal("simulated_text_playback"),
+      accountSid: z.literal(this.config.mockAccountSid), callSid: z.literal(sid), sessionId: z.literal(sessionId),
+      sequence: z.literal(sequence), textSha256: z.string().regex(/^[0-9a-f]{64}$/),
+      language: z.string().max(35), completedAt: z.iso.datetime() }).parse(
+      await this.request(`/mock/v1/calls/${encodeURIComponent(sid)}/outputs/${sequence}`));
+    return receipt;
+  }
   async hangup(sid: string, status: "completed" | "canceled" = "completed") {
     return this.parse(await this.request(`${this.root}/${encodeURIComponent(sid)}.json`, new URLSearchParams({ Status: status })));
   }

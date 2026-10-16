@@ -48,7 +48,7 @@ test("Responses request binds context, uses strict schema and keeps untrusted sp
     assert.equal(format.schema.type, "object");
     assert.equal(format.schema.additionalProperties, false);
     assert.deepEqual(format.schema.properties.candidate.anyOf.map((item) => item.properties.action.enum[0]),
-      ["clarify", "ask_availability", "evaluate_offer", "read_back", "accept_offer", "record_business_confirmation", "end_call",
+      ["clarify", "ask_availability", "ask_requirements", "evaluate_offer", "read_back", "accept_offer", "record_business_confirmation", "end_call",
         "request_add_on", "request_contact", "record_note", "repeat", "echo_detail"]);
     assert.doesNotMatch(JSON.stringify(format.schema), /"oneOf"|"const"|"\$schema"/);
     const checkRequired = schema => {

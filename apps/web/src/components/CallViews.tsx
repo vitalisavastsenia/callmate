@@ -3,16 +3,20 @@ import { describeTime, money } from '../time';
 import { downloadCalendar } from '../calendar';
 import { callIsTerminal } from '../ws';
 import { approvalReasons, type CallActivity } from '../callActivity';
-import { requestLabels, type CallSnapshot, type ConnectionState, type HistoryEntry, type Offer, type ReviewPlan, type RequestDraft } from '../types';
+import { templateForRequest, templateForService, requestLabels, type CallSnapshot, type ConnectionState, type HistoryEntry, type Offer, type ReviewPlan, type RequestDraft } from '../types';
 
+const languageNames = { 'es-ES': 'Spanish', 'ru-RU': 'Russian', 'en-US': 'English', 'pl-PL': 'Polish' };
 export function PlanDetails({ plan }: { plan: ReviewPlan }) {
   return <RequestDetails request={plan.request} />;
 }
 export function RequestDetails({ request: r }: { request: RequestDraft }) {
   const kind = r.requestType ?? 'book';
+  const profile = templateForRequest(r);
   const list = (items: string[] | undefined) => items?.length ? <ul className="list-disc pl-5">{items.map((item, i) => <li key={i}>{item}</li>)}</ul> : 'None specified';
   return <dl className="details">
     <dt>Business and destination</dt><dd>{r.business.name} · {r.business.phone}</dd>
+    <dt>Conversation language</dt><dd>{languageNames[r.language ?? 'es-ES']}</dd>
+    {profile && <><dt>Conversation template</dt><dd>{profile.label}</dd>{profile.fields.map(field => <div className="contents" key={field.key}><dt>{field.label}</dt><dd>{field.options?.find(option => option.value === r.templateDetails?.[field.key])?.label[2] ?? String(r.templateDetails?.[field.key] ?? 'Not supplied')}</dd></div>)}</>}
     <dt>Request type</dt><dd>{requestLabels[kind]}</dd>
     <dt>Goal</dt><dd>{r.goal ?? 'Book ' + r.service + ' within the approved constraints.'}</dd>
     <dt>Zeus will be</dt><dd>{r.tone?.length ? r.tone.map(t => t === 'Formal "usted"' ? 'formal' : t.toLowerCase()).join(', ') : 'No tone preference specified'}</dd>
@@ -32,8 +36,10 @@ export function RequestDetails({ request: r }: { request: RequestDraft }) {
   </dl>;
 }
 export function OfferDetails({ offer }: { offer: Offer }) {
+  const profile = templateForService(offer.service);
   return <dl className="details">
     <dt>Service and name</dt><dd>{offer.service} · {offer.bookingName}</dd>
+    {profile?.fields.map(field => <div className="contents" key={field.key}><dt>{field.label}</dt><dd>{field.options?.find(option => option.value === offer.templateDetails?.[field.key])?.label[2] ?? String(offer.templateDetails?.[field.key] ?? 'Not confirmed')}</dd></div>)}
     <dt>Appointment</dt><dd>{describeTime(offer.appointment)}</dd>
     <dt>Service price</dt><dd>{offer.price ? money(offer.price) : 'Unknown price'}</dd>
     <dt>Duration</dt><dd>{offer.durationMinutes === null ? 'Unknown — confirm with the business' : offer.durationMinutes + ' minutes'}</dd>
@@ -60,7 +66,7 @@ export function ApprovalCard({ call, now, disabled, onDecision, compact = false,
   return <section className={'approval' + (compact ? ' approval-compact' : ' mb-6')} aria-labelledby={titleId} key={a.id}>
     <p className="eyebrow">Approval required · Offer version {a.offer.version}</p><h3 id={titleId} className="section-title">Approve this exact alternative?</h3>
     <p className="mb-3">{approvalReasons[a.reason]}</p>
-    {!compact && call.messages.filter(m => m.speaker === 'business').slice(-1).map(m => <blockquote key={m.id} className="transcript-line mb-4"><p lang="es">{m.originalText}</p><p className="text-stone-300">{m.translationEn ?? 'English translation pending…'}</p></blockquote>)}
+    {!compact && call.messages.filter(m => m.speaker === 'business').slice(-1).map(m => <blockquote key={m.id} className="transcript-line mb-4"><p lang={m.language}>{m.originalText}</p><p className="text-stone-300">{m.translationEn ?? 'English translation pending…'}</p></blockquote>)}
     {!compact && <div className="mb-5 rounded-lg border border-stone-600 p-4"><p className="mb-2 font-semibold">Changes from your plan</p><ul className="list-disc pl-6">
       {outside && <li>Time offered: {describeTime(a.offer.appointment)}. Approved: {r.availability.map(w => w.start.localDate + ', ' + w.start.localTime + '–' + w.end.localTime + ' ' + w.start.timeZone).join('; ')}.</li>}
       {above && <li>Offered service price {money(a.offer.price)}; your maximum {money(r.pricePolicy.maximum)}.</li>}
@@ -81,6 +87,7 @@ export function LiveCall({ call, connection, now, busy, stopping, onStop, onDeci
   const ended = callIsTerminal(call);
   const booking = (call.plan.request.requestType ?? 'book') === 'book';
   return <>
+    <p className="mb-4 text-base text-stone-300">Agent language: {languageNames[call.plan.request.language ?? 'es-ES']}. {!ended && 'To change it, stop this call and review a new request.'}</p>
     <div className="call-toolbar mb-6 flex flex-wrap items-start justify-between gap-4"><div><p className="eyebrow">03 / On the line</p><h2 role="status">{callLabels[call.callState]}</h2><p className="text-xl" role="status">{booking ? bookingLabels[call.bookingState] : call.bookingState === 'completed' ? 'Request result available' : call.bookingState === 'not_booked' ? 'Request not completed' : call.bookingState === 'uncertain' ? 'Result uncertain' : 'Working on your request'}</p></div>
       {!ended && <button className="stop" disabled={stopping || call.callState === 'ending'} onClick={onStop}>{stopping ? 'Requesting stop…' : call.callState === 'ending' ? 'Hangup requested…' : 'Stop call'}</button>}
     </div>
@@ -104,7 +111,7 @@ export function Transcript({ call, children, approvalLines = [] }: { call: CallS
   return <section className="panel"><h3 className="section-title">Conversation</h3>
         {call.conversationData === 'deleted' ? <p>{booking ? 'Conversation text was deleted. Booking details remain.' : 'Conversation text was deleted. Request details remain.'}</p> : <div ref={log} onScroll={() => { const el = log.current!; following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60; }} className="transcript space-y-5" role="log" aria-label="Call transcript" tabIndex={0}>
           {!call.messages.length && <p className="text-stone-300">Waiting for the business to answer…</p>}
-          {call.messages.map(m => <article key={m.id} className={'transcript-line transcript-' + m.speaker}><p className="eyebrow">{m.speaker === 'assistant' ? 'Agent · Zeus' : 'Business · Other side'} · {!m.final ? 'Provisional' : m.speaker === 'business' ? 'Final' : m.playback === 'played' ? 'Spoken' : m.playback}</p><p lang={m.language} className="mb-2">{m.originalText}</p><p lang="en" className="text-stone-300">{m.translationEn ?? 'English translation pending…'}</p>{m.playback === 'interrupted' && <p className="mt-2 text-base text-amber-200">Interrupted — the business may not have heard the full reply.</p>}</article>)}
+          {call.messages.map(m => <article key={m.id} className={'transcript-line transcript-' + m.speaker}><p className="eyebrow">{m.speaker === 'assistant' ? 'Agent · Zeus' : 'Business · Other side'} · {languageNames[m.language]} · {!m.final ? 'Provisional' : m.speaker === 'business' ? 'Final' : m.playback === 'played' ? call.mode === 'simulator' ? 'Simulated playback' : 'Spoken' : m.playback}</p><p lang={m.language} className="mb-2">{m.originalText}</p><p lang="en" className="text-stone-300">{m.translationEn ?? 'English translation pending…'}</p>{m.playback === 'interrupted' && <p className="mt-2 text-base text-amber-200">Interrupted — the business may not have heard the full reply.</p>}</article>)}
           {approvalLines.map((line, i) => <p key={i} className="transcript-line">{line}</p>)}
           {children}
         </div>}
@@ -120,6 +127,7 @@ export function ShortResult({ call }: { call: CallSnapshot }) {
   return <section className={'panel mb-5 result-' + call.outcome.status} aria-labelledby="short-result-title">
     <p className="eyebrow">The result</p><h2 id="short-result-title">{outcomeLabel(call)}</h2>
     <p>{call.outcome.summaryEn}</p>
+    {call.mode === 'simulator' && <p className="notice mt-4">Simulation only. No real business appointment was confirmed.</p>}
     {call.outcome.status === 'uncertain' && <p className="notice mt-5">The result is uncertain. Contact the business to check before trying again; an appointment may already exist.</p>}
     {call.outcome.status === 'confirmed' && <button className="secondary mt-5" onClick={() => downloadCalendar(call)}>Download calendar (.ics)</button>}
     <p className="mt-4 text-base text-stone-300">Open Summary for agreements, next steps, and the full conversation.</p>
@@ -134,6 +142,7 @@ export function Result({ call, onDelete, deleting }: { call: CallSnapshot; onDel
   const title = outcome.status === 'confirmed' ? 'Confirmed' : outcome.status === 'completed' ? outcome.resolution === 'resolved' ? 'Request completed' : 'Follow-up needed' : outcome.status === 'not_booked' ? booking ? 'Not booked' : 'Request not completed' : 'Uncertain — check before trying again';
   return <section className={'panel mb-6 result-' + outcome.status} aria-labelledby="result-title">
     <p className="eyebrow">04 / The result</p><h2 id="result-title">{title}</h2><p className="mb-5">{outcome.summaryEn}</p>
+    {call.mode === 'simulator' && <p className="notice mb-4">Simulation only. No real business appointment was confirmed.</p>}
     <p className="mb-4">Business: {call.plan.request.business.name} · {call.plan.request.business.phone}</p>
     {outcome.status === 'confirmed' && <><OfferDetails offer={outcome.offer} />
       <button className="primary mt-5" onClick={() => downloadCalendar(call)}>Download calendar (.ics)</button>
@@ -143,7 +152,7 @@ export function Result({ call, onDelete, deleting }: { call: CallSnapshot; onDel
       <h3 className="section-title">Findings and open questions</h3><ul className="space-y-4">{outcome.findings.map((finding, i) => <li key={i}><p className="font-semibold">{finding.question}</p><p>{finding.answerEn}</p><p className="text-base text-amber-200">{finding.answered ? 'Answered' : 'Still needs confirmation'}</p></li>)}</ul>
       {outcome.nextSteps.length > 0 && <div className="notice mt-5"><h3 className="section-title">Next steps</h3><ul className="list-disc pl-5">{outcome.nextSteps.map((step, i) => <li key={i}>{step}</li>)}</ul></div>}
     </>}
-    {evidence.length > 0 && <div className="notice mt-5"><h3 className="mb-2 font-semibold">{booking ? 'Business confirmation evidence' : 'Business response evidence'}</h3>{evidence.map(m => <blockquote key={m.id}><p lang="es">{m.originalText}</p><p>{m.translationEn ?? 'Translation pending'}</p></blockquote>)}</div>}
+    {evidence.length > 0 && <div className="notice mt-5"><h3 className="mb-2 font-semibold">{booking ? 'Business confirmation evidence' : 'Business response evidence'}</h3>{evidence.map(m => <blockquote key={m.id}><p lang={m.language}>{m.originalText}</p><p>{m.translationEn ?? 'Translation pending'}</p></blockquote>)}</div>}
     {(outcome.status === 'uncertain' || outcome.status === 'not_booked') && <p className="notice">{outcome.status === 'uncertain' ? booking ? 'The appointment may already exist. Contact the business to check before making another attempt. No automatic redial or calendar export is available.' : 'The result could not be verified. Contact the business to check before repeating the request. No automatic redial is available.' : 'You may review the request and choose whether to start a new call.'}</p>}
     <Usage call={call} />
     {callIsTerminal(call) && call.conversationData === 'retained' && <button className="secondary mt-5" disabled={deleting} onClick={onDelete}>{deleting ? 'Deleting…' : 'Delete conversation text'}</button>}

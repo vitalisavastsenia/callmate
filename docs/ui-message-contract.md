@@ -17,7 +17,7 @@ Use HTTP JSON for commands and snapshots, and server-sent events (SSE) for ongoi
 | Two separate states | `callState` describes the telephone connection; `bookingState` and `outcome` describe the appointment. An ended call does not mean a confirmed appointment. |
 | Authoritative state | Backend persists a consistent snapshot and its events together before publishing. The UI cannot grant booking authority or infer acceptance from a button click. |
 | IDs and time | UUIDs identify app entities. Timestamps include an offset; appointment data also includes business-local time and IANA timezone. Show the business timezone explicitly. |
-| Prices | Integer minor units: `3500 EUR` means €35. Service prices are EUR; call costs are USD in v1. Unknown values are `null`, never zero. |
+| Prices | Integer minor units: `3500 EUR` means €35. Service prices are EUR; call budgets match the application settings currency (USD or EUR). Usage retains its recorded currency. Unknown values are `null`, never zero. |
 | Privacy | Never send credentials, provider payloads, stack traces, or unapproved contact data. Error text must not echo sensitive request content. |
 | Compatibility | Parse messages using the shared schemas. Unknown event type/version or invalid payload requires resynchronization and an incompatibility indicator if it persists; do not guess a meaning. |
 
@@ -98,7 +98,7 @@ Events listed together describe one persisted transition; publish them in the li
 | Call creation accepted | HTTP `202` snapshot: `callState: creating`, `bookingState: pending`, `outcome: { status: pending }`. | “Starting call.” Open the stream for this attempt. |
 | Provider dial begins / phone rings | `call.status` with `dialing`, then `ringing` if reported. | “Calling…” / “Ringing.” Providers may skip an intermediate status. |
 | Business answers | `call.status` with `connected`. | “Connected.” No booking success indication. |
-| Business speaks | `transcript.updated` with `speaker: business`, Spanish text, `final`, and `translationEn` or `null`. | Show Spanish and available English translation. Mark provisional text; no duplicate rows for updates. |
+| Business speaks | `transcript.updated` with `speaker: business`, original conversation-language text, `final`, and `translationEn` or `null`. | Show original text in `language` and the available English translation. Mark provisional text; no duplicate rows for updates. |
 | Translation arrives later | `transcript.updated` for the same message ID, with `translationEn` filled. | Update the existing row. |
 | Assistant prepares/speaks/is interrupted | `transcript.updated` with `speaker: assistant` and actual `playback` state: `withheld`, `generated`, `playing`, `played`, or `interrupted`. | Distinguish prepared text from played speech. Do not claim the whole message was heard after interruption. |
 | Complete offer extracted | `offer.updated`, then `booking.updated` with `offer_received` and pending outcome. | Show proposed details without a confirmed badge. Incomplete/ambiguous details remain conversation/clarification, not a fabricated complete offer. |
@@ -357,7 +357,7 @@ Legacy `zeus-llama.contacts.v1` browser records are imported only when the user 
 | `change` | `changeRequest: { description, bookingReference }`; reference may be empty. Optional `availability` describes new windows; cancellation needs no new window. |
 | `other` | No extra fields. |
 
-The UI clears unused service/availability/price/authority/question/change values when serializing a different type. Booking fields retain neutral defaults in parsed non-booking drafts for compatibility with existing consumers, not fabricated appointment details. Old drafts without `requestType` retain their appointment semantics. New requests use EUR call budgets; legacy USD limits/usage remain readable without currency conversion. Enforce budgets in a supported matching currency or reject them before dialing.
+The UI clears unused service/availability/price/authority/question/change values when serializing a different type. Booking fields retain neutral defaults in parsed non-booking drafts for compatibility with existing consumers, not fabricated appointment details. Old drafts without `requestType` retain their appointment semantics. New call budgets use the selected transport's settings currency (USD or EUR); existing usage retains its currency. A currency change invalidates plan review and requires re-entering edited or saved amounts in the new currency. Enforce budgets in a supported matching currency or reject them before dialing. No currency conversion is performed.
 
 Non-booking calls cannot carry appointment offers/pending appointment approvals or claim `outcome.status: "confirmed"`. They may emit the existing `booking.updated` event with `bookingState: "completed"` and this outcome:
 
@@ -377,3 +377,11 @@ Non-booking calls cannot carry appointment offers/pending appointment approvals 
 `resolution: "resolved"` requires all findings answered. `needs_follow_up` requires next steps and renders “Follow-up needed,” never an appointment confirmation. While text is retained, evidence IDs must reference finalized recipient messages in the same attempt. History may include `requestType` so stopped/unanswered tasks display “Request not completed.” Calendar export remains exclusive to a structured confirmed appointment.
 
 The browser simulator preserves the original booking/approval scenarios. Its separate non-booking script explicitly reports unanswered questions and leaves existing bookings unchanged; there is no simulated generic commitment approval or arbitrary goal execution. Actual changes/cancellations, generic approval semantics, and dialogue policy remain integration work.
+
+### Multilingual haircut transcripts
+
+Reviewed haircut mock calls support `es-ES`, `ru-RU`, `en-US`, and `pl-PL` via optional `request.language`; old plans default to Spanish. Assistant messages may include `phrase: { id, version, language }`, for example `{ "id": "haircut.greeting", "version": 1, "language": "ru-RU" }`. Display `originalText` and `translationEn` from the event/snapshot, using the message language for accessibility. Phrase IDs identify a versioned backend SQLite template and are not playback instructions. They are absent on business speech and optional on historical messages. Existing events, message IDs, playback states, retention, and exact-offer approval rules are unchanged. See the [localized dialogue contract and complete payload example](interfaces.md#localized-haircut-dialogue).
+
+### Domain template fields
+
+Review/plan requests can add `templateId` and `templateDetails` for any of the [15 appointment profiles](../packages/dialogue/README.md#conversation-templates). Offer events/snapshots may carry evidenced `templateDetails`; show these beside the appointment and price, with missing values visibly unconfirmed. Domain changes produce new offer versions and invalidate approval under existing rules. Phrase references now use the selected namespace, such as `bank.requirements`. No new event names or transport routes are required. The model-only `ask_requirements` action asks controlled domain questions; the UI receives its rendered assistant transcript message and English translation.

@@ -259,6 +259,8 @@ export function mockStart(input: unknown, key: string, scenario: Scenario = 'alt
   if (read().sessions.some(s => { advance(s); return !terminal(s.call); })) throw new Error('CALL_ALREADY_ACTIVE: finish the current call first.');
   const plan = read().plans.find(p => p.id === body.planId && p.version === body.planVersion);
   if (!plan) throw new Error('PLAN_VERSION_MISMATCH: review the current plan first.');
+  if (plan.request.templateId && plan.request.templateId !== 'haircut') throw new Error('Select Settings → Backend for domain dialogue templates. The browser simulator uses its existing scripted examples.');
+  if (plan.request.language && plan.request.language !== 'es-ES') throw new Error('The browser simulator uses a Spanish script. Select Settings → Backend for multilingual dialogue with the configured model and mock relay.');
   const call = CallSnapshotSchema.parse({ id: id(), revision: 1, lastEventSequence: 0, mode: 'simulator', plan: { ...plan, approvedAt: now() },
     callState: 'creating', bookingState: 'pending', outcome: { status: 'pending' }, activeOffer: null, pendingApproval: null,
     conversationData: 'retained', messages: [], usage: { estimate: { amountMinor: 20, currency: plan.request.callLimits.maxEstimatedCost.currency }, settledTotal: null, status: 'estimated', measuredAt: now() }, createdAt: now(), updatedAt: now() });

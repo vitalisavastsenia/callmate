@@ -2,7 +2,7 @@ import {
   CallSnapshotSchema, IdSchema, InstantSchema, OfferSchema, PlaybackPermitSchema, TranscriptMessageSchema,
   type CallSnapshot, type Offer, type PlaybackPermit, type TranscriptMessage,
 } from "@callmate/contracts";
-import { renderAcceptance } from "../language/spanish.js";
+import { renderAcceptance } from "../language/catalog.js";
 
 /** Controller-owned evidence of authorized output, never a model-supplied grant. */
 export type AcceptancePlayback = {
@@ -33,8 +33,9 @@ const invalid = (reason: EvidenceFailure): EvidenceCheck => ({ valid: false, rea
 /** IDs/versions are immutable: even an evidence-only change requires a new version. */
 export function offersEqual(left: Offer, right: Offer): boolean {
   const canonical = (offer: Offer) => {
-    const { staffName, ...facts } = OfferSchema.parse(offer);
-    return { ...facts, staffName: staffName ?? null };
+    const { staffName, templateDetails, ...facts } = OfferSchema.parse(offer);
+    const details = Object.fromEntries(Object.entries(templateDetails ?? {}).filter(([, value]) => value != null).sort(([a], [b]) => a.localeCompare(b)));
+    return { ...facts, staffName: staffName ?? null, templateDetails: details };
   };
   return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
 }

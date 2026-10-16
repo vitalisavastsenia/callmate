@@ -78,8 +78,9 @@ test("Maryna: one connected call books the haircut, declines the extra, handles 
   s.activeOffer = null;
   const opening = policy.evaluate({ snapshot: s, candidate: { action: "ask_availability" }, now: at(1), grant: null });
   assert.equal(opening.decision, "allow");
-  assert.match(opening.approvedSpanishText, /Zeus, un asistente de inteligencia artificial.*Maryna Bevza/);
-  say(opening.approvedSpanishText, "I'm Zeus, an AI assistant calling on behalf of Maryna Bevza.", 1);
+  assert.match(opening.approvedSpanishText, /disponibilidad para un corte de pelo/);
+  assert.doesNotMatch(opening.approvedSpanishText, /Hola|asistente|Maryna Bevza/);
+  say(opening.approvedSpanishText, "Is there availability for a haircut within the reviewed windows?", 1);
   const offered = business("El martes 27 de octubre a las cinco y media con Laura, para un corte a nombre de Maryna Bevza.", 10);
   // Additional clarification is required by the existing payment-safety policy before acceptance.
   const priced = business("Veintidós euros, sin depósito, gastos de cancelación ni extras obligatorios.", 20);

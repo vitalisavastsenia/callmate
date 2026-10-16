@@ -1,21 +1,21 @@
+import { templateForService } from "@callmate/contracts";
 import type { ApprovedPlan, CandidateAction, Offer } from "@callmate/contracts";
 import { friendly, speechSlot, type Tone } from "./conversation.js";
 
 const normalize = (value: string) => value.normalize("NFC").trim().replace(/\s+/gu, " ").toLocaleLowerCase("es-ES");
-const haircutAliases = new Set(["haircut", "corte de pelo", "corte de cabello"]);
 
 /** Controlled MVP vocabulary; unknown services require clarification rather than guessed translation. */
 export function serviceKey(service: string): string | null {
-  return haircutAliases.has(normalize(service)) ? "haircut" : null;
+  return templateForService(service)?.id ?? null;
 }
 export function namesMatch(left: string, right: string): boolean { return normalize(left) === normalize(right); }
 
 const months = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
-const dateSpanish = (date: string) => {
+export const dateSpanish = (date: string) => {
   const [year, month, day] = date.split("-");
   return `${Number(day)} de ${months[Number(month) - 1]} de ${year}`;
 };
-function zoneSpanish(appointment: Offer["appointment"]): string {
+export function zoneSpanish(appointment: Offer["appointment"]): string {
   const friendly: Record<string, string> = {
     "Europe/Madrid": "Madrid", "Atlantic/Canary": "Canarias", "Africa/Ceuta": "Ceuta",
   };
@@ -49,12 +49,13 @@ export function renderAvailability(plan: ApprovedPlan): string {
   const windows = plan.request.availability.map(({ start, end }) => {
     return `desde el ${dateSpanish(start.localDate)} a las ${start.localTime}, ${zoneSpanish(start)}, hasta el ${dateSpanish(end.localDate)} a las ${end.localTime}, ${zoneSpanish(end)}`;
   }).join("; o bien ");
-  return `Hola, soy Zeus, un asistente de inteligencia artificial y llamo en nombre de ${plan.request.bookingName} para consultar una cita para un corte de pelo. ¿${friendly(plan.request.tone ?? "formal") ? "Tienes" : "Tiene"} disponibilidad ${windows}?`;
+  return `¿${friendly(plan.request.tone ?? "formal") ? "Tienes" : "Tiene"} disponibilidad para un corte de pelo ${windows}?`;
 }
 
 type ClarificationField = Extract<CandidateAction, { action: "clarify" }>["missing"][number];
 const questions: Record<ClarificationField, string> = {
   service: "¿Puede confirmar qué servicio se ofrece?",
+  details: "¿Puede confirmar los detalles del servicio solicitado?",
   name: "¿Puede confirmar el nombre de la persona para la cita?",
   date: "¿Puede indicar el día, el mes y el año de la cita?",
   time: "¿Puede confirmar la hora exacta y la zona horaria de la cita?",

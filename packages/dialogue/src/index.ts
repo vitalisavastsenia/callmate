@@ -27,3 +27,6 @@ export type { PacingOptions } from "./language/pacing.js";
 export { processingPhrases, waitingPhrase, repeatPhrase, echoPhrase, callbackPhrase, contactFallback } from "./language/conversation.js";
 export type { Tone, SpokenPhrase } from "./language/conversation.js";
 export { ConversationSession, createConversationSession } from "./planner/session.js";
+
+export { dialoguePhraseCatalog, defaultPhraseLookup, dialogueLanguage, renderReply, renderAction } from "./language/catalog.js";
+export type { DialogueLanguage, PhraseEntry, PhraseLookup, RenderedReply } from "./language/catalog.js";

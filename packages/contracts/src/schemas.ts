@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { conversationTemplateIds, templateById, templateForService } from "./templates.js";
 
 export const CONTRACT_VERSION = 1 as const;
 export const IdSchema = z.uuid();
@@ -16,7 +17,7 @@ export const MoneySchema = z.strictObject({
   currency: z.enum(["EUR", "USD"]),
 });
 export const ServiceMoneySchema = MoneySchema.extend({ currency: z.literal("EUR") });
-// New requests use EUR; USD remains valid for existing provider usage and saved calls.
+// Call budgets use the application settings currency; service prices remain EUR.
 export const CallMoneySchema = MoneySchema;
 
 export const ContactDetailsSchema = z.strictObject({
@@ -72,10 +73,24 @@ export const CallLimitsSchema = z.strictObject({
 });
 export const RequestTypeSchema = z.enum(["book", "ask", "change", "other"]);
 const EditableListSchema = z.array(TextSchema).max(30);
+export const DialogueLanguageSchema = z.enum(["es-ES", "ru-RU", "en-US", "pl-PL"]);
+export const ConversationTemplateIdSchema = z.enum(conversationTemplateIds);
+const DetailTextSchema = z.string().trim().min(1).max(100).regex(/^[^\p{Cc}\p{Cf}<>]+$/u, "Unsafe template detail");
+export const TemplateDetailsSchema = z.strictObject({
+  purpose: DetailTextSchema.nullish(), partySize: z.number().int().min(1).max(20).nullish(),
+  seating: DetailTextSchema.nullish(), species: DetailTextSchema.nullish(), vehicle: DetailTextSchema.nullish(),
+  propertyType: DetailTextSchema.nullish(), rooms: z.number().int().min(1).max(15).nullish(), level: DetailTextSchema.nullish(),
+});
+export const DialoguePhraseRefSchema = z.strictObject({
+  id: z.string().regex(/^[a-z_]+\.[a-z0-9_.]+$/).max(100).refine(id => !!templateById(id.split(".")[0]!)), version: VersionSchema, language: DialogueLanguageSchema,
+});
 export const RequestDraftSchema = z.strictObject({
   business: z.strictObject({ name: TextSchema, phone: E164Schema }),
   // Optional additions keep existing v1 appointment drafts readable without migration.
   requestType: RequestTypeSchema.optional(),
+  language: DialogueLanguageSchema.optional(),
+  templateId: ConversationTemplateIdSchema.optional(),
+  templateDetails: TemplateDetailsSchema.optional(),
   goal: TextSchema.optional(),
   timeZone: TimeZoneSchema.optional(),
   // Legacy dialogue tones normalize to the UI's existing list format.
@@ -108,6 +123,19 @@ export const RequestDraftSchema = z.strictObject({
   }
   if (kind === "ask" && !value.questions?.length) issue("questions", "Add at least one question");
   if (kind === "change" && !value.changeRequest) issue("changeRequest", "Describe what to change or cancel");
+  if (value.templateId) {
+    const profile = templateById(value.templateId)!;
+    if (kind !== "book") issue("templateId", "Appointment templates require a booking request");
+    if (templateForService(value.service)?.id !== profile.id) issue("service", "Service must match the selected template");
+    const details = value.templateDetails ?? {};
+    for (const [key, data] of Object.entries(details)) if (data != null && !profile.fields.some(field => field.key === key)) issue("templateDetails", "Unexpected detail for this template");
+    for (const field of profile.fields) {
+      const data = details[field.key];
+      if (data == null || data === "") issue("templateDetails", `Enter ${field.label.toLowerCase()}`);
+      else if (field.kind === "choice" && !field.options?.some(option => option.value === data)) issue("templateDetails", `Choose a valid ${field.label.toLowerCase()}`);
+      else if (field.kind === "number" && (typeof data !== "number" || data < field.min! || data > field.max!)) issue("templateDetails", `Check ${field.label.toLowerCase()}`);
+    }
+  } else if (Object.values(value.templateDetails ?? {}).some(data => data != null)) issue("templateId", "Select a template for its details");
   const zones = new Set(value.availability.map(window => window.start.timeZone));
   if (zones.size > 1 || (value.timeZone && [...zones].some(zone => zone !== value.timeZone)))
     issue("availability", "All windows must use the same business time zone");
@@ -123,6 +151,7 @@ export const OfferSchema = z.strictObject({
   id: IdSchema,
   version: VersionSchema,
   service: TextSchema,
+  templateDetails: TemplateDetailsSchema.nullish(),
   staffName: z.string().trim().min(1).max(200)
     .regex(/^[^\p{Cc}\p{Cf}<>]+$/u, "Unsafe staff name")
     .nullable().optional(),
@@ -204,9 +233,10 @@ export const OutcomeSchema = z.discriminatedUnion("status", [
 ]);
 export const CandidateActionSchema = z.discriminatedUnion("action", [
   z.strictObject({ action: z.literal("clarify"), missing: z.array(z.enum([
-    "service", "name", "date", "time", "price", "conditions",
-  ])).min(1).max(6) }),
+    "service", "name", "date", "time", "price", "conditions", "details",
+  ])).min(1).max(7) }),
   z.strictObject({ action: z.literal("ask_availability") }),
+  z.strictObject({ action: z.literal("ask_requirements") }),
   z.strictObject({ action: z.literal("evaluate_offer"), offer: OfferSchema }),
   z.strictObject({ action: z.literal("read_back"), offerId: IdSchema, offerVersion: VersionSchema }),
   z.strictObject({ action: z.literal("accept_offer"), offerId: IdSchema, offerVersion: VersionSchema }),
@@ -226,12 +256,14 @@ export const CandidateActionSchema = z.discriminatedUnion("action", [
 ]);
 export const TranscriptMessageSchema = z.strictObject({
   id: IdSchema, turnId: IdSchema, speaker: z.enum(["business", "assistant"]),
-  originalText: TextSchema, language: z.literal("es-ES"), translationEn: TextSchema.nullable(),
+  originalText: TextSchema, language: DialogueLanguageSchema, translationEn: TextSchema.nullable(),
+  phrase: DialoguePhraseRefSchema.optional(),
   final: z.boolean(),
   playback: z.enum(["not_applicable", "generated", "playing", "played", "interrupted", "withheld"]),
   createdAt: InstantSchema,
 }).refine((value) => (value.speaker === "business") === (value.playback === "not_applicable"),
-"Business speech has no assistant playback state");
+"Business speech has no assistant playback state").refine(value => !value.phrase || (value.speaker === "assistant" && value.phrase.language === value.language),
+"Only assistant messages can reference a phrase in the message language");
 // Optional development meter; never represents a provider quote or settled charge.
 export const TestUsageSchema = z.strictObject({
   source: z.literal("test_rates"), rateVersion: z.literal("elapsed-minute-v1"),

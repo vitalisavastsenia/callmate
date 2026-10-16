@@ -139,3 +139,26 @@ test("ringing/max duration, active cap, retention cleanup, bounded logs and grac
   assert.equal(local.controller.view(active.id).lastError.code, "SERVICE_SHUTDOWN");
   assert.equal((await local.request("/api/sessions", "POST", {})).status, 503);
 });
+
+test('mock-only output receipts require authentication and a complete text turn; they attest simulation, not browser audio', async t => {
+  const { createHash } = await import('node:crypto');
+  const target = await backend(t); const local = await service(t, target);
+  const call = await local.create(); await local.request(`/api/sessions/${call.id}/answer`, 'POST');
+  const setup = await target.setup(call.id);
+  const path = `/mock/v1/calls/${call.id}/outputs/1`;
+  assert.equal((await local.request(path)).status, 401);
+  const get = () => local.request(path, 'GET', undefined, { authorization: local.auth });
+  assert.equal((await get()).status, 404);
+  target.send(call.id, { type: 'text', token: 'Здравствуйте, ', lang: 'ru-RU', last: false });
+  await until(() => local.controller.view(call.id).transcript.some(m => m.speaker === 'assistant'));
+  assert.equal((await get()).status, 404);
+  target.send(call.id, { type: 'text', token: 'я помощник.', lang: 'ru-RU', last: true });
+  await until(() => local.controller.view(call.id).transcript.some(m => m.speaker === 'assistant' && m.final));
+  const receipt = (await get()).body;
+  assert.equal(receipt.kind, 'simulated_text_playback'); assert.equal(receipt.mock, true);
+  assert.equal(receipt.callSid, call.id); assert.equal(receipt.sessionId, setup.sessionId);
+  assert.equal(receipt.sequence, 1); assert.equal(receipt.language, 'ru-RU');
+  assert.equal(receipt.textSha256, createHash('sha256').update('Здравствуйте, я помощник.').digest('hex'));
+  assert.ok(!Object.hasOwn(receipt, 'text')); assert.ok(!Object.hasOwn(receipt, 'authToken'));
+  assert.deepEqual((await get()).body, receipt);
+});

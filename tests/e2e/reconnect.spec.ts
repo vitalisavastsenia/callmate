@@ -111,7 +111,7 @@ test('a backend-adjusted plan stays editable and needs another Call before diali
     if (path.endsWith('/readiness')) return route.fulfill({ json: { mode: 'simulator', ready: true, voiceEngine: null, capabilities: [], checks: [] } });
     if (path.endsWith('/settings')) return route.fulfill({ json: { defaultCallLimits: reviewPlanFixture.request.callLimits, transcriptRetentionDays: 30 } });
     if (path.endsWith('/history')) return route.fulfill({ json: { items: [], nextCursor: null } });
-    if (path.endsWith('/plans')) return route.fulfill({ json: { plan: { ...reviewPlanFixture, request: { ...route.request().postDataJSON(), service: 'Haircut and consultation' } } } });
+    if (path.endsWith('/plans')) return route.fulfill({ json: { plan: { ...reviewPlanFixture, request: { ...route.request().postDataJSON(), service: 'corte de pelo' } } } });
     if (path === '/api/v1/calls') { starts++; return route.fulfill({ json: { call: awaitingApprovalFixture } }); }
     if (path.endsWith('/events')) return route.fulfill({ contentType: 'text/event-stream', body: ': heartbeat\n\n' });
     return route.fulfill({ json: { call: awaitingApprovalFixture } });
@@ -123,7 +123,7 @@ test('a backend-adjusted plan stays editable and needs another Call before diali
   await page.getByRole('button', { name: 'Call', exact: true }).click();
   await expect(page.getByText('The backend adjusted the plan.', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'Edit details', exact: true }).click();
-  await expect(page.getByLabel('Requested service', { exact: true })).toHaveValue('Haircut and consultation');
+  await expect(page.getByLabel('Requested service', { exact: true })).toHaveValue('corte de pelo');
   expect(starts).toBe(0);
   await page.getByRole('button', { name: 'Call', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Stop call', exact: true })).toBeVisible();

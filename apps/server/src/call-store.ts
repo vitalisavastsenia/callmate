@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { z } from "zod";
-import { StoredCallSnapshotSchema, DomainEventSchema, ReviewPlanSchema } from "@callmate/contracts";
+import { StoredCallSnapshotSchema, DomainEventSchema, ReviewPlanSchema, PlaybackPermitSchema, OfferSchema } from "@callmate/contracts";
 import type { CallSnapshot, ManualCallSnapshot, DomainEvent, ReviewPlan, SimulatorScenario, StoredCallSnapshot } from "@callmate/contracts";
 import { callStatus } from "./twilio/protocol.js";
 
@@ -21,6 +21,13 @@ const manualInternal = z.object({
   status: z.enum(["creating", "ringing", "connected", "disconnected", "completed", "failed", "unknown"]),
   error: z.string().nullable(),
   stopRequested: z.boolean(),
+  dialoguePlayback: z.object({
+    sequence: z.number().int().nonnegative().max(2000),
+    pending: z.array(z.object({ sequence: z.number().int().positive().max(2000), permit: PlaybackPermitSchema,
+      startedAt: z.iso.datetime(), readbackMessageId: z.uuid().nullable() })).max(2000),
+    acceptance: z.object({ permit: PlaybackPermitSchema, offer: OfferSchema, readbackMessageId: z.uuid(),
+      acceptanceMessageId: z.uuid(), startedAt: z.iso.datetime(), observedAt: z.iso.datetime() }).nullable(),
+  }).optional(),
   grant: z.object({ approvalId: z.uuid(), attemptId: z.uuid(), planId: z.uuid(), planVersion: z.number().int().positive(),
     offerId: z.uuid(), offerVersion: z.number().int().positive(), expiresAt: z.iso.datetime() }).nullable().optional(),
   controls: z.object({

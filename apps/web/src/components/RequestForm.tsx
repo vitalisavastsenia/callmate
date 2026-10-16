@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { RequestDraftSchema, TimeZoneSchema, requestLabels, type RequestDraft, type RequestPrefill, type Scenario, type Settings } from '../types';
-import { localDateInZone, nextTuesday, resolveTime } from '../time';
+import { conversationTemplates, templateById, templateForService, type ConversationTemplateId, RequestDraftSchema, TimeZoneSchema, requestLabels, type RequestDraft, type RequestPrefill, type Scenario, type Settings } from '../types';
+import { localDateInZone, nextTuesday, resolveTime, money } from '../time';
 import { isMockMode, parseGoal } from '../api';
 import { readRequestDefaults, type RequestDefaults } from '../preferences';
 import { useContacts } from '../useContacts';
@@ -14,28 +14,30 @@ type WindowInput = { date: string; start: string; end: string; occurrence: strin
 const emptyWindow = (): WindowInput => ({ date: '', start: '', end: '', occurrence: '' });
 const approvalRules = ['Different day or time', 'Price above my limit', 'Any deposit or prepayment', 'Sharing extra personal data', 'Anything not in my request'];
 interface FormValues {
-  kind: Kind | ''; business: string; phone: string; zone: string; goal: string;
+  kind: Kind | ''; language: NonNullable<RequestDraft['language']>; business: string; phone: string; zone: string; goal: string;
+  templateId: ConversationTemplateId | ''; details: Record<string, string>;
   service: string; name: string; maximum: string; authority: string; unknown: boolean;
   questions: string[]; canDecide: string[]; mustAsk: string[]; change: string; reference: string;
-  sharePhone: string; shareEmail: string; duration: string; cost: string; windows: WindowInput[];
+  sharePhone: string; shareEmail: string; duration: string; cost: string; costCurrency: Settings['defaultCallLimits']['maxEstimatedCost']['currency']; windows: WindowInput[];
   tone: string[]; toneNotes: string;
 }
 function emptyForm(settings: Settings): FormValues {
   const contact = readRequestDefaults();
-  return { kind: '', business: '', phone: '+34', zone: contact.timeZone, goal: '', service: '', name: contact.name, maximum: '',
+  return { kind: '', language: 'es-ES', business: '', phone: '+34', zone: contact.timeZone, goal: '', templateId: '', details: {}, service: '', name: contact.name, maximum: '',
     authority: 'ask_before_accepting', unknown: false, questions: [], canDecide: [], mustAsk: [], change: '', reference: '',
     sharePhone: contact.phone, shareEmail: contact.email, tone: [], toneNotes: '', duration: String(settings.defaultCallLimits.maxDurationSeconds / 60),
-    cost: settings.defaultCallLimits.maxEstimatedCost.currency === 'EUR' ? String(settings.defaultCallLimits.maxEstimatedCost.amountMinor / 100) : '2', windows: [emptyWindow()] };
+    cost: String(settings.defaultCallLimits.maxEstimatedCost.amountMinor / 100), costCurrency: settings.defaultCallLimits.maxEstimatedCost.currency, windows: [emptyWindow()] };
 }
 function fromRequest(r: RequestDraft, settings: Settings): FormValues {
-  return { ...emptyForm(settings), kind: r.requestType ?? 'book', business: r.business.name, phone: r.business.phone,
+  return { ...emptyForm(settings), kind: r.requestType ?? 'book', language: r.language ?? 'es-ES', business: r.business.name, phone: r.business.phone,
     zone: r.timeZone ?? r.availability[0]?.start.timeZone ?? 'Europe/Madrid', goal: r.goal ?? 'Book ' + r.service + ' within my approved availability and price policy.',
+    templateId: r.templateId ?? '', details: Object.fromEntries(Object.entries(r.templateDetails ?? {}).filter(([, value]) => value != null).map(([key, value]) => [key, String(value)])),
     service: r.service, name: r.bookingName, maximum: r.pricePolicy.maximum ? String(r.pricePolicy.maximum.amountMinor / 100) : '',
     authority: r.bookingAuthority, unknown: r.pricePolicy.allowUnknownPrice, questions: r.questions ?? [],
     canDecide: r.boundaries?.canDecideAlone ?? [], mustAsk: r.boundaries?.mustAskMe ?? [],
     change: r.changeRequest?.description ?? '', reference: r.changeRequest?.bookingReference ?? '',
     sharePhone: r.shareableContact.phone ?? '', shareEmail: r.shareableContact.email ?? '', tone: r.tone ?? [], toneNotes: r.tone_notes ?? '', duration: String(r.callLimits.maxDurationSeconds / 60),
-    cost: r.callLimits.maxEstimatedCost.currency === 'EUR' ? String(r.callLimits.maxEstimatedCost.amountMinor / 100) : '',
+    cost: r.callLimits.maxEstimatedCost.currency === settings.defaultCallLimits.maxEstimatedCost.currency ? String(r.callLimits.maxEstimatedCost.amountMinor / 100) : '',
     windows: r.availability.length ? r.availability.map(w => ({ date: w.start.localDate, start: w.start.localTime, end: w.end.localTime,
       occurrence: Date.parse(resolveTime(w.start.localDate, w.start.localTime, w.start.timeZone, 'earlier').instant) === Date.parse(w.start.instant) ? 'earlier' : 'later' })) : [emptyWindow()] };
 }
@@ -73,7 +75,10 @@ function BoundaryTags({ title, singular, items, suggestions, autoFilled, onChang
 export default function RequestForm({ initial, prefill, view, onRequest, settings, defaults, approvalPending, busy, locked, initialPrepared = false, callDisabled, callHelp, flow, onCall }: Props) {
   const validationId = useId();
   const [v, setValues] = useState<FormValues>(() => initial ? fromRequest(initial, settings) : { ...emptyForm(settings), goal: prefill?.goal ?? '', kind: prefill?.requestType ?? '' });
-  const [reviewedRequest, setReviewedRequest] = useState<RequestDraft | null>(initialPrepared && initial ? initial : null);
+  const [reviewedRequest, setReviewedRequest] = useState<RequestDraft | null>(initialPrepared && initial && initial.callLimits.maxEstimatedCost.currency === settings.defaultCallLimits.maxEstimatedCost.currency ? initial : null);
+  const [budgetNotice, setBudgetNotice] = useState(initial && initial.callLimits.maxEstimatedCost.currency !== settings.defaultCallLimits.maxEstimatedCost.currency
+    ? `This saved request used ${initial.callLimits.maxEstimatedCost.currency}. Enter a new ${settings.defaultCallLimits.maxEstimatedCost.currency} call limit in Advanced settings; currency conversion is unavailable.` : '');
+  const budgetEdited = useRef(!!initial);
   const [prepareCheck, setPrepareCheck] = useState<{ failed: boolean } | null>(null);
   const { contacts, loading: contactsLoading, error: contactsError, reload: reloadContacts } = useContacts();
   const [contactSaving, setContactSaving] = useState(false);
@@ -95,14 +100,20 @@ export default function RequestForm({ initial, prefill, view, onRequest, setting
     observer.observe(bar);
     return () => observer.disconnect();
   }, []);
-  const previousDefaults = useRef({ ...defaults, duration: String(settings.defaultCallLimits.maxDurationSeconds / 60), cost: String(settings.defaultCallLimits.maxEstimatedCost.amountMinor / 100) });
+  const previousDefaults = useRef({ ...defaults, duration: String(settings.defaultCallLimits.maxDurationSeconds / 60), cost: String(settings.defaultCallLimits.maxEstimatedCost.amountMinor / 100), currency: settings.defaultCallLimits.maxEstimatedCost.currency });
   useEffect(() => {
-    const next = { ...defaults, duration: String(settings.defaultCallLimits.maxDurationSeconds / 60), cost: settings.defaultCallLimits.maxEstimatedCost.currency === 'EUR' ? String(settings.defaultCallLimits.maxEstimatedCost.amountMinor / 100) : '2' };
+    const next = { ...defaults, duration: String(settings.defaultCallLimits.maxDurationSeconds / 60), cost: String(settings.defaultCallLimits.maxEstimatedCost.amountMinor / 100), currency: settings.defaultCallLimits.maxEstimatedCost.currency };
     const old = previousDefaults.current;
-    if (!initial) setValues(v => ({ ...v,
+    if (old.currency !== next.currency || old.cost !== next.cost || old.duration !== next.duration) setReviewedRequest(null);
+    if (old.currency !== next.currency) {
+      setBudgetNotice(`Call budgets now use ${next.currency}. Review the limit in Advanced settings before calling. Edited amounts must be entered again; currency conversion is unavailable.`);
+    }
+    setValues(v => ({ ...v, ...(!initial ? {
       name: v.name === old.name ? next.name : v.name, sharePhone: v.sharePhone === old.phone ? next.phone : v.sharePhone,
       shareEmail: v.shareEmail === old.email ? next.email : v.shareEmail, zone: !zoneEdited && v.zone === old.timeZone ? next.timeZone : v.zone,
-      duration: v.duration === old.duration ? next.duration : v.duration, cost: v.cost === old.cost ? next.cost : v.cost }));
+      duration: v.duration === old.duration ? next.duration : v.duration } : {}),
+      costCurrency: next.currency,
+      cost: v.costCurrency !== next.currency ? (budgetEdited.current ? '' : next.cost) : budgetEdited.current ? v.cost : next.cost }));
     previousDefaults.current = next;
   }, [defaults, settings]);
   useEffect(() => { if (reviewedRequest && !flow) { planSection.current?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' }); planSection.current?.focus({ preventScroll: true }); } }, [reviewedRequest]);
@@ -113,7 +124,8 @@ export default function RequestForm({ initial, prefill, view, onRequest, setting
   const auto = (field: string) => ({ 'data-auto-filled': autoFields.has(field) || undefined, 'aria-describedby': autoFields.has(field) ? 'auto-fill-help' : undefined });
   const badge = (field: string) => autoFields.has(field) ? <span className="auto-fill-badge">Auto-filled</span> : null;
   const set = <K extends keyof FormValues>(key: K, value: FormValues[K]) => {
-    setValues(old => ({ ...old, [key]: value }));
+    if (key === 'cost') budgetEdited.current = true;
+    setValues(old => ({ ...old, [key]: value, ...((key === 'kind' && value !== 'book') || (key === 'service' && typeof value === 'string' && !!old.templateId && templateForService(value)?.id !== old.templateId) ? { templateId: '' as const, details: {} } : {}) }));
     setReviewedRequest(null);
     if (key === 'zone') setZoneEdited(true);
     setAutoFields(old => { const next = new Set(old); next.delete(key); if (key === 'windows') for (const k of ['date', 'start', 'end']) next.delete(k); return next; });
@@ -175,7 +187,7 @@ export default function RequestForm({ initial, prefill, view, onRequest, setting
       for (const key of ['date', 'start', 'end'] as const) if (autoFields.has(key)) next.windows[0]![key] = '';
       const filled = new Set<string>();
       const kept: string[] = [];
-      next.kind = result.requestType; filled.add('kind');
+      next.kind = v.templateId ? 'book' : result.requestType; filled.add('kind');
       function text(key: 'service' | 'maximum' | 'change' | 'reference', value: string | undefined, label: string) {
         if (!value) return;
         if (next[key]) { if (next[key] !== value) kept.push(label); return; }
@@ -202,13 +214,23 @@ export default function RequestForm({ initial, prefill, view, onRequest, setting
     } catch (error) { setErrors([error instanceof Error ? error.message : 'Could not fill details. You can enter them manually.']); return false; }
     finally { setParsing(false); }
   }
+  const profile = templateById(v.templateId);
+  function chooseTemplate(id: string) {
+    const selected = templateById(id);
+    setReviewedRequest(null); setErrors([]); setAutoFields(new Set());
+    setValues(old => selected ? { ...old, kind: 'book', templateId: selected.id, details: {}, service: selected.aliases[0]!, goal: selected.goal,
+      authority: 'ask_before_accepting', unknown: false, canDecide: [], mustAsk: ['Ask me before accepting any offer, fees, commitments or changes to the reviewed details.'], questions: [] }
+      : { ...old, templateId: '', details: {} });
+  }
+  const templatePicker = <label>Conversation template<select aria-label="Conversation template" value={v.templateId} onChange={e => chooseTemplate(e.target.value)}><option value="">Custom / previous request</option>{conversationTemplates.map(profile => <option key={profile.id} value={profile.id}>{profile.label}</option>)}</select><small>Choose a template to review its details. Domain templates use Backend mode.</small></label>;
   function template(kind: 'book' | 'ask' | 'change') {
+    budgetEdited.current = false; setBudgetNotice('');
     setSelectedId(null); setSaveContact(false); setReviewedRequest(null); setZoneEdited(false);
     const base = emptyForm(settings);
-    const common = { ...base, kind, phone: '+12025550123', name: v.name, sharePhone: v.sharePhone, shareEmail: v.shareEmail,
+    const common = { ...base, kind, language: v.language, phone: '+12025550123', name: v.name, sharePhone: v.sharePhone, shareEmail: v.shareEmail,
       mustAsk: ['Ask me before accepting fees, commitments, or anything outside this request.'] };
     const windows = [{ date: nextTuesday(base.zone), start: '17:00', end: '19:00', occurrence: '' }];
-    setValues(kind === 'book' ? { ...common, business: 'Example barbershop', goal: 'Book a haircut next Tuesday between 5 and 7 pm, for no more than 30 euros. Do not accept a deposit.', service: 'Haircut', maximum: '30', authority: 'within_constraints', windows,
+    setValues(kind === 'book' ? { ...common, templateId: 'haircut', business: 'Example barbershop', goal: 'Book a haircut next Tuesday between 5 and 7 pm, for no more than 30 euros. Do not accept a deposit.', service: 'Haircut', maximum: '30', authority: 'within_constraints', windows,
       canDecide: ['Choose a slot within my availability and maximum price.'], mustAsk: [] }
       : kind === 'ask' ? { ...common, business: 'Example clinic', goal: 'Find out which documents I need for my first visit. Do not book an appointment.',
         questions: ['Which documents should I bring to my first visit?', 'Do I need a referral?'], canDecide: ['Ask follow-up questions to clarify the document requirements.'] }
@@ -243,24 +265,26 @@ export default function RequestForm({ initial, prefill, view, onRequest, setting
     if (resolved.availability.some(w => Date.parse(w.start.instant) <= Date.now())) issues.push('Availability must start in the future in the destination timezone.');
     if (!v.duration.trim()) issues.push('Enter a maximum call duration in Advanced.');
     if (!v.cost.trim()) issues.push('Enter a maximum call cost in Advanced.');
-    if (v.cost && !/^\d+(?:\.\d{1,2})?$/.test(v.cost)) issues.push('Call cost must be a non-negative EUR amount with at most two decimal places.');
+    if (v.cost && !/^\d+(?:\.\d{1,2})?$/.test(v.cost)) issues.push(`Call cost must be a non-negative ${v.costCurrency} amount with at most two decimal places.`);
     if (v.kind === 'book' && v.maximum && !/^\d+(?:\.\d{1,2})?$/.test(v.maximum)) issues.push('Service price must be a non-negative EUR amount with at most two decimal places.');
     const result = RequestDraftSchema.safeParse({
-      requestType: v.kind, business: { name: v.business.trim(), phone: normalizedPhone }, timeZone: v.zone, goal: v.goal,
+      requestType: v.kind, language: v.language,
+      ...(v.kind === 'book' && profile ? { templateId: profile.id, templateDetails: Object.fromEntries(profile.fields.filter(field => v.details[field.key]?.trim()).map(field => [field.key, field.kind === 'number' ? Number(v.details[field.key]) : v.details[field.key]])) } : {}),
+      business: { name: v.business.trim(), phone: normalizedPhone }, timeZone: v.zone, goal: v.goal,
       tone: v.tone, tone_notes: v.toneNotes, ...(selectedContact?.phone === v.phone ? { contact_id: selectedContact.id } : {}),
       boundaries: { canDecideAlone: v.canDecide, mustAskMe: v.mustAsk }, questions: v.kind === 'ask' ? v.questions : [],
       changeRequest: v.kind === 'change' ? { description: v.change, bookingReference: v.reference } : null,
       service: v.kind === 'book' ? v.service : '', bookingName: v.name, availability: resolved.availability,
       pricePolicy: { maximum: v.kind === 'book' && v.maximum !== '' ? { amountMinor: Math.round(Number(v.maximum) * 100), currency: 'EUR' } : null, allowUnknownPrice: v.kind === 'book' && v.unknown },
       bookingAuthority: v.kind === 'book' ? v.authority : 'ask_before_accepting', shareableContact: { phone: v.sharePhone.trim() || null, email: v.shareEmail.trim() || null },
-      callLimits: { maxDurationSeconds: Math.round(Number(v.duration) * 60), maxEstimatedCost: { amountMinor: Math.round(Number(v.cost) * 100), currency: 'EUR' } },
+      callLimits: { maxDurationSeconds: Math.round(Number(v.duration) * 60), maxEstimatedCost: { amountMinor: Math.round(Number(v.cost) * 100), currency: v.costCurrency } },
     });
     const labels: Record<string, string> = { requestType: 'Choose a request type.', 'business.name': 'Enter a business name.', 'business.phone': 'Enter a phone number',
       timeZone: 'Enter a valid IANA timezone.', goal: 'Describe your goal in English.', service: 'Enter the service to book.', questions: 'Add at least one question and complete every question.',
       'boundaries.canDecideAlone': 'Complete or remove empty allowed decisions.', 'boundaries.mustAskMe': 'Complete or remove empty approval boundaries.',
       'changeRequest.description': 'Describe what to change or cancel.', 'changeRequest.bookingReference': 'Keep the booking reference within 200 characters.', bookingName: 'Keep the approved name within 200 characters.',
       'shareableContact.phone': 'Enter a valid approved callback number, or leave it blank.', 'shareableContact.email': 'Enter a valid approved email, or leave it blank.',
-      'callLimits.maxDurationSeconds': 'Set call duration to 0.5–10 minutes in Advanced settings.', 'callLimits.maxEstimatedCost': 'Set a valid non-negative EUR call cost in Advanced settings.',
+      'callLimits.maxDurationSeconds': 'Set call duration to 0.5–10 minutes in Advanced settings.', 'callLimits.maxEstimatedCost': `Set a valid non-negative ${v.costCurrency} call cost in Advanced settings.`,
       'pricePolicy.maximum': 'Set a valid non-negative EUR service price, or leave it blank.' };
     if (!result.success) for (const issue of result.error.issues) {
       const path = issue.path.join('.');
@@ -295,8 +319,10 @@ export default function RequestForm({ initial, prefill, view, onRequest, setting
   async function prepare() {
     if (homeMissing.length || locked || busy || parsing || contactSaving) return;
     setErrors([]); setReviewedRequest(null);
+    if (!isMockMode) { onRequest(); return; }
     setPrepareCheck({ failed: !await fillDetails() });
   }
+  const languagePicker = <label>Conversation language<select value={v.language} onChange={e => set('language', e.target.value as FormValues['language'])}><option value="es-ES">Spanish</option><option value="ru-RU">Russian</option><option value="en-US">English</option><option value="pl-PL">Polish</option></select><small>Language used with the business. For Russian, English, or Polish, select Backend in Settings; the browser simulator supports Spanish only.</small></label>;
   return <div className="inline-workflow" style={{ paddingBottom: view === 'request' ? reviewBarHeight : 0 }}>
     {contactsLoading && <p role="status" className="text-base">Loading saved contacts…</p>}
     {contactsError && <div role="alert" className="notice error"><p>Saved contacts are unavailable. {contactsError}</p><button type="button" className="secondary" onClick={() => void reloadContacts()}>Retry contacts</button></div>}
@@ -306,6 +332,8 @@ export default function RequestForm({ initial, prefill, view, onRequest, setting
       <form noValidate onSubmit={e => { e.preventDefault(); void prepare(); }}>
         <fieldset disabled={locked || busy || parsing || contactSaving} className="space-y-5">
           <label>Goal<textarea data-gramm="false" aria-label="Home goal" value={v.goal} onChange={e => set('goal', e.target.value)} required maxLength={4000} rows={4} placeholder="Describe in English what you need and any limits Zeus should follow…" /></label>
+          {templatePicker}
+          {view === 'home' && languagePicker}
           <div className="flex flex-wrap gap-3" aria-label="Request templates">
             <button type="button" className="secondary template-chip" onClick={() => template('book')}>Book a haircut</button>
             <button type="button" className="secondary template-chip" onClick={() => template('ask')}>Ask a clinic about documents</button>
@@ -330,7 +358,9 @@ export default function RequestForm({ initial, prefill, view, onRequest, setting
       }}>
       <fieldset disabled={locked || busy || parsing || contactSaving} className="request-sections">
         <SectionCard step={1} title="Who to call">{view === 'request' && <ContactPicker hideHeading deferErrors showErrors={submitted} value={contactDetails} contacts={contacts} selectedId={selectedId} saveChecked={saveContact} onChange={changeContact} onSelect={chooseContact} onSaveChecked={checked => { setSaveContact(checked); setReviewedRequest(null); }} />}</SectionCard>
-        <SectionCard step={2} title="What Zeus should do"><div className="request-goal-grid"><fieldset className="request-type-field" {...auto('kind')} {...invalid('requestType')}><legend className="section-title">Request type{badge('kind')}</legend><div className="flex flex-wrap gap-2" role="group" aria-label="Request type">{Object.entries(requestLabels).map(([kind, label]) => <button key={kind} type="button" className="secondary template-chip" aria-pressed={v.kind === kind} onClick={() => { set('kind', kind as Kind); touch('requestType'); }}>{label}</button>)}</div>{feedback('requestType')}</fieldset>
+        <SectionCard step={2} title="What Zeus should do">
+          {templatePicker}
+          {view === 'request' && languagePicker}<div className="request-goal-grid"><fieldset className="request-type-field" {...auto('kind')} {...invalid('requestType')}><legend className="section-title">Request type{badge('kind')}</legend><div className="flex flex-wrap gap-2" role="group" aria-label="Request type">{Object.entries(requestLabels).map(([kind, label]) => <button key={kind} type="button" className="secondary template-chip" aria-pressed={v.kind === kind} onClick={() => { set('kind', kind as Kind); touch('requestType'); }}>{label}</button>)}</div>{feedback('requestType')}</fieldset>
         <div className="goal-details"><label><span className="field-caption">Goal</span><span className="field-control"><textarea data-gramm="false" aria-label="Goal" {...invalid('goal')} value={v.goal} onChange={e => set('goal', e.target.value)} maxLength={4000} rows={3} required />{feedback('goal')}</span></label>
         {isMockMode && <button type="button" className="secondary fill-details" disabled={!v.goal.trim()} onClick={() => { setReviewedRequest(null); void fillDetails(); }}>Fill details from goal</button>}
         {!!parsedSource && <p id="auto-fill-help" className="text-base text-stone-300">{isMockMode ? 'Gold highlights mark suggestions from your goal. Every field is editable.' : 'Automatic suggestions are not available for this backend yet. Complete the plan below.'}</p>}
@@ -338,6 +368,7 @@ export default function RequestForm({ initial, prefill, view, onRequest, setting
         {!!parsedSource && parsedSource !== v.goal && <p className="notice">Your goal changed. Prepare the plan again to refresh suggestions, or check and edit each detail below.</p>}
         </div></div>
         {v.kind === 'book' && <fieldset><legend className="section-title">Appointment details</legend><div className="form-grid appointment-fields">
+          {profile && <fieldset className="space-y-4"><legend>{profile.label} details</legend>{profile.fields.map(field => <label key={field.key}>{field.label}{field.kind === 'choice' ? <select required value={v.details[field.key] ?? ''} onChange={e => set('details', { ...v.details, [field.key]: e.target.value })}><option value="">Choose…</option>{field.options?.map(option => <option key={option.value} value={option.value}>{option.label[2]}</option>)}</select> : <input required type={field.kind === 'number' ? 'number' : 'text'} min={field.min} max={field.max} maxLength={100} value={v.details[field.key] ?? ''} onChange={e => set('details', { ...v.details, [field.key]: e.target.value })} />}{field.hint && <small>{field.hint}</small>}</label>)}<p className="text-base">{profile.requirements[2]}</p>{feedback('templateDetails')}</fieldset>}
           <label><span className="field-caption">Requested service{badge('service')}</span><span className="field-control"><input {...auto('service')} aria-label="Requested service" {...invalid('service')} value={v.service} onChange={e => set('service', e.target.value)} required maxLength={200} />{feedback('service')}</span></label>
           <label><span className="field-caption">Maximum service price (EUR){badge('maximum')}</span><span className="field-control"><input {...auto('maximum')} aria-label="Maximum service price (EUR)" {...invalid('pricePolicy.maximum')} type="number" min="0" step="0.01" value={v.maximum} onChange={e => set('maximum', e.target.value)} />{feedback('pricePolicy.maximum')}<small>Leave blank for no service-price cap. Separate from call charges.</small></span></label>
           <label><span className="field-caption">Zeus may book</span><span className="field-control"><select aria-label="Zeus may book" value={v.authority} onChange={e => set('authority', e.target.value)}><option value="within_constraints">Automatically within my constraints</option><option value="ask_before_accepting">Only after I approve the exact offer</option></select></span></label>
@@ -375,11 +406,12 @@ export default function RequestForm({ initial, prefill, view, onRequest, setting
           <label><span className="field-caption">Approved callback number</span><span className="field-control"><input aria-label="Approved callback number" {...invalid('shareableContact.phone')} value={v.sharePhone} onChange={e => set('sharePhone', e.target.value)} type="tel" pattern="\+[1-9][0-9]{7,14}" placeholder="Optional: +34…" />{feedback('shareableContact.phone')}</span></label>
           <label><span className="field-caption">Approved email</span><span className="field-control"><input aria-label="Approved email" {...invalid('shareableContact.email')} value={v.shareEmail} onChange={e => set('shareEmail', e.target.value)} type="email" placeholder="Optional" />{feedback('shareableContact.email')}</span></label>
         </div></SectionCard>
-        <details className="advanced-limits request-card"><summary className="section-title cursor-pointer"><span>Advanced settings</span><span className="advanced-overview">{v.zone} · {v.duration.trim() ? `${v.duration} min max` : 'Set duration'} · {v.cost.trim() && Number.isFinite(Number(v.cost)) ? `€${Number(v.cost).toFixed(2)} max` : 'Set EUR cost limit'}</span></summary><div className="form-grid mt-4">
+        {budgetNotice && <p role="status" className="notice">{budgetNotice}</p>}
+        <details className="advanced-limits request-card"><summary className="section-title cursor-pointer"><span>Advanced settings</span><span className="advanced-overview">{v.zone} · {v.duration.trim() ? `${v.duration} min max` : 'Set duration'} · {v.cost.trim() && Number.isFinite(Number(v.cost)) ? `${money({ amountMinor: Math.round(Number(v.cost) * 100), currency: v.costCurrency })} max` : `Set ${v.costCurrency} cost limit`}</span></summary><div className="form-grid mt-4">
           <label><span className="field-caption">Timezone</span><span className="field-control"><input aria-label="Timezone" {...invalid('timeZone')} value={v.zone} onChange={e => set('zone', e.target.value)} required maxLength={100} />{feedback('timeZone')}<small>Suggested from the country code. Check the local timezone, especially for countries with several zones.</small></span></label>
           <label><span className="field-caption">Maximum call duration (minutes)</span><span className="field-control"><input aria-label="Maximum call duration (minutes)" {...invalid('callLimits.maxDurationSeconds')} type="number" min="0.5" max="10" step="0.5" required value={v.duration} onChange={e => set('duration', e.target.value)} />{feedback('callLimits.maxDurationSeconds')}</span></label>
-          <label><span className="field-caption">Maximum estimated call cost (EUR)</span><span className="field-control"><input aria-label="Maximum estimated call cost (EUR)" {...invalid('callLimits.maxEstimatedCost')} type="number" min="0" step="0.01" required value={v.cost} onChange={e => set('cost', e.target.value)} />{feedback('callLimits.maxEstimatedCost')}</span></label>
-        </div>{initial?.callLimits.maxEstimatedCost.currency === 'USD' && <p className="mt-3 text-base">This saved request used USD. Enter an explicit EUR limit; no currency conversion is applied.</p>}<p className="mt-3 text-base text-stone-300">Duration and spend limits require backend/provider enforcement. Estimates are not settled charges.</p></details>
+          <label><span className="field-caption">Maximum estimated call cost ({v.costCurrency})</span><span className="field-control"><input aria-label={`Maximum estimated call cost (${v.costCurrency})`} {...invalid('callLimits.maxEstimatedCost')} type="number" min="0" step="0.01" required value={v.cost} onChange={e => set('cost', e.target.value)} />{feedback('callLimits.maxEstimatedCost')}</span></label>
+        </div><p className="mt-3 text-base text-stone-300">Call budgets use {v.costCurrency} to match application settings. Service prices remain in EUR. Duration and spend limits require backend/provider enforcement. Estimates are not settled charges.</p></details>
 
         {((showError('timeZone') && validation.fields.timeZone) || (showError('callLimits.maxDurationSeconds') && validation.fields['callLimits.maxDurationSeconds']) || (showError('callLimits.maxEstimatedCost') && validation.fields['callLimits.maxEstimatedCost'])) && <p className="field-error">Check Advanced settings: timezone, call duration and cost.</p>}
         <div ref={reviewBar} className="request-review-bar" hidden={!!approvalPending || !!flow}>

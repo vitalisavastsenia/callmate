@@ -10,7 +10,7 @@ function apiSchema(value: unknown): unknown {
   // Local contracts continue accepting old fixtures without those additive fields.
   const required = new Set(Array.isArray(object.required) ? object.required as string[] : []);
   const properties = object.properties as Record<string, unknown> | undefined;
-  return Object.fromEntries(Object.entries(value).flatMap(([key, child]) => {
+  const converted = Object.fromEntries(Object.entries(value).flatMap(([key, child]) => {
     if (["$schema", "minLength", "maxLength"].includes(key)) return [];
     if (key === "const") return [["enum", [child]]];
     if (key === "required" && properties) return [[key, Object.keys(properties)]];
@@ -19,6 +19,9 @@ function apiSchema(value: unknown): unknown {
     // The action discriminator makes these branches mutually exclusive.
     return [[key === "oneOf" ? "anyOf" : key, apiSchema(child)]];
   }));
+  // Objects made entirely of optional fields may have no required array in Zod JSON Schema.
+  if (properties) converted.required = Object.keys(properties);
+  return converted;
 }
 
 export const dialogueResponseSchema = apiSchema(DialogueProposalSchema.toJSONSchema({ io: "input" }));

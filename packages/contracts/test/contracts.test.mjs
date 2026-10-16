@@ -270,3 +270,17 @@ test("conversation consent remains separate from confirmed booking and rejects s
   rejects(api.decideConversation.request, { decisionId: ids.approval, plan: approvalFixture.plan,
     offer: { offerId: ids.offer, offerVersion: 1 }, choice: "approve", answer: null, phone: "+12025550123" });
 });
+
+test('reviewed language is optional for legacy plans; four supported locales and assistant phrase refs round-trip', () => {
+  assert.equal(RequestDraftSchema.parse(reviewPlanFixture.request).language, undefined);
+  for (const language of ['es-ES', 'ru-RU', 'en-US', 'pl-PL']) {
+    assert.equal(RequestDraftSchema.parse({ ...reviewPlanFixture.request, language }).language, language);
+    const message = { ...connectedCallFixture.messages[0], speaker: 'assistant', playback: 'generated', language,
+      phrase: { id: 'haircut.greeting', version: 1, language } };
+    const call = { ...connectedCallFixture, messages: [message] };
+    assert.equal(CallSnapshotSchema.parse(call).messages[0].phrase.language, language);
+    rejects(CallSnapshotSchema, { ...call, messages: [{ ...message, phrase: { ...message.phrase, language: language === 'es-ES' ? 'ru-RU' : 'es-ES' } }] });
+    rejects(CallSnapshotSchema, { ...call, messages: [{ ...message, speaker: 'business', playback: 'not_applicable' }] });
+  }
+  rejects(RequestDraftSchema, { ...reviewPlanFixture.request, language: 'de-DE' });
+});
