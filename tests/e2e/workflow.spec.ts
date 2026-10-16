@@ -30,7 +30,7 @@ async function historyDetail(page: Page) {
 test('inline request → exact approval → result → history, calendar, deletion, and Repeat', async ({ page }) => {
   const network: string[] = []; page.on('request', r => {
     const path = new URL(r.url()).pathname;
-    if (path.startsWith('/api/') && !path.startsWith('/api/v1/contacts')) network.push(r.url());
+    if (path.startsWith('/api/') && !path.startsWith('/api/v1/contacts') && !path.startsWith('/api/auth/')) network.push(r.url());
   });
   await page.clock.install(); await prepare(page, 'above_price'); await start(page); await advance(page, 5);
   await expect(page.getByRole('heading', { name: 'Approve this exact alternative?' }).last()).toBeVisible();

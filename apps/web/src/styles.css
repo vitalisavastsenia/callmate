@@ -225,3 +225,6 @@ fieldset[data-auto-filled="true"] { border: 1px solid #dfbd7788; border-radius: 
 .contacts-heading > div { min-width: 0; flex: 1 1 280px; }
 .contacts-heading h2 { margin-bottom: 12px; }
 .contact-notes { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 8px; }
+/* The application stays unmounted until the backend validates the owner session. */
+.auth-screen { max-width: 34rem; margin: 8vh auto; padding: 1rem; }
+.auth-account { display: flex; justify-content: flex-end; align-items: center; gap: 1rem; flex-wrap: wrap; max-width: 80rem; margin: 1rem auto 0; padding: 0 1rem; }

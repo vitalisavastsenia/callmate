@@ -28,9 +28,10 @@ test('Contacts manages database records across reloads and shares them with the 
   expect(await savedContacts(page)).toHaveLength(1);
   await page.reload(); await button(page, 'Contacts').click();
   await expect(page.getByRole('list', { name: 'Saved contacts' })).toContainText('+34612345678');
-  // A new browser context has no localStorage but reads the same database.
+  // A separately authenticated context has no localStorage but reads the same database.
   const other = await browser.newContext();
   try {
+    await other.addCookies(await page.context().cookies());
     const second = await other.newPage(); await second.goto(new URL('/', page.url()).href);
     await button(second, 'Contacts').click();
     await expect(second.getByRole('list', { name: 'Saved contacts' })).toContainText('Barber Солнце');

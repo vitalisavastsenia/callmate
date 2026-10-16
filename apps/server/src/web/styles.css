@@ -14,7 +14,9 @@ h2 { margin: 0; font-size: 17px; }
 .card-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
 .card-heading h2 { flex: 1; }
 .card-heading label { font-size: 12px; color: #67798b; }
-textarea, select, button { font: inherit; }
+textarea, select, button, input { font: inherit; }
+input { display: block; width: 100%; padding: 10px; border: 1px solid #ccd7e2; border-radius: 7px; }
+input:focus { outline: 3px solid #a5cdfa; outline-offset: 2px; }
 textarea { display: block; width: 100%; border: 1px solid #ccd7e2; border-radius: 7px; padding: 14px; color: #243a4e; line-height: 1.6; resize: vertical; font-size: 15px; }
 textarea[readonly] { background: #f8fafc; }
 textarea::placeholder { color: #8897a6; }

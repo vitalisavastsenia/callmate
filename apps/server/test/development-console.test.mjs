@@ -1,3 +1,4 @@
+import { authHeaders } from './fixtures/auth.mjs';
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -73,7 +74,7 @@ async function fixture(t, options = {}) {
   config.mockRelayUrl = `ws://127.0.0.1:${runtime.callbacks.server.address().port}/ws/voice`;
   let apiOrigin = `http://127.0.0.1:${runtime.privateApi.server.address().port}`;
   t.after(async () => { peers.forEach((peer) => peer.terminate()); await runtime.close(); server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); rmSync(dataDir, { recursive: true, force: true }); });
-  return { calls, config, dataDir, get runtime() { return runtime; }, get apiOrigin() { return apiOrigin; },
+  return { calls, config, dataDir, auth: authHeaders(dataDir), get runtime() { return runtime; }, get apiOrigin() { return apiOrigin; },
     async restart(beforeStart) {
       await runtime.close();
       if (beforeStart) beforeStart();
@@ -82,7 +83,7 @@ async function fixture(t, options = {}) {
       apiOrigin = `http://127.0.0.1:${runtime.privateApi.server.address().port}`;
     }, get creates() { return creates; }, get hungUp() { return hungUp; }, get logs() { return logs; },
     async api(path, method = "GET", body) {
-      const response = await fetch(apiOrigin + path, { method, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
+      const response = await fetch(apiOrigin + path, { method, headers: { ...authHeaders(dataDir), ...(body === undefined ? {} : { "content-type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
       return { status: response.status, body: await response.json() };
     },
     async callback(callSid, status, sequence, options = {}) {
@@ -204,7 +205,7 @@ test("rejected create is visible and never retried, and shutdown hangs up outsta
 
 async function stream(t, app, id, after = 0) {
   const response = await fetch(`${app.apiOrigin}/api/v1/calls/${id}/events`, {
-    headers: { 'Last-Event-ID': String(after) }, signal: AbortSignal.timeout(8000),
+    headers: { ...app.auth, 'Last-Event-ID': String(after) }, signal: AbortSignal.timeout(8000),
   });
   assert.equal(response.status, 200);
   const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
@@ -259,7 +260,7 @@ test('manual mock calls share snapshots, persisted transcript, live/replayed SSE
   });
   assert.equal(denied.status, 400); // A valid idempotency header is required before any command.
   const approval = await fetch(`${app.apiOrigin}/api/v1/calls/${initial.id}/approvals`, { method: 'POST',
-    headers: { 'content-type': 'application/json', 'idempotency-key': randomUUID() }, body: JSON.stringify({
+    headers: { ...app.auth, 'content-type': 'application/json', 'idempotency-key': randomUUID() }, body: JSON.stringify({
       approvalId: randomUUID(), plan: { planId: randomUUID(), planVersion: 1 },
       offer: { offerId: randomUUID(), offerVersion: 1 }, decision: 'approve',
     }) });
@@ -291,7 +292,7 @@ test('scripted and manual calls reserve one global slot, share paginated history
   const plan = (await app.api('/api/v1/plans', 'POST', reviewPlanFixture.request)).body.plan;
   const start = async (key = randomUUID()) => {
     const response = await fetch(app.apiOrigin + '/api/v1/calls', { method: 'POST', headers: {
-      'content-type': 'application/json', 'idempotency-key': key,
+      ...app.auth, 'content-type': 'application/json', 'idempotency-key': key,
     }, body: JSON.stringify({ planId: plan.id, planVersion: 1, mode: 'simulator' }) });
     return { status: response.status, body: await response.json() };
   };

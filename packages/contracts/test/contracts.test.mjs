@@ -163,7 +163,7 @@ test("playback permission includes output, turn, plan and offer binding", () => 
 test("history pagination is bounded and contracts expose no callback routes", () => {
   rejects(api.history.query, { limit: 101 });
   assert.equal(api.history.query.parse({}).limit, 20);
-  assert.ok(Object.values(api).every((route) => route.path.startsWith("/api/v1/")));
+  assert.ok(Object.values(api).every((route) => route.path.startsWith("/api/v1/") || route.path.startsWith("/api/auth/")));
 });
 
 test('manual mock snapshots preserve exact multilingual text but cannot contain booking authority, confirmation or fabricated playback', () => {

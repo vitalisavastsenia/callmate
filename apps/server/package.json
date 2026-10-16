@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.mjs",
     "start": "node dist/main.js",
+    "auth:reset": "node dist/reset-auth.js",
     "demo:twilio-mock": "node dist/twilio/demo.js"
   },
   "dependencies": {

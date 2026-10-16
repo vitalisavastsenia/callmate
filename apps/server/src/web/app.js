@@ -35,6 +35,7 @@ export function initializeConsole(win, doc) {
     const response = await win.fetch(path, { ...(body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
       signal: win.AbortSignal.timeout(6000) });
     const data = await response.json();
+    if (response.status === 401) win.dispatchEvent(new win.Event("callmate:unauthorized"));
     if (!response.ok) {
       const error = new Error(data.error?.message || "The backend request failed."); error.status = response.status; throw error;
     }
@@ -109,4 +110,3 @@ export function initializeConsole(win, doc) {
   const ready = refresh(true).then(() => { if (!disposed) timer = win.setTimeout(poll, 1000); });
   return { cleanup, ready, refresh };
 }
-if (typeof window !== "undefined") initializeConsole(window, document);

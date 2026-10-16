@@ -7,6 +7,7 @@ import { SettingsSchema } from "@callmate/contracts";
 import type { z } from "zod";
 import { callStore } from "./call-store.js";
 import { contactStore } from "./contacts.js";
+import { authStore } from "./auth-store.js";
 
 type Settings = z.infer<typeof SettingsSchema>;
 const defaultMigrations = fileURLToPath(new URL("../migrations/", import.meta.url));
@@ -63,6 +64,7 @@ export function openStore(dataDir: string) {
     return {
       calls: callStore(db),
       contacts: contactStore(db),
+      auth: authStore(db),
       getSettings,
       setSettings(input: unknown): Settings {
         const settings = SettingsSchema.parse(input);

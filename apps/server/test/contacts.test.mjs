@@ -1,3 +1,4 @@
+import { authHeaders } from './fixtures/auth.mjs';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -13,15 +14,16 @@ const details = { name: 'Peluquería Сол', phone: '+34612345678', timeZone: '
 function setup(t) {
   const path = mkdtempSync(join(tmpdir(), 'callmate-contacts-'));
   const config = loadConfig({ CALLMATE_DATA_DIR: path, CALLMATE_LOG_LEVEL: 'silent' });
+  const auth = authHeaders(path);
   let runtime = createRuntime(config);
   t.after(async () => { await runtime.close(); rmSync(path, { recursive: true, force: true }); });
   return {
     async http(method, url, payload, headers = {}) {
-      const r = await runtime.privateApi.inject({ method, url, headers: { host: 'localhost:3000', ...headers }, ...(payload === undefined ? {} : { payload }) });
+      const r = await runtime.privateApi.inject({ method, url, headers: { host: 'localhost:3000', ...auth, ...headers }, ...(payload === undefined ? {} : { payload }) });
       return { status: r.statusCode, data: r.json() };
     },
     async restart() { await runtime.close(); runtime = createRuntime(config); },
-    get runtime() { return runtime; },
+    get runtime() { return runtime; }, runtimeDataDir: path,
   };
 }
 
@@ -75,7 +77,7 @@ test('contacts stay on the private API and deleting one does not modify an exist
   await app.http('DELETE', `/api/v1/contacts/${contact.id}`);
   // Starting the already reviewed plan still uses its copied destination and contact reference.
   const start = await app.runtime.privateApi.inject({ method: 'POST', url: '/api/v1/calls',
-    headers: { host: 'localhost:3000', 'idempotency-key': randomUUID() },
+    headers: { host: 'localhost:3000', ...authHeaders(app.runtimeDataDir), 'idempotency-key': randomUUID() },
     payload: { planId: plan.data.plan.id, planVersion: 1, mode: 'simulator' } });
   assert.equal(start.statusCode, 202); assert.deepEqual(start.json().call.plan.request, draft);
   for (const headers of [{ origin: 'https://foreign.example' }, { 'sec-fetch-site': 'cross-site' }]) {

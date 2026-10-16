@@ -20,6 +20,7 @@ import type { RetentionOptions } from "./retention.js";
 import { Readiness } from "./readiness.js";
 import { mountMockStatus } from "./mock-status.js";
 import { contactRoutes } from "./contacts.js";
+import { mountAuth } from "./auth.js";
 
 type ErrorCode = z.infer<typeof ApiErrorSchema>["error"]["code"];
 function fail(reply: FastifyReply, request: FastifyRequest, status: number, code: ErrorCode, message: string,
@@ -89,6 +90,7 @@ function privateRoutes(app: FastifyInstance, config: Config, store: Store, contr
   });
 
   app.get("/health", async () => { store.check(); return { status: "ok" }; });
+  mountAuth(app, store);
   const readiness = new Readiness(config, store);
   app.get(api.readiness.path, async () => readiness.report());
   app.get(api.getSettings.path, async () => SettingsSchema.parse(store.getSettings()));

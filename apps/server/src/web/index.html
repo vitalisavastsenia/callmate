@@ -5,11 +5,25 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CallMate · Start a conversation</title>
   <link rel="stylesheet" href="/console/styles.css">
-  <script type="module" src="/console/app.js"></script>
+  <script type="module" src="/console/auth.js"></script>
 </head>
 <body>
   <header><a class="brand" href="/">CallMate<span>Development console</span></a><span class="badge">Local mock calls</span></header>
   <main>
+    <section id="auth-panel" class="card" aria-labelledby="auth-title">
+      <h1 id="auth-title">Connecting to CallMate</h1>
+      <p id="auth-help">Checking your sign-in status…</p>
+      <p id="auth-error" role="alert" hidden></p>
+      <button type="button" id="auth-retry" hidden>Retry connection</button>
+      <form id="auth-form" method="post" hidden>
+        <p><label for="auth-username">Username</label><input id="auth-username" name="username" autocomplete="username" autocapitalize="none" required minlength="3" maxlength="64" pattern="[a-zA-Z0-9_.\-]+"></p>
+        <p><label for="auth-password">Password</label><input id="auth-password" type="password" name="password" autocomplete="current-password" required maxlength="128"></p>
+        <p id="auth-confirm-row" hidden><label for="auth-confirm">Confirm password</label><input id="auth-confirm" type="password" autocomplete="new-password" maxlength="128"></p>
+        <button type="submit" id="auth-submit" class="primary">Sign in</button>
+      </form>
+    </section>
+    <div id="console-content" hidden>
+    <div class="actions"><span id="auth-account"></span><button id="auth-logout" type="button">Sign out</button></div>
     <p class="eyebrow">YOUR SIDE OF THE CALL</p>
     <h1>Start a conversation</h1>
     <p class="intro">Write the first message. Answer in the operator window, then send a reply back here.</p>
@@ -27,6 +41,7 @@
       <textarea id="response" rows="8" readonly placeholder="The operator’s replies will appear here."></textarea>
       <p id="response-meta" class="hint" aria-live="polite">Waiting for a conversation.</p>
     </section>
+    </div>
   </main>
   <footer>CallMate · Manual development conversation</footer>
 </body>

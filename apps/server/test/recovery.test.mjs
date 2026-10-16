@@ -1,3 +1,4 @@
+import { authHeaders } from './fixtures/auth.mjs';
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -85,8 +86,8 @@ async function fixture(t) {
     edit(id, work) { const store = openStore(dataDir); try { const attempt = store.calls.get(id); work(attempt); store.calls.save(attempt); } finally { store.close(); } },
     events(id) { const store = openStore(dataDir); try { return store.calls.events(id, 0); } finally { store.close(); } },
     async api(path, method = "GET", body) {
-      const response = await fetch(address.api + path, { method, signal: AbortSignal.timeout(10000),
-        ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
+      const response = await fetch(address.api + path, { method, signal: AbortSignal.timeout(10000), headers: { ...authHeaders(dataDir), ...(body === undefined ? {} : { "content-type": "application/json" }) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
       return { status: response.status, body: await response.json() };
     },
     async answer(call, overrides = {}) {

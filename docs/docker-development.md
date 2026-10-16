@@ -12,7 +12,6 @@ From the repository root, with the Docker engine running:
 docker compose up --build -d --wait server
 docker compose ps
 curl http://127.0.0.1:3000/health
-curl http://127.0.0.1:3000/api/v1/readiness
 docker compose logs -f server
 ```
 
@@ -20,13 +19,15 @@ The image uses a build stage with development dependencies/compilers and a separ
 
 The Docker health check tests `/health`, which reads the SQLite application tables without checking the mock service. `/api/v1/readiness` reports database/configuration checks, mock connectivity and per-capability enabled/ready flags. Overall readiness requires valid local prerequisites and simulator mode; it also requires a healthy mock when the manual transport is enabled. A mock outage can leave scripted calls ready while overall readiness is false. `voiceEngine` remains `null`; in live mode readiness is false and live Start returns `503 PROVIDER_NOT_READY`. Switching to `live` never falls back to a simulated or real call. See [readiness diagnostics](#15-readiness-diagnostics).
 
+All `/api/v1/*` and `/api/dev/*` examples below require an owner session. Sign in through the UI or obtain a cookie with `/api/auth/login`; add `-b /path/to/private-cookie-jar` to each private API curl command. `/health` alone is public. See [owner login](#16-owner-login-and-sessions) for contracts and recovery.
+
 ## 2. Configuration
 
 Defaults work without `.env`. For overrides, copy `.env.example` to ignored `.env` and edit it, then recreate the container with the startup command. Compose injects only the explicitly listed settings; it does not forward the whole host environment or `.env` file.
 
 | Setting | Default | Rule |
 | --- | --- | --- |
-| `CALLMATE_MODE` | `simulator` | `simulator` is ready without credentials; `live` remains unavailable. |
+| `CALLMATE_MODE` | `simulator` | `simulator` needs no provider credentials; `live` remains unavailable. |
 | `NODE_ENV` | `development` in Compose; `production` in standalone image | Only `development` or `test` permits the unsigned mock relay. |
 | `TELEPHONY_PROVIDER` | `mock` in Compose; `fake` without Compose | `mock` enables the development relay gate; `fake` disables it. The automatic API/SSE simulator continues to use fake telephony. Neither choice enables live calls. |
 | `CALLMATE_MOCK_API_BASE` | `http://host.docker.internal:8080` | Backend-to-emulator HTTP origin. Local hosts only, no credentials/query/path. |
@@ -458,3 +459,31 @@ For example, with the mock enabled but stopped, the endpoint returns:
 Messages are fixed, non-secret descriptions: no configured origins/paths, credentials, tokens, remote response bodies or exception details appear in responses or logs. The check results do not include account identifiers or raw configuration values. UI clients should display checks and use the relevant capability's `ready` flag rather than disabling all local features when only the mock is unavailable. The simple development console's existing Start preflight remains authoritative; full settings/readiness presentation is a booking-UI task.
 
 Docker checks cover healthy/failed/recovered and disabled mocks, bounded/unresponsive probes, concurrent requests, malformed/oversized/redirected responses, connection refusal, invalid stored settings, inaccessible database tables, sanitized diagnostics, capability gates and private-listener/origin isolation.
+
+
+## 16. Owner login and sessions
+
+Open `http://localhost:5173` (web UI) or `http://localhost:3000` (development console). On a fresh SQLite volume, create the single owner account. Usernames contain 3–64 ASCII letters/numbers/dots/underscores/hyphens and are stored lowercase. Passwords contain 12–128 characters; whitespace is significant. There are no default credentials, public signup after setup, email flows, or external identity providers. Existing contacts, calls, and settings become accessible to the owner without moving or deleting them.
+
+Authentication is always required for `/api/v1/*` and `/api/dev/*`, including reads, Stop, and SSE. `/health`, static login assets, and the four `/api/auth/*` endpoints are public on the private listener. Provider callbacks stay on the separate listener and retain their provider signature/relay checks; browser sessions do not authorize those callbacks.
+
+| Method and path | Request | Response |
+| --- | --- | --- |
+| `GET /api/auth/session` | No body | `200 { setupRequired, authenticated, username, expiresAt }`; signed-out identity/expiry are `null`. |
+| `POST /api/auth/setup` | `{ username, password }` | First owner only; `200` authenticated session plus cookie, or `409 AUTH_ALREADY_CONFIGURED`. |
+| `POST /api/auth/login` | `{ username, password }` | `200` authenticated session plus cookie, or generic `401 INVALID_CREDENTIALS`. |
+| `POST /api/auth/logout` | `{}` | `200 { loggedOut: true }`, revokes the current session and clears its cookie; repeatable. |
+
+Commands require JSON and the existing loopback Host/Origin rules. Missing, malformed, expired, or revoked cookies receive `401 UNAUTHENTICATED` on private APIs. Setup and login share a persistent limit of 10 attempts per five-minute window, including successful and invalid submissions, then `429 AUTH_RATE_LIMITED` with `Retry-After: 300`. Restarting the backend and spoofing forwarding headers do not reset that limit.
+
+Passwords use Node's asynchronous scrypt (N=16384, r=8, p=1, 64-byte output) with independent random salts. The database stores only password hashes and SHA-256 hashes of random 256-bit session tokens. The opaque token is sent only in the `callmate_session` cookie (`HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`), never local storage or URLs. Sessions have an absolute 12-hour lifetime, survive backend restart, and are revoked individually by logout. Expired rows are removed at the next successful sign-in. Existing SSE streams close immediately on logout and within one second of expiry/recovery reset. Signing out does not hang up an ongoing call; sign back in to control it.
+
+This configuration serves HTTP only on loopback and therefore omits the cookie's Secure attribute. Keep the existing loopback port bindings and same-origin Vite proxy. Public HTTPS hosting needs explicit host/origin and Secure-cookie configuration before deployment. Login does not encrypt SQLite, erase simulator browser storage, or isolate multiple users: this is one personal owner protecting one shared installation. Use a consistent hostname (`localhost` or `127.0.0.1`); cookies are host-specific.
+
+If you forget the password, use local Docker access to remove only the owner and sessions, preserving contacts/calls/settings:
+
+```sh
+docker compose exec server npm run auth:reset --workspace @callmate/server
+```
+
+Then open either UI and create the owner again. There is no unauthenticated HTTP reset endpoint. The command is intentionally not exposed in the UI. Never delete the Docker volume to reset a password, and do not place passwords or cookie jars in Git.

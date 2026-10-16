@@ -4,6 +4,8 @@ Status: implementation baseline for review by the three engineers; no human sign
 
 Use the [backend to UI message contract](ui-message-contract.md) for scenario-specific messages, expected UI behavior, and concrete JSON examples. It documents use of these interfaces without implementing the application.
 
+Owner authentication is part of the shared executable contract. `api.authSession`, `api.authSetup`, `api.authLogin`, and `api.authLogout` define `/api/auth/*` request/response schemas. All `/api/v1/*` and development console API routes require the opaque HttpOnly session cookie; missing/expired/revoked sessions return `401 UNAUTHENTICATED`. Setup is available only before the single owner exists. Login uses `401 INVALID_CREDENTIALS`, setup conflicts use `409 AUTH_ALREADY_CONFIGURED`, and the persistent shared setup/login limit uses `429 AUTH_RATE_LIMITED`. See [authentication contracts and recovery](docker-development.md#16-owner-login-and-sessions) for the full protocol. Signed provider callbacks use their separate authentication.
+
 ## 1. Deliverables and ownership
 
 The executable source of truth is [`@callmate/contracts`](../packages/contracts/src/index.ts). It exports Zod runtime schemas, inferred TypeScript types, private HTTP route definitions, and internal adapter interfaces. [`@callmate/contracts/fixtures`](../packages/contracts/src/fixtures.ts) provides synthetic example data. It is a separate export so production consumers do not import examples by default.

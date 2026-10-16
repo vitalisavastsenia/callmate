@@ -31,6 +31,16 @@ export const ContactSchema = ContactDetailsSchema.extend({ id: IdSchema });
 export type ContactDetails = z.infer<typeof ContactDetailsSchema>;
 export type Contact = z.infer<typeof ContactSchema>;
 
+export const AuthCredentialsSchema = z.strictObject({
+  username: z.string().trim().toLowerCase().min(3).max(64).regex(/^[a-z0-9_.-]+$/),
+  password: z.string().min(1).max(128),
+});
+export const AuthSetupSchema = AuthCredentialsSchema.extend({ password: z.string().min(12).max(128) });
+export const AuthSessionSchema = z.strictObject({
+  setupRequired: z.boolean(), authenticated: z.boolean(), username: z.string().nullable(), expiresAt: z.iso.datetime().nullable(),
+});
+export type AuthSession = z.infer<typeof AuthSessionSchema>;
+
 // Keep the displayed business time and the resolved instant consistent, including DST.
 export const ZonedTimeSchema = z.strictObject({
   localDate: z.iso.date(),
@@ -285,6 +295,7 @@ export const ErrorCodeSchema = z.enum([
   "APPROVAL_STALE", "APPROVAL_EXPIRED", "CALL_NOT_ACTIVE", "PROVIDER_NOT_READY", "MODE_MISMATCH",
   "BUDGET_EXCEEDED", "EVENT_CURSOR_INVALID", "DATA_NOT_DELETABLE", "PROVIDER_UNAVAILABLE", "INTERNAL_ERROR",
   "CONTACT_ALREADY_EXISTS",
+  "UNAUTHENTICATED", "INVALID_CREDENTIALS", "AUTH_ALREADY_CONFIGURED", "AUTH_RATE_LIMITED",
 ]);
 export const ApiErrorSchema = z.strictObject({ error: z.strictObject({
   code: ErrorCodeSchema, message: TextSchema, requestId: IdSchema,

@@ -3,10 +3,15 @@ import {
   ApprovalDecisionSchema, CallSnapshotSchema, StoredCallSnapshotSchema, HistoryEntrySchema, IdSchema,
   ReadinessSchema, RequestDraftSchema, ReviewPlanSchema, SettingsSchema, StartCallRequestSchema,
   ContactDetailsSchema, ContactSchema,
+  AuthCredentialsSchema, AuthSetupSchema, AuthSessionSchema,
 } from "./schemas.js";
 
 // All paths are private loopback API routes, never public Twilio callback routes.
 export const api = {
+  authSession: { method: "GET", path: "/api/auth/session", response: AuthSessionSchema },
+  authSetup: { method: "POST", path: "/api/auth/setup", request: AuthSetupSchema, response: AuthSessionSchema },
+  authLogin: { method: "POST", path: "/api/auth/login", request: AuthCredentialsSchema, response: AuthSessionSchema },
+  authLogout: { method: "POST", path: "/api/auth/logout", request: z.strictObject({}), response: z.strictObject({ loggedOut: z.literal(true) }) },
   listContacts: { method: "GET", path: "/api/v1/contacts", response: z.strictObject({ items: z.array(ContactSchema) }) },
   createContact: { method: "POST", path: "/api/v1/contacts", request: ContactDetailsSchema,
     response: z.strictObject({ contact: ContactSchema }) },

@@ -1,3 +1,4 @@
+import { authHeaders } from './fixtures/auth.mjs';
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -20,7 +21,7 @@ function setup(t, mode = "simulator", stream) {
   const config = loadConfig({ CALLMATE_DATA_DIR: directory(t), CALLMATE_MODE: mode, CALLMATE_LOG_LEVEL: stream ? "info" : "silent" });
   const runtime = createRuntime(config, stream);
   t.after(() => runtime.close());
-  return { config, ...runtime };
+  return { config, ...runtime, local: { ...local, ...authHeaders(config.dataDir) } };
 }
 const local = { host: "localhost:3000" };
 
@@ -84,7 +85,7 @@ test("edited or unknown applied migrations block startup", (t) => {
 });
 
 test("private settings API validates shared schemas and preserves stored values on bad input", async (t) => {
-  const { privateApi } = setup(t);
+  const { privateApi, local } = setup(t);
   const get = await privateApi.inject({ url: "/api/v1/settings", headers: local });
   assert.equal(get.statusCode, 200);
   const settings = SettingsSchema.parse(get.json());
@@ -101,7 +102,7 @@ test("private settings API validates shared schemas and preserves stored values 
 });
 
 test("private API rejects foreign Host/Origin, cross-site requests, and simple form commands", async (t) => {
-  const { privateApi } = setup(t);
+  const { privateApi, local } = setup(t);
   for (const headers of [
     { host: "foreign.example:3000" }, { ...local, origin: "https://foreign.example" },
     { ...local, "sec-fetch-site": "cross-site" }, { ...local, origin: "null" },
@@ -142,7 +143,7 @@ test("signed mock progress route is unavailable in production, live mode and fak
 
 test("only simulator mode is ready; live providers remain unavailable", async (t) => {
   for (const mode of ["simulator", "live"]) {
-    const { privateApi } = setup(t, mode);
+    const { privateApi, local } = setup(t, mode);
     assert.equal((await privateApi.inject({ url: "/health", headers: local })).statusCode, 200);
     const response = await privateApi.inject({ url: "/api/v1/readiness", headers: local });
     const readiness = ReadinessSchema.parse(response.json());
@@ -158,7 +159,7 @@ test("only simulator mode is ready; live providers remain unavailable", async (t
 test("logs and unexpected-error responses omit bodies, URLs, credentials, and exception values", async (t) => {
   let logs = "";
   const stream = new Writable({ write(chunk, _encoding, done) { logs += chunk.toString(); done(); } });
-  const { privateApi, close } = setup(t, "simulator", stream);
+  const { privateApi, close, local } = setup(t, "simulator", stream);
   privateApi.get("/test-error", async () => { throw new Error("private-exception-value"); });
   const response = await privateApi.inject({ url: "/test-error?token=private-query-value",
     headers: { ...local, authorization: "Bearer private-header-value", "x-request-id": "private-request-id" } });

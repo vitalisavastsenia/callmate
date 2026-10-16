@@ -486,7 +486,7 @@ export class DevelopmentConversations {
 
 export function mountDevelopmentConsole(app: FastifyInstance, conversations: DevelopmentConversations) {
   const files: Record<string, [string, string]> = { "/": ["index.html", "text/html"],
-    "/console/app.js": ["app.js", "text/javascript"], "/console/styles.css": ["styles.css", "text/css"] };
+    "/console/app.js": ["app.js", "text/javascript"], "/console/auth.js": ["auth.js", "text/javascript"], "/console/styles.css": ["styles.css", "text/css"] };
   for (const [route, [file, contentType]] of Object.entries(files)) app.get(route, async (_request, reply) => {
     reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'")
       .header("Referrer-Policy", "no-referrer").type(contentType);

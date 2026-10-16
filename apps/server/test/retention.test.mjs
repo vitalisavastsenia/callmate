@@ -1,3 +1,4 @@
+import { authHeaders } from './fixtures/auth.mjs';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -38,7 +39,7 @@ function setup(t, retentionOptions = {}) {
     async http(method, url, payload, key) {
       const port = runtime.privateApi.server.address()?.port ?? 0;
       const result = await runtime.privateApi.inject({ method, url,
-        headers: { host: `localhost:${port}`, ...(key ? { 'idempotency-key': key } : {}) }, ...(payload === undefined ? {} : { payload }) });
+        headers: { host: `localhost:${port}`, ...authHeaders(dataDir), ...(key ? { 'idempotency-key': key } : {}) }, ...(payload === undefined ? {} : { payload }) });
       return { status: result.statusCode, data: result.json() };
     },
   };
@@ -84,7 +85,7 @@ function seed(app, { days = 30, manual = false, active = false, uncertain = fals
 async function stream(app, id, cursor) {
   const port = app.runtime.privateApi.server.address().port;
   const response = await fetch(`http://127.0.0.1:${port}/api/v1/calls/${id}/events`, {
-    headers: { 'Last-Event-ID': String(cursor) }, signal: AbortSignal.timeout(5000),
+    headers: { ...authHeaders(app.dataDir), 'Last-Event-ID': String(cursor) }, signal: AbortSignal.timeout(5000),
   });
   const reader = response.body.getReader(); let buffer = '';
   const decoder = new TextDecoder();

@@ -8,8 +8,8 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   use: { baseURL: 'http://127.0.0.1:5174', trace: 'retain-on-failure', screenshot: 'only-on-failure', channel: process.env.PLAYWRIGHT_CHANNEL || 'chrome' },
   projects: [
-    { name: 'desktop', testMatch: ['**/workflow.spec.ts', '**/contacts.spec.ts', '**/history.spec.ts'], use: { ...devices['Desktop Chrome'] } },
-    { name: 'narrow', testMatch: ['**/workflow.spec.ts', '**/contacts.spec.ts', '**/history.spec.ts'], use: { viewport: { width: 390, height: 844 }, isMobile: false } },
+    { name: 'desktop', testMatch: ['**/auth.spec.ts', '**/workflow.spec.ts', '**/contacts.spec.ts', '**/history.spec.ts'], use: { ...devices['Desktop Chrome'] } },
+    { name: 'narrow', testMatch: ['**/auth.spec.ts', '**/workflow.spec.ts', '**/contacts.spec.ts', '**/history.spec.ts'], use: { viewport: { width: 390, height: 844 }, isMobile: false } },
     { name: 'http-sse', testMatch: '**/reconnect.spec.ts', use: { ...devices['Desktop Chrome'], baseURL: 'http://127.0.0.1:5175' } },
   ],
   webServer: [{

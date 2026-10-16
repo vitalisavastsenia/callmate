@@ -1,3 +1,4 @@
+import { authHeaders } from './fixtures/auth.mjs';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -33,8 +34,9 @@ async function fixture(t, env = {}, health = {}) {
     await runtime.close(); server.closeAllConnections(); await new Promise((resolve) => server.close(resolve));
     rmSync(dataDir, { recursive: true, force: true });
   });
+  const auth = authHeaders(dataDir);
   return { runtime, config, dataDir, requests, health, get logs() { return logs; }, async report() {
-    const response = await runtime.privateApi.inject({ url: '/api/v1/readiness', headers: { host: 'localhost:3000' } });
+    const response = await runtime.privateApi.inject({ url: '/api/v1/readiness', headers: { host: 'localhost:3000', ...auth } });
     assert.equal(response.statusCode, 200); assert.equal(response.headers['cache-control'], 'no-store');
     return ReadinessSchema.parse(response.json());
   } };

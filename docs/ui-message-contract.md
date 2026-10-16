@@ -21,6 +21,24 @@ Use HTTP JSON for commands and snapshots, and server-sent events (SSE) for ongoi
 | Privacy | Never send credentials, provider payloads, stack traces, or unapproved contact data. Error text must not echo sensitive request content. |
 | Compatibility | Parse messages using the shared schemas. Unknown event type/version or invalid payload requires resynchronization and an incompatibility indicator if it persists; do not guess a meaning. |
 
+### Owner authentication
+
+Before mounting the application, request `GET /api/auth/session`. A fresh installation returns:
+
+```json
+{ "setupRequired": true, "authenticated": false, "username": null, "expiresAt": null }
+```
+
+Show owner setup for that state, otherwise show sign-in when `authenticated` is false. Submit `{ "username": "owner", "password": "<user-entered-password>" }` to `/api/auth/setup` or `/api/auth/login` as JSON. Successful responses set the HttpOnly session cookie and return:
+
+```json
+{ "setupRequired": false, "authenticated": true, "username": "owner", "expiresAt": "2026-10-17T08:00:00.000Z" }
+```
+
+Mount the app only after this response. Credentials must never enter URL parameters, local storage, logs, or call messages. REST and fetch-based SSE send same-origin cookies. `401 UNAUTHENTICATED` on a private API unmounts the app and shows login; it never triggers Start, redial, or a simulator fallback. `401 INVALID_CREDENTIALS` keeps the login form with a generic error, `409 AUTH_ALREADY_CONFIGURED` means use login, and `429 AUTH_RATE_LIMITED` asks the user to wait five minutes. Connection errors show Retry on the locked login screen.
+
+`POST /api/auth/logout` with `{}` revokes the current session and returns `{ "loggedOut": true }`; clear displayed private data by unmounting the app. Existing SSE streams close on logout/expiry. If logout fails, show an error and keep the session state until the server confirms. Recheck sessions on window focus, every minute, and at the returned absolute expiry. There is no public password reset or additional-user registration flow; [local recovery](docker-development.md#16-owner-login-and-sessions) preserves application data.
+
 ## 2. HTTP exchanges
 
 The [complete API reference](interfaces.md#4-private-http-api) defines all fields and errors. These are the main UI interactions; paths below include `/api/v1`.

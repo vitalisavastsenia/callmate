@@ -50,12 +50,15 @@ async function httpError(response: Response, url: string): Promise<ApiError> {
 }
 async function checkedFetch(url: string, init: RequestInit): Promise<Response> {
   let response: Response;
-  try { response = await fetch(url, init); }
+  try { response = await fetch(url, { ...init, credentials: 'same-origin' }); }
   catch (error) {
     // Unsubscribing from SSE deliberately aborts its fetch; it is not a backend failure.
     if (init.signal?.aborted && init.signal.reason?.name === 'AbortError') throw error;
     logFailure(url, null);
     throw new ApiError(BACKEND_UNREACHABLE_MESSAGE, 'BACKEND_UNREACHABLE');
+  }
+  if (response.status === 401 && typeof window !== 'undefined' && !url.startsWith(apiUrl('/api/auth/'))) {
+    window.dispatchEvent(new Event('callmate:unauthorized'));
   }
   if (!response.ok) throw await httpError(response, url);
   return response;
@@ -85,6 +88,13 @@ export async function request<T>(method: string, path: string, schema: Schema<T>
   }
 }
 const attemptPath = (path: string, id: string) => path.replace(':attemptId', encodeURIComponent(id));
+// Authentication always uses the backend, including when calls use the browser simulator.
+export const getSession = () => request(api.authSession.method, api.authSession.path, api.authSession.response);
+export const signIn = (username: string, password: string, setup = false) => {
+  const route = setup ? api.authSetup : api.authLogin;
+  return request(route.method, route.path, route.response, { username, password });
+};
+export const signOut = () => request(api.authLogout.method, api.authLogout.path, api.authLogout.response, {});
 export async function getReadiness() {
   return isMockMode ? mock.mockReadiness() : request(api.readiness.method, api.readiness.path, api.readiness.response);
 }

@@ -1,3 +1,4 @@
+import { authHeaders } from './fixtures/auth.mjs';
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -20,6 +21,7 @@ function setup(t, scenario = "within_plan", extra = {}) {
   const config = loadConfig({ CALLMATE_DATA_DIR: dataDir, CALLMATE_LOG_LEVEL: "silent",
     CALLMATE_SIMULATOR_SCENARIO: scenario, CALLMATE_SIMULATOR_STEP_MS: "50",
     CALLMATE_SIMULATOR_APPROVAL_SECONDS: "1", ...extra.env });
+  const local = { host: "localhost:3000", ...authHeaders(dataDir) };
   const options = { automatic: false, now: () => clock.ms, ...extra.options };
   let runtime = createRuntime(config, undefined, options, undefined, { now: () => clock.ms });
   t.after(() => runtime.close());
@@ -341,7 +343,7 @@ async function eventStream(app, id, cursor) {
   }
   const port = app.runtime.privateApi.server.address().port;
   const response = await fetch(`http://127.0.0.1:${port}/api/v1/calls/${id}/events`, {
-    headers: cursor === undefined ? {} : { "Last-Event-ID": String(cursor) }, signal: AbortSignal.timeout(5000),
+    headers: { ...authHeaders(app.dataDir), ...(cursor === undefined ? {} : { "Last-Event-ID": String(cursor) }) }, signal: AbortSignal.timeout(5000),
   });
   const reader = response.body.getReader();
   let buffer = "";
@@ -402,7 +404,7 @@ test("SSE resets missing replay ranges, publishes deletion, and rejects malforme
   const port = app.runtime.privateApi.server.address().port;
   const base = `http://127.0.0.1:${port}/api/v1/calls/${call.id}/events`;
   for (const cursor of ["invalid", "-1", "1.5", "9007199254740992"]) {
-    const response = await fetch(base, { headers: { "Last-Event-ID": cursor } });
+    const response = await fetch(base, { headers: { ...authHeaders(app.dataDir), "Last-Event-ID": cursor } });
     assert.equal(response.status, 400);
     assert.equal((await response.json()).error.code, "EVENT_CURSOR_INVALID");
   }
