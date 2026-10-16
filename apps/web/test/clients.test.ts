@@ -183,3 +183,15 @@ describe('robust backend responses', () => {
     expect(console.error).not.toHaveBeenCalled();
   });
 });
+
+it('distinguishes a validated pre-attempt Start rejection from ambiguous failures', async () => {
+  vi.stubEnv('VITE_MOCK', 'false');
+  const api = await import('../src/api');
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ error: { code: 'PROVIDER_NOT_READY', message: 'Dialogue unavailable.', requestId: crypto.randomUUID(), details: [] } }, { status: 503 })));
+  const rejection = await api.startCall(reviewPlanFixture, 'simulator', 'start-key', 'within_plan').catch(error => error);
+  expect(api.isDefinitiveStartRejection(rejection)).toBe(true);
+  expect(api.isDefinitiveStartRejection(new api.ApiError('Proxy unavailable', 'HTTP_ERROR', [], 503))).toBe(false);
+  expect(api.isDefinitiveStartRejection(new api.ApiError('Already active', 'CALL_ALREADY_ACTIVE', [], 409))).toBe(false);
+  expect(api.isDefinitiveStartRejection(new api.ApiError('Session expired', 'UNAUTHENTICATED', [], 401))).toBe(false);
+  expect(api.isDefinitiveStartRejection(new api.ApiError('Lost response', 'BACKEND_UNREACHABLE'))).toBe(false);
+});

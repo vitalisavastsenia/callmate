@@ -128,7 +128,7 @@ test('the Home header omits the mode badge without starting a call', async ({ pa
   await page.getByLabel('Name', { exact: true }).fill('My clinic');
   await page.getByLabel('Phone number', { exact: true }).fill('612 345 678');
   await page.getByRole('button', { name: 'Prepare the plan', exact: true }).click();
-  await expect(page.getByText("Couldn't understand everything — fill in the details", { exact: true })).toBeVisible();
+  // Backend mode opens manual review; natural-language suggestions are browser-only.
   await expect(page.getByRole('button', { name: 'Request', exact: true })).toHaveAttribute('aria-current', 'page');
   await expect(page.getByLabel('Goal', { exact: true })).toHaveValue('Call my clinic and ask about documents.');
   expect(starts).toBe(0);
@@ -227,4 +227,21 @@ test('an unreachable backend after a lost Start keeps Simulator switching locked
   await expect(page.getByRole('button', { name: 'Switch to Simulator', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Check original Start request', exact: true })).toBeEnabled();
   expect(await page.evaluate(() => !!localStorage.getItem('zeus-llama.pending-start.v1'))).toBe(true);
+});
+
+test('a definitive Start rejection unlocks editing and is not restored as a lost response', async ({ page }) => {
+  await page.route('**/api/v1/calls', route => route.fulfill({ status: 503, json: { error: { code: 'PROVIDER_NOT_READY', message: 'Dialogue is unavailable.', requestId: crypto.randomUUID(), details: [] } } }));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Book a haircut', exact: true }).click();
+  await page.getByRole('button', { name: 'Prepare the plan', exact: true }).click();
+  await page.getByLabel('Approved name', { exact: true }).fill('Alex');
+  await page.getByRole('button', { name: 'Review call plan', exact: true }).click();
+  await page.getByRole('button', { name: 'Call', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('Dialogue is unavailable');
+  await expect(page.getByLabel('Approved name', { exact: true })).toBeEnabled();
+  expect(await page.evaluate(() => localStorage.getItem('zeus-llama.pending-start.v1'))).toBeNull();
+  await expect(page.getByRole('button', { name: 'Check original Start request', exact: true })).toHaveCount(0);
+  await page.reload();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Simulator', exact: true })).toBeEnabled();
 });

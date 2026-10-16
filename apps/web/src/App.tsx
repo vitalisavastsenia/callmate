@@ -88,7 +88,18 @@ export default function App() {
     finally { inFlight.current = false; setBusy(false); }
   }
   async function executeStart(command: PendingStart) {
-    const next = await api.startCall(command.plan, command.mode, command.key, command.scenario);
+    let next: CallSnapshot;
+    try { next = await api.startCall(command.plan, command.mode, command.key, command.scenario); }
+    catch (error) {
+      setCallWindowOpen(false);
+      if (api.isDefinitiveStartRejection(error)) {
+        localStorage.removeItem(pendingKey); startCommand.current = null; setPending(null);
+        setPage('request'); setNotice('The server rejected Start before creating an attempt. Review your request or settings before trying again.');
+      } else {
+        setPage('home'); setNotice('The Start response is unknown. Check the original request below; do not start another attempt.');
+      }
+      throw error;
+    }
     acceptSnapshot(next); setShowCall(true); setPage('home');
     localStorage.removeItem(pendingKey); startCommand.current = null; setPending(null);
   }
@@ -193,7 +204,7 @@ export default function App() {
     if (localStorage.getItem(pendingKey) || readActiveAttempt()) { setNotice('Another tab saved a call request. Restore it before starting again.'); return; }
     const command: PendingStart = { transport: simulator ? 'browser' : 'backend', plan: saved, mode: readiness!.mode, key: crypto.randomUUID(), scenario: (request.requestType ?? 'book') !== 'book' && !['uncertain', 'no_answer', 'interrupted'].includes(scenario) ? 'within_plan' : scenario };
     startCommand.current = command; setPending(command); localStorage.setItem(pendingKey, JSON.stringify(command));
-    try { await executeStart(command); } catch (e) { setCallWindowOpen(false); setPage('home'); setNotice('The Start response is unknown. Check the original request below; do not start another attempt.'); throw e; }
+    await executeStart(command);
   }
   const homeOutcome = showCall ? call?.outcome.status : undefined;
   useEffect(() => {

@@ -25,7 +25,14 @@ export function setMockMode(value: boolean) {
 }
 type Schema<T> = { parse: (value: unknown) => T };
 export class ApiError extends Error {
-  constructor(message: string, readonly code: string, readonly details: { path: string; message: string }[] = []) { super(message); }
+  constructor(message: string, readonly code: string, readonly details: { path: string; message: string }[] = [], readonly status?: number) { super(message); }
+}
+// These Start errors are emitted before an attempt is reserved, after command replay.
+// Unknown failures and conflicting/active commands still require reconciliation.
+export function isDefinitiveStartRejection(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return false;
+  const statuses: Record<string, number> = { INVALID_REQUEST: 400, NOT_FOUND: 404, PLAN_VERSION_MISMATCH: 409, MODE_MISMATCH: 409, PROVIDER_NOT_READY: 503 };
+  return error.status !== undefined && statuses[error.code] === error.status;
 }
 function logFailure(url: string, status: number | null) {
   console.error('[Zeus API] Request failed:', url, 'status:', status ?? 'unavailable (network error)');
@@ -43,7 +50,7 @@ async function httpError(response: Response, url: string): Promise<ApiError> {
   let data: unknown = null;
   try { data = parseBody(response, text); } catch { /* A malformed error body must not hide its HTTP status. */ }
   const parsed = ApiErrorSchema.safeParse(data);
-  if (parsed.success) return new ApiError(parsed.data.error.message + ` (HTTP ${response.status}).`, parsed.data.error.code, parsed.data.error.details);
+  if (parsed.success) return new ApiError(parsed.data.error.message + ` (HTTP ${response.status}).`, parsed.data.error.code, parsed.data.error.details, response.status);
   if (!isMockMode && ([502, 503, 504].includes(response.status) || (response.status === 500 && !text.trim()))) {
     return new ApiError(BACKEND_UNREACHABLE_MESSAGE + ` (HTTP ${response.status}).`, 'BACKEND_UNREACHABLE');
   }
