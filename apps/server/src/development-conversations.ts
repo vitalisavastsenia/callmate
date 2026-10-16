@@ -1,5 +1,6 @@
 import { DialogueLanguageSchema } from "@callmate/contracts";
 import { LlmAgent } from "./llm-agent.js";
+import { requireMockCallEngine } from "./call-engine.js";
 import { dialogueLanguage } from "@callmate/dialogue";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -276,6 +277,7 @@ export class DevelopmentConversations {
   async startDialogue(request: z.infer<typeof import("@callmate/contracts").StartCallRequestSchema>, key: string, validate: (plan: ReviewPlan) => void) {
     const replay = this.replayDialogueStart(request, key);
     if (replay) return replay;
+    requireMockCallEngine(this.store);
     this.enabled();
     if (!this.dialogueEnabled) throw new CommandError(503, "PROVIDER_NOT_READY", "Configure a dialogue engine before starting reviewed mock calls");
     const selection = this.agent.version();
@@ -284,6 +286,7 @@ export class DevelopmentConversations {
     // Its durable result wins even if this probe failed or the configuration changed.
     const afterProbe = this.replayDialogueStart(request, key);
     if (afterProbe) return afterProbe;
+    requireMockCallEngine(this.store);
     if (!loginReady || selection !== this.agent.version()) throw new CommandError(503, "PROVIDER_NOT_READY", "LLM agent is not ready or changed during preflight. Check Settings and retry with the original command key");
     const plan = this.store.calls.plan(request.planId);
     if (!plan) throw new CommandError(404, "NOT_FOUND", "Review plan not found");
@@ -320,6 +323,7 @@ export class DevelopmentConversations {
         return this.require(command.attemptId);
       }
       if (this.store.calls.get(input.requestId)) throw new CommandError(409, "IDEMPOTENCY_CONFLICT", "This ID already identifies another call");
+      requireMockCallEngine(this.store);
       if (this.store.calls.active()) throw new CommandError(409, "CALL_ALREADY_ACTIVE", "Another call is still active");
       const now = this.timestamp();
       const limits = this.store.getSettings().defaultCallLimits;

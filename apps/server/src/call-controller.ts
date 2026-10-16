@@ -3,6 +3,7 @@ import type { DevelopmentConversations } from "./development-conversations.js";
 import type { Store } from "./storage.js";
 import { isMockAttempt } from "./call-store.js";
 import { CommandError } from "./errors.js";
+import { requireMockCallEngine } from "./call-engine.js";
 
 /** One public lifecycle API over scripted booking and manual mock transports. */
 export class CallController {
@@ -15,6 +16,7 @@ export class CallController {
   createPlan: Simulator["createPlan"] = (request) => this.simulator.createPlan(request);
   start = async (request: Parameters<Simulator["start"]>[0], key: string) => {
     const command = this.store.calls.command(key);
+    if (!command) requireMockCallEngine(this.store);
     // Replay the original transport; a new mock call must never become scripted success.
     if (command?.endpoint === "start" || (!this.manual.mockTransportEnabled && command?.endpoint !== "dialogue-start")) return this.simulator.start(request, key);
     return this.manual.startDialogue(request, key, plan => this.simulator.validatePlan(plan));

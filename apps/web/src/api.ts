@@ -104,6 +104,9 @@ export const signIn = (username: string, password: string, setup = false) => {
   return request(route.method, route.path, route.response, { username, password });
 };
 export const signOut = () => request(api.authLogout.method, api.authLogout.path, api.authLogout.response, {});
+export const getCallEngine = () => request(api.getCallEngine.method, api.getCallEngine.path, api.getCallEngine.response);
+export const updateCallEngine = (engine: import('@callmate/contracts').CallEngine) =>
+  request(api.updateCallEngine.method, api.updateCallEngine.path, api.updateCallEngine.response, api.updateCallEngine.request.parse({ engine }));
 // LLM configuration and credentials always belong to the authenticated server.
 export const getLlmSettings = () => request(api.getLlmSettings.method, api.getLlmSettings.path, api.getLlmSettings.response);
 export const updateLlmSettings = (value: import('@callmate/contracts').UpdateLlmSettings) =>

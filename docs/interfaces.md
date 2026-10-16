@@ -70,6 +70,8 @@ All routes below use the loopback UI/API listener. They are never mounted on the
 | `DELETE /api/v1/calls/:attemptId/conversation` | None | `200 { attemptId, deleted: true }`; removes local transcript/translation/event text, preserving booking metadata. |
 | `DELETE /api/v1/calls/:attemptId/agreement` | None | `200 { call: CallSnapshot }` with `agreementDeletedAt`; removes the entry from Agreements, preserving the source call. |
 | `GET /api/v1/settings` | None | `200 SettingsSchema`. |
+| `GET /api/v1/settings/call-engine` | None | `200 CallEngineSettingsSchema`: `engine` (`mock` or `twilio`) and `editable`. |
+| `PUT /api/v1/settings/call-engine` | `UpdateCallEngineSchema`: `{ engine }` | `200 CallEngineSettingsSchema`; `409 CALL_ALREADY_ACTIVE` while a call holds the reservation. Twilio is an unimplemented selection and makes new Backend Starts return `503 PROVIDER_NOT_READY`. |
 | `PUT /api/v1/settings` | `SettingsSchema` | `200 SettingsSchema`; affects future plans, never mutates an active approved plan. |
 | `GET /api/v1/contacts` | None | `200 { items: Contact[] }`; shared backend address book in either call mode. |
 | `POST /api/v1/contacts` | `ContactDetailsSchema` | `201 { contact: Contact }`. |

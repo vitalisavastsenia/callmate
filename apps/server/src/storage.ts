@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
-import { SettingsSchema } from "@callmate/contracts";
+import { SettingsSchema, CallEngineSchema, type CallEngine } from "@callmate/contracts";
 import type { z } from "zod";
 import { callStore } from "./call-store.js";
 import { contactStore } from "./contacts.js";
@@ -92,6 +92,18 @@ export function openStore(dataDir: string) {
         },
       },
       getSettings,
+      getCallEngine(): CallEngine {
+        const row = db.prepare("SELECT engine FROM call_engine_settings WHERE id = 1").get() as { engine: string } | undefined;
+        return CallEngineSchema.parse(row?.engine);
+      },
+      setCallEngine(engine: CallEngine) {
+        const value = CallEngineSchema.parse(engine);
+        db.transaction(() => {
+          if (db.prepare("SELECT 1 FROM call_attempts WHERE active = 1 LIMIT 1").get())
+            throw new CommandError(409, "CALL_ALREADY_ACTIVE", "Finish the active call before changing the call engine");
+          db.prepare("UPDATE call_engine_settings SET engine = ? WHERE id = 1").run(value);
+        }).immediate();
+      },
       setSettings(input: unknown): Settings {
         const settings = SettingsSchema.parse(input);
         db.prepare("UPDATE app_settings SET value = ?, updated_at = ? WHERE id = 1")
@@ -105,6 +117,7 @@ export function openStore(dataDir: string) {
         db.prepare("SELECT id FROM contacts LIMIT 1").get();
         db.prepare("SELECT id FROM llm_settings LIMIT 1").get();
         db.prepare("SELECT provider FROM llm_credentials LIMIT 1").get();
+        db.prepare("SELECT id FROM call_engine_settings LIMIT 1").get();
       },
       close() { if (db.open) db.close(); },
     };

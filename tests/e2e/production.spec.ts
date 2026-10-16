@@ -66,3 +66,28 @@ test('LLM Settings persist model and effort while API keys stay write-only and c
   await expect(page.getByText('LLM agent saved. Settings apply to the next Backend call.')).toBeVisible();
   expect(failures).toEqual([]);
 });
+
+test('Call engine Settings persist Twilio as unavailable and restore Mock service without a call', async ({ page }) => {
+  const failures: string[] = []; let starts = 0;
+  page.on('pageerror', error => failures.push(error.message));
+  page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/v1/calls') starts++; });
+  await page.goto('/'); await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('button', { name: 'Backend', exact: true }).click();
+  const engine = page.getByRole('combobox', { name: 'Call engine', exact: true });
+  await expect(engine).toHaveValue('mock'); await engine.selectOption('twilio');
+  await expect(page.getByText('Twilio integration is not implemented yet. Backend calls are unavailable while Twilio is selected.')).toBeVisible();
+  await page.getByRole('button', { name: 'Save call engine', exact: true }).click();
+  await expect(page.getByText('Call engine saved.', { exact: true })).toBeVisible();
+  await expect.poll(async () => (await (await page.request.get('/api/v1/readiness')).json()).ready).toBe(false);
+  await page.reload(); await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await expect(engine).toHaveValue('twilio');
+  await page.screenshot({ path: test.info().outputPath('call-engine-twilio-unavailable.png'), fullPage: true });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.getByRole('button', { name: 'Home', exact: true }).click();
+  await expect(page.getByText('Twilio integration is not implemented yet. Backend calls are unavailable while Twilio is selected.')).toBeVisible();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await engine.selectOption('mock'); await page.getByRole('button', { name: 'Save call engine', exact: true }).click();
+  await expect(page.getByText('Call engine saved.', { exact: true })).toBeVisible();
+  await expect.poll(async () => (await (await page.request.get('/api/v1/readiness')).json()).ready).toBe(true);
+  expect(starts).toBe(0); expect(failures).toEqual([]);
+});

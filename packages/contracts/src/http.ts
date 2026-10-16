@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { LlmSettingsSchema, UpdateLlmSettingsSchema } from "./llm.js";
+import { CallEngineSettingsSchema, UpdateCallEngineSchema } from "./call-engine.js";
 import {
   ApprovalDecisionSchema, ConversationDecisionSchema, CallSnapshotSchema, StoredCallSnapshotSchema, HistoryEntrySchema, IdSchema,
   ReadinessSchema, RequestDraftSchema, ReviewPlanSchema, SettingsSchema, StartCallRequestSchema,
@@ -43,6 +44,8 @@ export const api = {
   deleteAgreement: { method: "DELETE", path: "/api/v1/calls/:attemptId/agreement",
     response: z.strictObject({ call: CallSnapshotSchema.refine(call => !!call.agreementDeletedAt, "Deletion must include its persisted timestamp") }) },
   getSettings: { method: "GET", path: "/api/v1/settings", response: SettingsSchema },
+  getCallEngine: { method: "GET", path: "/api/v1/settings/call-engine", response: CallEngineSettingsSchema },
+  updateCallEngine: { method: "PUT", path: "/api/v1/settings/call-engine", request: UpdateCallEngineSchema, response: CallEngineSettingsSchema },
   getLlmSettings: { method: "GET", path: "/api/v1/settings/llm", response: LlmSettingsSchema },
   updateLlmSettings: { method: "PUT", path: "/api/v1/settings/llm", request: UpdateLlmSettingsSchema, response: LlmSettingsSchema },
   updateSettings: { method: "PUT", path: "/api/v1/settings", request: SettingsSchema, response: SettingsSchema },

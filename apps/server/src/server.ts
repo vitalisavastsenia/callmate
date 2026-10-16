@@ -23,6 +23,7 @@ import { contactRoutes } from "./contacts.js";
 import { mountAuth } from "./auth.js";
 import { mountWebApp } from "./web-app.js";
 import type { LlmAgent } from "./llm-agent.js";
+import { callEngineSettings } from "./call-engine.js";
 
 type ErrorCode = z.infer<typeof ApiErrorSchema>["error"]["code"];
 function fail(reply: FastifyReply, request: FastifyRequest, status: number, code: ErrorCode, message: string,
@@ -95,6 +96,11 @@ function privateRoutes(app: FastifyInstance, config: Config, store: Store, contr
   const readiness = new Readiness(config, store, dialogueEnabled, agent);
   app.get(api.readiness.path, async () => readiness.report());
   app.get(api.getSettings.path, async () => SettingsSchema.parse(store.getSettings()));
+  app.get(api.getCallEngine.path, async () => callEngineSettings(store));
+  app.put(api.updateCallEngine.path, async request => {
+    store.setCallEngine(parseRequest(api.updateCallEngine.request, request.body).engine);
+    return callEngineSettings(store);
+  });
   app.get(api.getLlmSettings.path, async () => api.getLlmSettings.response.parse(agent.settings()));
   app.put(api.updateLlmSettings.path, async request => api.updateLlmSettings.response.parse(
     agent.update(parseRequest(api.updateLlmSettings.request, request.body))));

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { SettingsSchema, TimeZoneSchema, scenarios, type Readiness, type Scenario, type Settings } from '../types';
 import type { RequestDefaults } from '../preferences';
 import LlmAgentSettings from './LlmAgentSettings';
+import CallEngineSettings from './CallEngineSettings';
 
 interface Props {
   readiness: Readiness | null; settings: Settings; defaults: RequestDefaults; busy: boolean;
@@ -17,6 +18,7 @@ export default function SettingsView({ readiness, settings, defaults, busy, simu
       <button type="button" className="secondary template-chip" aria-pressed={!simulator} onClick={() => onModeChange(false)}>Backend</button>
     </div><p className="mt-3 text-base text-stone-300">{modeLocked ? 'Finish or resolve the current call attempt before switching modes.' : simulator ? 'Scripted calls on this device. No number is dialed.' : readiness?.capabilities.some(c => c.name === 'mock_relay' && c.enabled) ? readiness.capabilities.some(c => c.name === 'dialogue_integration' && c.ready) ? 'Local mock conversations use the configured dialogue engine. Answer at localhost:8080. No real number is dialed.' : 'Reviewed mock calls are unavailable until a dialogue engine is ready. Check Provider readiness below.' : 'Backend scripted simulation. No number is dialed and results are synthetic.'}</p></fieldset>
     {simulator && <label className="mb-6">Simulated outcome<select aria-label="Simulated outcome" disabled={modeLocked || busy} value={scenario} onChange={e => onScenarioChange(e.target.value as Scenario)}>{Object.entries(scenarios).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
+    <CallEngineSettings locked={modeLocked || busy} onSaved={onRefresh} />
     {error && <p role="alert" className="notice error">{error}</p>}
     <form noValidate onSubmit={e => {
       e.preventDefault(); const data = new FormData(e.currentTarget);

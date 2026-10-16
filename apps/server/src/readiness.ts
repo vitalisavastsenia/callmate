@@ -1,4 +1,4 @@
-import { ReadinessSchema } from "@callmate/contracts";
+import { ReadinessSchema, TWILIO_NOT_IMPLEMENTED } from "@callmate/contracts";
 import type { z } from "zod";
 import type { Config } from "./config.js";
 import { configurationValid } from "./config.js";
@@ -31,8 +31,12 @@ export class Readiness {
     let storage = false;
     try { this.store.check(); storage = true; } catch { /* Report only safe allowlisted messages. */ }
     let configuration = configurationValid(this.config) && agentValid;
+    let mockSelected = false, twilioSelected = false;
     if (storage) {
-      try { this.store.getSettings(); } catch { configuration = false; }
+      try {
+        this.store.getSettings();
+        const engine = this.store.getCallEngine(); mockSelected = engine === "mock"; twilioSelected = engine === "twilio";
+      } catch { configuration = false; }
     }
     checks.push({ name: "storage", status: storage ? "ready" : "failed",
       message: storage ? "SQLite application tables are readable" : "SQLite application storage is unavailable" });
@@ -41,20 +45,20 @@ export class Readiness {
         : "Server configuration or stored settings could not be validated" });
     const base = configuration && storage;
     const simulator = this.config.mode === "simulator";
-    const mockEnabled = mockRelayEnabled(this.config);
-    const callTransport = simulator && (mockEnabled || this.config.telephonyProvider === "fake");
+    const mockEnabled = mockSelected && mockRelayEnabled(this.config);
+    const callTransport = mockSelected && simulator && (mockEnabled || this.config.telephonyProvider === "fake");
     const mock = mockEnabled && base ? await this.mockAvailable() : false;
     checks.push({ name: "mock", status: !mockEnabled ? "not_required" : mock ? "ready" : "failed",
       message: !mockEnabled ? "Manual mock transport is disabled; no connectivity probe sent"
         : !base ? "Mock connectivity was not checked because local prerequisites failed"
         : mock ? "Local mock health endpoint responded with the expected service identity"
         : "Local mock health check failed or timed out" });
-    checks.push({ name: "telephony", status: !simulator ? "missing" : callTransport ? "ready" : "failed",
-      message: !simulator ? "Live telephony is not implemented" : !callTransport
+    checks.push({ name: "telephony", status: twilioSelected || !simulator ? "missing" : callTransport ? "ready" : "failed",
+      message: twilioSelected ? TWILIO_NOT_IMPLEMENTED : !simulator ? "Live telephony is not implemented" : !callTransport
         ? "The configured mock transport is disabled outside development/test; select fake telephony for scripted production simulation"
         : mockEnabled ? "Local mock telephony is enabled; real calling is disabled" : "Scripted fake telephony is installed; real calling is disabled" });
-    checks.push({ name: "voice", status: !simulator ? "missing" : !mockEnabled ? "not_required" : mock && base ? "ready" : "failed",
-      message: !simulator ? "Live voice is not implemented" : !mockEnabled ? "Scripted text playback needs no voice provider"
+    checks.push({ name: "voice", status: twilioSelected || !simulator ? "missing" : !mockEnabled ? "not_required" : mock && base ? "ready" : "failed",
+      message: twilioSelected ? "Twilio voice integration is not implemented" : !simulator ? "Live voice is not implemented" : !mockEnabled ? "Scripted text playback needs no voice provider"
         : "Local mock relay handler is enabled; callback and WebSocket round trips have not been probed" });
     const dialogueReady = dialogueEnabled && base && (this.agent && provider !== "disabled" ? await this.agent.ready() : provider !== "codex" || await codexLoginReady());
     checks.push({ name: "dialogue", status: dialogueEnabled ? dialogueReady ? "ready" : "failed" : mockEnabled || !simulator ? "missing" : "ready",
@@ -68,13 +72,13 @@ export class Readiness {
     checks.push({ name: "tunnel", status: simulator ? "not_required" : "missing",
       message: simulator ? "Local development needs no public tunnel" : "Public tunnel connectivity has not been verified" });
     const capability = (name: Capability["name"], enabled: boolean, available = base): Capability => ({ name, enabled, ready: enabled && available });
-    return ReadinessSchema.parse({ mode: this.config.mode, ready: base && callTransport && (!mockEnabled || mock), voiceEngine: dialogueEnabled ? "conversation_relay" : null,
+    return ReadinessSchema.parse({ mode: this.config.mode, ready: base && callTransport && (!mockEnabled || mock), voiceEngine: mockSelected && dialogueEnabled ? "conversation_relay" : null,
       checks, capabilities: [
-        capability("scripted_calls", simulator && this.config.telephonyProvider === "fake" && !dialogueEnabled), capability("manual_mock_calls", mockEnabled, base && mock),
+        capability("scripted_calls", mockSelected && simulator && this.config.telephonyProvider === "fake" && !dialogueEnabled), capability("manual_mock_calls", mockEnabled, base && mock),
         capability("mock_relay", mockEnabled, base && mock), capability("mock_status_callbacks", mockEnabled, base && mock),
         capability("history", true), capability("approvals", callTransport), capability("automatic_retention", true),
         capability("test_rate_budgets", callTransport && this.config.testRateMinorPerMinute !== undefined),
-        capability("live_calls", false), capability("dialogue_integration", dialogueEnabled, dialogueReady && mock), capability("provider_billing", false),
+        capability("live_calls", false), capability("dialogue_integration", mockSelected && dialogueEnabled, dialogueReady && mock), capability("provider_billing", false),
       ] });
   }
 }
