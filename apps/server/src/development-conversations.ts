@@ -290,7 +290,17 @@ export class DevelopmentConversations {
     await this.start({ requestId: key, initialMessage: this.dialogue.greeting(plan), language: dialogueLanguage(plan) }, plan, JSON.stringify(request));
     return this.snapshot(key) as CallSnapshot;
   }
-  decide(id: string, decision: ApprovalDecision, key: string) { return this.dialogue.decide(id, decision, key); }
+  decide(id: string, decision: ApprovalDecision, key: string) {
+    const call = this.dialogue.decide(id, decision, key);
+    if (decision.decision === "reject" && !terminal(call)) {
+      // The persisted rejection cannot leave a connected but silent call behind.
+      // Request hangup even if the provider ignores the relay end frame. Replays retry
+      // hangup without repeating closing speech or releasing an unconfirmed call.
+      this.requestStop(id, "user_stopped");
+      void this.end(id).catch(() => {});
+    }
+    return CallSnapshotSchema.parse(this.snapshot(id));
+  }
   async start(raw: unknown, plan?: ReviewPlan, commandBody?: string) {
     const pending = this.startInternal(raw, plan, commandBody); this.pending.add(pending);
     try { return await pending; } finally { this.pending.delete(pending); }

@@ -340,6 +340,10 @@ export class RelayDialogue {
         offerId: approval.offer.id, offerVersion: approval.offer.version, expiresAt: approval.expiresAt } satisfies ExactOfferGrant : null;
       this.store.calls.recordCommand(key, endpoint, body, id);
       if (send && decision.decision === "approve") this.respond(a, emit, { action: "read_back", offerId: approval.offer.id, offerVersion: approval.offer.version }, (frame, permit) => output.push({ frame, permit }));
+      else if (send) {
+        this.speak(a, emit, renderReply("closing", a.call.plan, {}, this.store.phrases.lookup), (frame, permit) => output.push({ frame, permit }));
+        output.push({ frame: { type: "end", handoffData: JSON.stringify({ reasonCode: "policy_declined", bookingStatus: "not_booked", simulation: true }) }, permit: null });
+      }
     });
     if (send) this.deliver(id, a.call.messages.findLast(m => m.speaker === "business")!.id, output, send);
     return this.get(id).call;

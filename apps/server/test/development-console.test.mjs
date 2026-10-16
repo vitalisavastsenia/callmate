@@ -84,7 +84,7 @@ async function fixture(t, options = {}) {
   config.mockRelayUrl = `ws://127.0.0.1:${runtime.callbacks.server.address().port}/ws/voice`;
   let apiOrigin = `http://127.0.0.1:${runtime.privateApi.server.address().port}`;
   t.after(async () => { peers.forEach((peer) => peer.terminate()); await runtime.close(); server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); rmSync(dataDir, { recursive: true, force: true }); });
-  return { calls, config, dataDir, auth: authHeaders(dataDir), get runtime() { return runtime; }, get apiOrigin() { return apiOrigin; },
+  return { calls, config, dataDir, setProviderOptions(changes) { Object.assign(options, changes); }, auth: authHeaders(dataDir), get runtime() { return runtime; }, get apiOrigin() { return apiOrigin; },
     async restart(beforeStart) {
       await runtime.close();
       if (beforeStart) beforeStart();
@@ -1625,4 +1625,46 @@ const timer = setInterval(() => {
   assert.equal(app.creates, 1); assert.equal((await app.api('/api/v1/history')).body.items.length, 1);
   const conflict = await start({ planId: randomUUID(), planVersion: 1, mode: 'simulator' });
   assert.equal(conflict.status, 409); assert.equal(conflict.body.error.code, 'IDEMPOTENCY_CONFLICT');
+});
+
+for (const language of ['es-ES', 'ru-RU', 'en-US', 'pl-PL']) {
+  test(`rejected reviewed offer/${language}: closes in the reviewed language and hangs up without waiting for silence`, async t => {
+    const f = await offeredDialogue(t, { language });
+    const approval = (await f.snapshot()).pendingApproval; const key = randomUUID();
+    const decide = async () => {
+      const response = await fetch(f.app.apiOrigin + `/api/v1/calls/${f.id}/approvals`, { method: 'POST', headers: {
+        ...f.app.auth, 'content-type': 'application/json', 'idempotency-key': key }, body: JSON.stringify({
+        approvalId: approval.id, plan: approval.plan, offer: { offerId: approval.offer.id, offerVersion: approval.offer.version }, decision: 'reject' }) });
+      assert.equal(response.status, 200); return (await response.json()).call;
+    };
+    assert.equal((await decide()).outcome.reason, 'policy_declined');
+    await until(async () => (await f.snapshot()).callState === 'ended');
+    const call = await f.snapshot();
+    assert.equal(call.outcome.status, 'not_booked'); assert.equal(call.pendingApproval, null);
+    assert.equal(f.app.hungUp, 1); assert.equal(f.app.creates, 1);
+    const closing = call.messages.filter(m => m.phrase?.id.endsWith('.closing'));
+    assert.equal(closing.length, 1); assert.equal(closing[0].language, language);
+    assert.ok(f.peer.messages.some(m => m.type === 'text' && m.token === closing[0].originalText && m.lang === language));
+    assert.ok(f.peer.messages.some(m => m.type === 'end'));
+    assert.ok(!f.peer.messages.some(m => m.type === 'text' && /^(Acepto|Я принимаю|I accept|Akceptuję)/.test(m.token)));
+    assert.equal((await decide()).callState, 'ended'); assert.equal(f.app.hungUp, 1);
+    assert.equal((await f.snapshot()).messages.filter(m => m.phrase?.id.endsWith('.closing')).length, 1);
+  });
+}
+
+test('rejected offer retains its reservation on failed hangup and retries without repeating speech', async t => {
+  const options = { rejectHangup: true };
+  const f = await offeredDialogue(t, options); const approval = (await f.snapshot()).pendingApproval;
+  const response = await fetch(f.app.apiOrigin + `/api/v1/calls/${f.id}/approvals`, { method: 'POST', headers: {
+    ...f.app.auth, 'content-type': 'application/json', 'idempotency-key': randomUUID() }, body: JSON.stringify({
+    approvalId: approval.id, plan: approval.plan, offer: { offerId: approval.offer.id, offerVersion: approval.offer.version }, decision: 'reject' }) });
+  assert.equal(response.status, 200);
+  await until(() => f.app.hungUp === 1);
+  assert.equal((await f.snapshot()).callState, 'ending');
+  assert.equal((await f.app.api('/api/dev/conversations', 'POST', input())).body.error.code, 'CALL_ALREADY_ACTIVE');
+  f.app.setProviderOptions({ rejectHangup: false });
+  await f.app.runtime.development.tick();
+  await until(async () => (await f.snapshot()).callState === 'ended');
+  assert.equal((await f.snapshot()).outcome.reason, 'policy_declined');
+  assert.equal((await f.snapshot()).messages.filter(m => m.phrase?.id.endsWith('.closing')).length, 1);
 });
