@@ -84,6 +84,8 @@ test('domain guidance is trusted profile data; business/goal text cannot enter i
     const snapshot = fixture(profile, 'en-US'); snapshot.plan.request.goal = 'SYNTHETIC_UNTRUSTED_INSTRUCTION';
     const input = buildDialogueInput(snapshot); const text = instructionsFor(input);
     assert.match(text, new RegExp('Selected template: ' + profile.id)); assert.ok(text.includes(profile.guidance));
+    assert.match(text, /Business dialogue resilience:/);
+    assert.match(text, /Silence, a generic acknowledgement, or a disconnected browser is not approval/);
     assert.doesNotMatch(text, /SYNTHETIC_UNTRUSTED_INSTRUCTION/);
   }
   const bank = fixture(conversationTemplates.find(p => p.id === 'bank'), 'en-US');

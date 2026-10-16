@@ -75,6 +75,7 @@ export function ApprovalCard({ call, now, disabled, onDecision, compact = false,
     </ul></div>}
     {compact ? <p className="text-base">{describeTime(a.offer.appointment)} · {a.offer.price ? money(a.offer.price) : 'Price unknown'}</p> : <OfferDetails offer={a.offer} />}
     <p className="my-4 font-semibold" role="timer" aria-label="Approval time remaining">{seconds > 0 ? seconds + ' seconds left to decide' : 'Approval expired — waiting for the server to close it'}</p>
+    {!compact && <p className="mb-4 text-base">Choose whether to approve this exact offer or reject it before the deadline. If you do not answer, it will not be accepted and the call will close or continue without this offer.</p>}
     {!compact && <p className="mb-4 text-base">This decision applies only to this offer and version. A changed offer needs fresh approval. Approval does not mean the business has confirmed.</p>}
     {forbidden && <p role="alert" className="notice error">This offer includes unknown or prohibited conditions. It cannot be approved in this MVP.</p>}
     <div ref={ref} className="approval-actions flex flex-wrap gap-3"><button className="primary" disabled={disabled || seconds === 0 || forbidden} onClick={() => onDecision('approve')}>Approve this offer</button><button className="secondary" disabled={disabled || seconds === 0} onClick={() => onDecision('reject')}>Reject offer</button></div>
