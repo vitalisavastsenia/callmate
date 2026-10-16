@@ -17,6 +17,8 @@ contracts package. There is currently no shared base TypeScript configuration.
 
 ## Integration with Engineer 2
 
+The server’s `verifyMockConfirmation` matcher recognizes bounded confirmations in all four supported languages, including “Да подтверждаю” / “Да я уже подтвердил это”, “Sí, confirmo” / “Sí, ya lo he confirmado”, “Yes, I confirm” / “Yes, I already confirmed that”, and “Tak, potwierdzam” / “Tak, już to potwierdziłem”. Negation, uncertainty, and changed terms still require clarification. The caller must separately validate booking state, completed acceptance playback, and evidence ordering before recording a confirmed booking; this matcher does not provide unrestricted semantic verification of arbitrary speech.
+
 The integration branch now includes an optional mock-call controller using this library. See [runtime setup and limits](../../docs/docker-development.md#17-dialogue-driven-local-mock-calls). It processes finalized Spanish replies and sends policy-approved text; acceptance and confirmation still require the missing playback/verifier integration.
 
 The integration branch registers `packages/dialogue` alongside contracts, backend,
