@@ -263,16 +263,25 @@ export class DevelopmentConversations {
     this.enabled(); const a = this.store.calls.latestManual();
     return { conversation: a ? await this.get(a.call.id) : null };
   }
-  async startDialogue(request: z.infer<typeof import("@callmate/contracts").StartCallRequestSchema>, key: string, validate: (plan: ReviewPlan) => void) {
+  private replayDialogueStart(request: z.infer<typeof import("@callmate/contracts").StartCallRequestSchema>, key: string) {
     const command = this.store.calls.command(key);
     if (command) {
       const body = createHash("sha256").update(JSON.stringify(request)).digest("hex");
       if (command.endpoint !== "dialogue-start" || command.body !== body) throw new CommandError(409, "IDEMPOTENCY_CONFLICT", "Start command differs");
       return this.snapshot(command.attemptId) as CallSnapshot;
     }
+  }
+  async startDialogue(request: z.infer<typeof import("@callmate/contracts").StartCallRequestSchema>, key: string, validate: (plan: ReviewPlan) => void) {
+    const replay = this.replayDialogueStart(request, key);
+    if (replay) return replay;
     this.enabled();
     if (!this.dialogueEnabled) throw new CommandError(503, "PROVIDER_NOT_READY", "Configure a dialogue engine before starting reviewed mock calls");
-    if (this.config.dialogueProvider === "codex" && !await codexLoginReady()) throw new CommandError(503, "PROVIDER_NOT_READY", "Codex CLI login is unavailable; run the Docker login setup");
+    const loginReady = this.config.dialogueProvider !== "codex" || await codexLoginReady();
+    // Another Start may reserve the same command while the external probe awaits.
+    // Its durable result wins even if this probe failed or the configuration changed.
+    const afterProbe = this.replayDialogueStart(request, key);
+    if (afterProbe) return afterProbe;
+    if (!loginReady) throw new CommandError(503, "PROVIDER_NOT_READY", "Codex CLI login is unavailable; run the Docker login setup");
     const plan = this.store.calls.plan(request.planId);
     if (!plan) throw new CommandError(404, "NOT_FOUND", "Review plan not found");
     if (request.mode !== "simulator") throw new CommandError(409, "MODE_MISMATCH", "Dialogue supports local mock calls only");

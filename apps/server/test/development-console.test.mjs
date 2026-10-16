@@ -2,7 +2,7 @@ import { authHeaders } from './fixtures/auth.mjs';
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1585,4 +1585,44 @@ for (const frame of [
     assert.equal(app.runtime.controller.get(created.id).callState, 'ended');
     assert.equal(app.hungUp, 1); assert.equal(app.creates, 1);
   } finally { db.exec('DROP TRIGGER IF EXISTS fail_relay_activity'); db.close(); }
+});
+
+test('concurrent reviewed Start replays the durable command after a failed Codex login probe', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'callmate-login-race-'));
+  const previousPath = process.env.PATH;
+  writeFileSync(join(directory, 'codex'), `#!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
+const dir = __dirname;
+let first = true;
+try { fs.writeFileSync(path.join(dir, 'first'), '', { flag: 'wx' }); } catch { first = false; }
+if (!first) fs.writeFileSync(path.join(dir, 'second'), '');
+const timer = setInterval(() => {
+  if (!fs.existsSync(path.join(dir, first ? 'second' : 'release'))) return;
+  clearInterval(timer);
+  if (first) console.log('Logged in using ChatGPT');
+  process.exit(first ? 0 : 1);
+}, 10);
+`, { mode: 0o700 });
+  process.env.PATH = directory + ':' + previousPath;
+  t.after(() => { process.env.PATH = previousPath; rmSync(directory, { recursive: true, force: true }); });
+  const app = await fixture(t, { env: { CALLMATE_DIALOGUE_PROVIDER: 'codex' },
+    development: { automatic: false, model: { async generate(input) { return dialogueProposal(input, { action: 'ask_availability' }); } } } });
+  const plan = (await app.api('/api/v1/plans', 'POST', dialogueRequest())).body.plan;
+  const key = randomUUID();
+  const start = async (body = { planId: plan.id, planVersion: plan.version, mode: 'simulator' }) => {
+    const response = await fetch(app.apiOrigin + '/api/v1/calls', { method: 'POST', headers: {
+      ...app.auth, 'content-type': 'application/json', 'idempotency-key': key }, body: JSON.stringify(body) });
+    return { status: response.status, body: await response.json() };
+  };
+  const first = start(); await until(() => existsSync(join(directory, 'first')));
+  const second = start();
+  const original = await first;
+  writeFileSync(join(directory, 'release'), '');
+  const replay = await second;
+  assert.equal(original.status, 202); assert.equal(replay.status, 202);
+  assert.equal(replay.body.call.id, original.body.call.id);
+  assert.equal(app.creates, 1); assert.equal((await app.api('/api/v1/history')).body.items.length, 1);
+  const conflict = await start({ planId: randomUUID(), planVersion: 1, mode: 'simulator' });
+  assert.equal(conflict.status, 409); assert.equal(conflict.body.error.code, 'IDEMPOTENCY_CONFLICT');
 });
