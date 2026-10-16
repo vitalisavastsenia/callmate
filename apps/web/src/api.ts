@@ -1,10 +1,11 @@
+import { browserStorage } from './browserStorage';
 import { api, ApiErrorSchema, CallSnapshotSchema, type ApprovalDecision, type RequestDraft, type ReviewPlan, type Scenario, type Settings } from './types';
 import { savedAttemptTransport } from './attemptStorage';
 import * as mock from './mock';
 
 const modeKey = 'zeus-llama.mode.v1';
 function initialMode() {
-  try { const transport = savedAttemptTransport(); if (transport) return transport === 'browser'; const saved = localStorage.getItem(modeKey); if (saved === 'simulator' || saved === 'live') return saved === 'simulator'; } catch { /* Use the environment default when storage is unavailable. */ }
+  try { const transport = savedAttemptTransport(); if (transport) return transport === 'browser'; const saved = browserStorage.getItem(modeKey); if (saved === 'simulator' || saved === 'live') return saved === 'simulator'; } catch { /* Use the environment default when storage is unavailable. */ }
   return import.meta.env.VITE_MOCK === 'true';
 }
 export let isMockMode = initialMode();
@@ -21,7 +22,7 @@ logLiveBase();
 // Only Settings switches transports, with active and unresolved attempts locked by App.
 export function setMockMode(value: boolean) {
   isMockMode = value; logLiveBase();
-  try { localStorage.setItem(modeKey, value ? 'simulator' : 'live'); } catch { /* The selection still works for this session. */ }
+  try { browserStorage.setItem(modeKey, value ? 'simulator' : 'live'); } catch { /* The selection still works for this session. */ }
 }
 type Schema<T> = { parse: (value: unknown) => T };
 export class ApiError extends Error {

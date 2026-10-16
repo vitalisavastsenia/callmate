@@ -1,3 +1,4 @@
+import { browserStorage } from './browserStorage';
 // An in-browser fake backend. Production authority and persistence belong to apps/server.
 import {
   ApprovalDecisionSchema, CallSnapshotSchema, DomainEventSchema, ReadinessSchema,
@@ -31,7 +32,7 @@ interface Store { plans: ReviewPlan[]; sessions: Session[]; settings: Settings }
 let memory: Store | undefined;
 function read(): Store {
   if (memory) return memory;
-  const text = localStorage.getItem(storeKey);
+  const text = browserStorage.getItem(storeKey);
   if (text) {
     try {
       const value = JSON.parse(text) as Store;
@@ -49,7 +50,9 @@ function read(): Store {
   memory = { plans: [], sessions: [], settings: structuredClone(defaultSettings) };
   return memory;
 }
-function save() { localStorage.setItem(storeKey, JSON.stringify(read())); }
+function save(required = false) {
+  if (!browserStorage.setItem(storeKey, JSON.stringify(read())) && required) throw new Error('Storage full or unavailable. The change was not saved.');
+}
 function copy(call: CallSnapshot): CallSnapshot { return CallSnapshotSchema.parse(structuredClone(call)); }
 function find(attemptId: string): Session {
   const session = read().sessions.find(s => s.call.id === attemptId);
@@ -57,7 +60,7 @@ function find(attemptId: string): Session {
   return session;
 }
 type EventData = { type: DomainEvent['type']; payload: unknown };
-function commit(s: Session, events: EventData[]) {
+function commit(s: Session, events: EventData[], requirePersistence = false) {
   s.call.revision++;
   s.call.updatedAt = now();
   for (const event of events) {
@@ -66,7 +69,7 @@ function commit(s: Session, events: EventData[]) {
       sequence: s.call.lastEventSequence, snapshotRevision: s.call.revision, occurredAt: now(), ...event }));
   }
   s.call = CallSnapshotSchema.parse(s.call);
-  save();
+  save(requirePersistence);
 }
 function message(s: Session, speaker: 'assistant' | 'business', originalText: string, translationEn: string, playback: TranscriptMessage['playback'] = 'played'): TranscriptMessage {
   const item: TranscriptMessage = { id: id(), turnId: id(), speaker, originalText, translationEn, language: 'es-ES',
@@ -308,8 +311,11 @@ export function mockHistory() {
 export function mockDelete(attemptId: string) {
   const s = find(attemptId);
   if (!terminal(s.call)) throw new Error('DATA_NOT_DELETABLE: end the call before deleting the conversation.');
-  s.call.messages = []; s.call.conversationData = 'deleted'; s.events = [];
-  commit(s, [{ type: 'conversation.deleted', payload: { conversationData: 'deleted' } }]);
+  const previous = copy(s.call); const events = s.events;
+  try {
+    s.call.messages = []; s.call.conversationData = 'deleted'; s.events = [];
+    commit(s, [{ type: 'conversation.deleted', payload: { conversationData: 'deleted' } }], true);
+  } catch (error) { s.call = previous; s.events = events; throw error; }
   return { attemptId, deleted: true as const };
 }
 export function mockDeleteAgreement(attemptId: string) {
@@ -321,7 +327,7 @@ export function mockDeleteAgreement(attemptId: string) {
     const previous = copy(s.call); const eventCount = s.events.length;
     try {
       s.call.agreementDeletedAt = now();
-      commit(s, [{ type: 'agreement.deleted', payload: { agreementDeletedAt: s.call.agreementDeletedAt } }]);
+      commit(s, [{ type: 'agreement.deleted', payload: { agreementDeletedAt: s.call.agreementDeletedAt } }], true);
     } catch (error) { s.call = previous; s.events.splice(eventCount); throw error; }
   }
   return { call: copy(s.call) };

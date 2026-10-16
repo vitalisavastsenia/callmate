@@ -746,3 +746,48 @@ test('session expiry still locks an offline draft', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Sign in', exact: true })).toBeVisible();
   await expect(page.getByLabel('Home goal', { exact: true })).toHaveCount(0);
 });
+
+for (const failure of ['read', 'pending-write'] as const) {
+  test(`storage ${failure} failure keeps the UI available and prevents Start`, async ({ page }) => {
+    const crashes: string[] = []; page.on('pageerror', error => crashes.push(error.message));
+    await page.addInitScript(failure => {
+      const original = Storage.prototype[failure === 'read' ? 'getItem' : 'setItem'];
+      const method = failure === 'read' ? 'getItem' : 'setItem';
+      Object.defineProperty(Storage.prototype, method, { configurable: true, value: function (key: string, value?: string) {
+        if (failure === 'read' || key === 'zeus-llama.pending-start.v1') throw new DOMException('Storage denied', failure === 'read' ? 'SecurityError' : 'QuotaExceededError');
+        return original.call(this, key, value!);
+      } });
+    }, failure);
+    if (failure === 'read') {
+      await page.goto('/');
+    } else {
+      await prepare(page);
+      await button(page, 'Call').click();
+    }
+    await expect(page.getByRole('alert').filter({ hasText: 'Browser storage is unavailable' })).toBeVisible();
+    await button(page, 'Settings').click();
+    await expect(button(page, 'Backend')).toBeDisabled();
+    if (failure === 'pending-write') expect(await page.evaluate(() => JSON.parse(localStorage.getItem('zeus-llama.simulator.v1')!).sessions.length)).toBe(0);
+    expect(crashes).toEqual([]);
+  });
+}
+
+test('storage failure during an existing call preserves Stop', async ({ page }) => {
+  await page.clock.install(); await prepare(page, 'above_price'); await start(page, true);
+  await page.evaluate(() => {
+    Storage.prototype.setItem = () => { throw new DOMException('Full', 'QuotaExceededError'); };
+    Storage.prototype.removeItem = () => { throw new DOMException('Denied', 'SecurityError'); };
+  });
+  await page.getByRole('dialog').getByRole('button', { name: 'Stop call', exact: true }).click();
+  await expect(page.getByRole('dialog').getByRole('heading', { name: 'Not booked', exact: true })).toBeVisible();
+  await page.getByRole('dialog').getByRole('button', { name: 'Close call window', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'Browser storage is unavailable' })).toBeVisible();
+});
+
+test('invalid saved state shows recovery instead of a blank root and retains the record', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('zeus-llama.active-attempt.v1', '{"id":null,"transport":"backend"}'));
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'Zeus Llama could not display this page' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Reload and restore', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => localStorage.getItem('zeus-llama.active-attempt.v1'))).toBe('{"id":null,"transport":"backend"}');
+});

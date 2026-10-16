@@ -1,8 +1,9 @@
+import { browserStorage } from './browserStorage';
 export const activeKey = 'zeus-llama.active-attempt.v1';
 export const pendingKey = 'zeus-llama.pending-start.v1';
 type Transport = 'browser' | 'backend';
 export function readActiveAttempt(): { id: string; transport?: Transport } | null {
-  const saved = localStorage.getItem(activeKey);
+  const saved = browserStorage.getItem(activeKey);
   if (!saved) return null;
   // Earlier versions stored only an ID; retain it for recovery in the saved mode.
   if (!saved.startsWith('{')) return { id: saved };
@@ -11,7 +12,7 @@ export function readActiveAttempt(): { id: string; transport?: Transport } | nul
   return value;
 }
 export function savedAttemptTransport(): Transport | undefined {
-  const pending = localStorage.getItem(pendingKey);
+  const pending = browserStorage.getItem(pendingKey);
   if (pending) {
     const value = JSON.parse(pending);
     if (value.transport === 'browser' || value.transport === 'backend') return value.transport;

@@ -107,3 +107,5 @@ Saved active calls and pending Start commands remember their browser-simulator o
 A structured pre-attempt Start rejection (for example, `503 PROVIDER_NOT_READY`) clears the pending command and returns to request review. Network failures, invalid responses and command conflicts retain the original command for idempotent recovery; an authentication failure during recovery does not discard it.
 
 A temporary session-check/network failure keeps the mounted request draft and offers **Retry connection**. A verified signed-out response, private API 401, explicit logout, or the existing session expiry still locks the UI.
+
+If browser storage is blocked or full, the app shows a recovery notice and disables new calls and mode changes. Known call controls remain available in the current tab; do not close it while Start or a call is unresolved. Enable storage and reload after resolving the attempt. Start is never sent unless its recovery command was saved successfully. Unexpected render errors show a recovery screen without clearing saved call data.
